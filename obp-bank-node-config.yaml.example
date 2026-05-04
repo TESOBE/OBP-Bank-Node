@@ -1,0 +1,70 @@
+# OBP Bank Node — example configuration.
+# Provided pre-populated by the OBP API operator at registration; replace placeholders.
+
+obp_bank_node:
+  port: 8088
+  local_secret: "change-me-on-first-run"
+
+bank:
+  bank_id: "ke.01.kcs"
+  account_id: "7bc9a8e4-5d02-40e3-b129-1c3bf89de9f1"
+  view_id: "owner"
+
+obp_api:
+  base_url: "https://sandbox.opencorridor.io"
+  oauth2_consumer_key: "provided-at-registration"
+  oauth2_consumer_secret: "provided-at-registration"
+  oauth2_access_token: "provided-at-registration"
+  oauth2_token_secret: "provided-at-registration"
+
+rabbitmq:
+  host: "rmq.opencorridor.io"
+  port: 5672
+  username: "provided-at-registration"
+  password: "provided-at-registration"
+  virtual_host: "/obp"
+  inbound_queue: "obp.ke.01.kcs.inbound"
+
+cardano:
+  wallet_address: "addr1q..."
+  signing_key_path: "/secrets/cardano.skey"
+  network: "mainnet"
+  blockfrost_api_key: "provided-at-registration"
+
+cbs_delivery:
+  mode: "webhook_obp"     # webhook_obp | webhook_iso20022 | database | file
+
+  webhook:
+    url: "http://bank-cbs/api/credit-notifications"
+    timeout_seconds: 30
+
+  database:
+    host: "cbs-db.bank.local"
+    port: 5432
+    name: "cbs_staging"
+    username: "obp_writer"
+    password: "..."
+    table: "obp_credit_instructions"
+    driver: "postgresql"
+
+  file:
+    drop_path: "/shared/credit-notifications/inbound/"
+    acknowledgement_path: "/shared/credit-notifications/acknowledged/"
+    format: "json"
+
+telemetry:
+  type: "prometheus"
+  port: 9090
+  log_level: "INFO"
+
+dashboard:
+  enabled: false
+  bind_address: "127.0.0.1"
+  port: 8081
+  auth:
+    enabled: true
+    username: "admin"
+    password: "change-me"
+
+outbox:
+  path: "/app/outbox/obp-bank-node.db"
