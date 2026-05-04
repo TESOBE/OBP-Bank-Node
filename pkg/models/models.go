@@ -150,7 +150,7 @@ type ExceptionRecord struct {
 
 // APIError is the canonical error body returned by the south-side REST surface.
 // Codes prefixed `OBP-` mirror OBP's own error codes; codes prefixed `OBP Bank Node-` are
-// Open Corridor Node-specific (Section 3.2 error table).
+// OBP Bank Node-specific (Section 3.2 error table).
 type APIError struct {
 	Error       string `json:"error"`
 	Message     string `json:"message"`

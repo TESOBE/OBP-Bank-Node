@@ -23,7 +23,7 @@ import (
 //
 // Flow:
 //  1. Parse + validate the OBP-shaped request body.
-//  2. Resolve routing to an Open Corridor counterparty.
+//  2. Resolve routing to an OBP API counterparty.
 //  3. Persist the request to the outbox in INITIATED state — this is what
 //     guarantees the 202 we return is recoverable on crash.
 //  4. Submit to the OBP API via Interface B (synchronously here for

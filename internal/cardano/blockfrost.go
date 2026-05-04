@@ -1,10 +1,10 @@
 // Copyright (C) 2026 TESOBE GmbH
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package cardano writes the five Open Corridor record types to the Cardano blockchain via
+// Package cardano writes the five Cardano record types to the Cardano blockchain via
 // the Blockfrost API (Interface D).
 //
-// Cardano metadata transactions are how Open Corridor anchors the audit trail. Building
+// Cardano metadata transactions are how the OBP API anchors the audit trail. Building
 // them properly requires fee calculation, UTxO selection and signing with the
 // bank's key — out of scope for the v0.1 skeleton. The interface here matches
 // spec Section 16.5; the StubWriter logs the record and returns a fake tx hash

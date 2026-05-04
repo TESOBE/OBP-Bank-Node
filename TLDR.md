@@ -1,6 +1,6 @@
 ## What it is
 
-A small Go service a bank runs inside its own network. It connects the bank's Core Banking System (CBS) to the Open Corridor cross-border payment network (an OBP API instance hosted by TESOBE) — without the bank needing to run any OBP infrastructure itself.
+A small Go service a bank runs inside its own network. It connects the bank's Core Banking System (CBS) to the cross-border payment network (an OBP API instance hosted by TESOBE) — without the bank needing to run any OBP infrastructure itself.
 
 The bank only deals with one thing locally: a REST endpoint on `localhost`. Everything else — talking to the OBP API, writing to the Cardano blockchain, listening for instructions over RabbitMQ — happens behind that.
 

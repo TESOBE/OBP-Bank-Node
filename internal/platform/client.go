@@ -92,7 +92,7 @@ func (s *StubClient) ResolveRouting(ctx context.Context, to models.PaymentTo) (s
 }
 
 // ErrUnresolvable is returned when routing details cannot be resolved to an
-// Open Corridor participant. Mapped to OBP-BANK-NODE-ROUTING-001 by the API layer.
+// OBP API participant. Mapped to OBP-BANK-NODE-ROUTING-001 by the API layer.
 var ErrUnresolvable = &resolveErr{msg: "routing address could not be resolved"}
 
 type resolveErr struct{ msg string }

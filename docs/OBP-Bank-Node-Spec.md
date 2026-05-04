@@ -9,7 +9,7 @@
 
 ## 1. Overview
 
-The **OBP Bank Node** is a software component that runs inside a bank's network and connects the bank's Core Banking System (CBS) to the **Open Corridor** interbank payment network, which is built on the OBP (Open Bank Project) API platform.
+The **OBP Bank Node** is a software component that runs inside a bank's network and connects the bank's Core Banking System (CBS) to an interbank payment network powered by an OBP (Open Bank Project) API instance hosted by TESOBE.
 
 The OBP Bank Node is not a passive adapter. It has three distinct communication directions:
 
@@ -297,7 +297,7 @@ Content-Type: application/json
 
 #### Delivery Mode 2: REST Webhook — ISO 20022 JSON Format
 
-For banks whose CBS teams prefer ISO 20022 field naming. The payload is semantically equivalent to a `camt.054` Bank-to-Customer Credit Notification, expressed in JSON rather than XML. Field names follow ISO 20022 conventions with an OBP Bank Node extension block for Open Corridor-specific fields.
+For banks whose CBS teams prefer ISO 20022 field naming. The payload is semantically equivalent to a `camt.054` Bank-to-Customer Credit Notification, expressed in JSON rather than XML. Field names follow ISO 20022 conventions with an OBP Bank Node extension block for OBP Bank Node-specific fields.
 
 **Config:**
 ```yaml
@@ -499,7 +499,7 @@ The OBP Bank Node listens on a bank-specific RabbitMQ queue provisioned by the O
 
 ## 6. Interface D — Cardano Blockchain
 
-The OBP Bank Node writes and reads the five Cardano record types defined in the Open Corridor Architecture Decisions document:
+The OBP Bank Node writes and reads the five Cardano record types defined in the OBP Architecture Decisions document:
 
 | Record | When Written | OBP Bank Node Role |
 |---|---|---|
@@ -528,14 +528,14 @@ bank:
   view_id: "owner"
 
 obp_api:
-  base_url: "https://api.opencorridor.io"
+  base_url: "https://apisandbox.openbankproject.com"
   oauth2_consumer_key: "provided-at-registration"
   oauth2_consumer_secret: "provided-at-registration"
   oauth2_access_token: "provided-at-registration"
   oauth2_token_secret: "provided-at-registration"
 
 rabbitmq:
-  host: "rmq.opencorridor.io"
+  host: "rmq.openbankproject.com"
   port: 5672
   username: "provided-at-registration"
   password: "provided-at-registration"
@@ -673,7 +673,7 @@ This ensures no payment instruction is lost due to intermittent connectivity —
 
 ### Step 1 — Register with OBP API
 
-Contact TESOBE to register your bank on the Open Corridor network. You will receive:
+Contact TESOBE to register your bank on the OBP API network. You will receive:
 
 - OBP OAuth2 credentials for the OBP API
 - RabbitMQ connection credentials
@@ -700,17 +700,17 @@ docker run -d \
 
 Your CBS team implements two things:
 
-1. **Call Interface A1** when a customer initiates an outbound Open Corridor payment — `POST localhost:8088/obp-bank-node/v5.1.0/banks/{BANK_ID}/accounts/{ACCOUNT_ID}/views/owner/transaction-request-types/SIMPLE/transaction-requests`
+1. **Call Interface A1** when a customer initiates an outbound interbank payment — `POST localhost:8088/obp-bank-node/v5.1.0/banks/{BANK_ID}/accounts/{ACCOUNT_ID}/views/owner/transaction-request-types/SIMPLE/transaction-requests`
 
 2. **Receive Interface A2** — expose a webhook endpoint at your configured `CBS_CREDIT_WEBHOOK_URL` that accepts the credit notification body and posts the credit to the beneficiary account.
 
 ### Step 4 — Sandbox Testing
 
-A sandbox OBP API is available at `https://sandbox.opencorridor.io`. Use sandbox credentials to test the full payment flow before connecting to production.
+A sandbox OBP API is available at `https://apisandbox.openbankproject.com`. Use sandbox credentials to test the full payment flow before connecting to production.
 
 ### Step 5 — Certification
 
-Complete the Open Corridor certification checklist (provided separately). Passing certification is required before connecting to the production OBP API.
+Complete the OBP Bank Node certification checklist (provided separately). Passing certification is required before connecting to the production OBP API.
 
 ---
 
@@ -725,13 +725,13 @@ Complete the Open Corridor certification checklist (provided separately). Passin
 
 ## 14. Bank Interface Essentials
 
-*This section is intended for bank technical teams evaluating or beginning an Open Corridor integration. It summarises everything your team needs to know in plain terms — without requiring knowledge of the OBP API internals, Cardano, or RabbitMQ.*
+*This section is intended for bank technical teams evaluating or beginning an OBP Bank Node integration. It summarises everything your team needs to know in plain terms — without requiring knowledge of the OBP API internals, Cardano, or RabbitMQ.*
 
 ---
 
 ### What is the OBP Bank Node?
 
-The OBP Bank Node is a small piece of software you run inside your own network. It connects your Core Banking System (CBS) to the Open Corridor interbank payment network. You do not need to run any OBP API infrastructure — the platform is hosted by TESOBE. The OBP Bank Node handles all communication with the platform on your behalf.
+The OBP Bank Node is a small piece of software you run inside your own network. It connects your Core Banking System (CBS) to the interbank payment network. You do not need to run any OBP API infrastructure — the platform is hosted by TESOBE. The OBP Bank Node handles all communication with the platform on your behalf.
 
 Think of it like a SWIFT Alliance client — it sits inside your network, talks to the outside world, and gives your CBS a simple local interface.
 
@@ -743,7 +743,7 @@ You need to implement exactly two things:
 
 **1. Send a payment instruction to the OBP Bank Node (outbound payments)**
 
-When one of your customers initiates a cross-border Open Corridor payment, your CBS calls a local REST endpoint on the OBP Bank Node. This is the same format as an OBP Transaction Request — if your team already knows OBP, there is nothing new to learn.
+When one of your customers initiates a cross-border interbank payment, your CBS calls a local REST endpoint on the OBP Bank Node. This is the same format as an OBP Transaction Request — if your team already knows OBP, there is nothing new to learn.
 
 ```
 POST http://localhost:8088/obp-bank-node/v5.1.0/banks/{BANK_ID}/accounts/{ACCOUNT_ID}/views/owner/transaction-request-types/SIMPLE/transaction-requests
@@ -769,7 +769,7 @@ The OBP Bank Node responds immediately with an acknowledgement and a `transactio
 
 **2. Receive a credit instruction from the OBP Bank Node (inbound payments)**
 
-When a payment arrives for one of your customers from another Open Corridor bank, the OBP Bank Node delivers a credit instruction to your CBS. You choose how it is delivered based on what your CBS can handle:
+When a payment arrives for one of your customers from another participating bank, the OBP Bank Node delivers a credit instruction to your CBS. You choose how it is delivered based on what your CBS can handle:
 
 | Mode | What your CBS does | Best for |
 |---|---|---|
@@ -851,7 +851,7 @@ You provide the beneficiary's routing details inline with each payment. The OBP 
 | `OBP` + `OBP` | Banks already using OBP |
 | `BANK_ID` + `ACCOUNT_ID` | OBP API native identifiers |
 
-If a routing address cannot be resolved to an Open Corridor participant, the OBP Bank Node returns a clear error — no silent failures.
+If a routing address cannot be resolved to an OBP API participant, the OBP Bank Node returns a clear error — no silent failures.
 
 ---
 
@@ -886,8 +886,8 @@ The OBP Bank Node makes outbound connections only. Your firewall needs to allow 
 
 | Destination | Port | Purpose |
 |---|---|---|
-| `api.opencorridor.io` | 443 | OBP API REST API |
-| `rmq.opencorridor.io` | 5672 | RabbitMQ (or 5671 for TLS) |
+| `api.openbankproject.com` | 443 | OBP API REST API |
+| `rmq.openbankproject.com` | 5672 | RabbitMQ (or 5671 for TLS) |
 | Cardano Blockfrost endpoint | 443 | Blockchain record writing |
 
 No inbound ports need to be opened to the internet. The OBP Bank Node does not expose any public endpoint.
@@ -898,29 +898,29 @@ No inbound ports need to be opened to the internet. The OBP Bank Node does not e
 
 The OBP Bank Node is designed for African network environments where connectivity is intermittent. All outbound payment instructions are written to a local outbox before transmission. If the OBP API is unreachable, your CBS still receives an immediate acknowledgement and the OBP Bank Node queues the instruction and retries automatically when connectivity is restored. No payment instruction is lost due to a network outage.
 
-For inbound credit deliveries, if your CBS is temporarily unavailable, the OBP Bank Node retries for up to 24 hours. If delivery cannot be confirmed after 24 hours, the situation is flagged on the OBP API and your Open Corridor account manager is alerted.
+For inbound credit deliveries, if your CBS is temporarily unavailable, the OBP Bank Node retries for up to 24 hours. If delivery cannot be confirmed after 24 hours, the situation is flagged on the OBP API and your TESOBE account manager is alerted.
 
 ---
 
 ### How to get started
 
-1. Contact TESOBE to register your bank on the Open Corridor network
+1. Contact TESOBE to register your bank on the OBP API network
 2. TESOBE provides your `obp-bank-node-config.yaml`, credentials, and sandbox access
 3. Deploy the OBP Bank Node Docker container in your test environment
 4. Call the payment initiation endpoint from your CBS test environment
 5. Confirm you can receive a credit instruction via your chosen delivery mode
-6. Complete the Open Corridor certification checklist
+6. Complete the OBP Bank Node certification checklist
 7. Go live on the production OBP API
 
 ---
 
-*Questions? Contact the Open Corridor team at TESOBE: opencorridor@tesobe.com*
+*Questions? Contact the TESOBE team: obp@tesobe.com*
 
 ---
 
 ## 15. OBP Bank Node Dashboard
 
-The OBP Bank Node includes a built-in web dashboard accessible at `http://localhost:{OBP_BANK_NODE_PORT}/dashboard`. It provides real-time visibility into the bank's Open Corridor activity — for operations, treasury, and compliance teams — without requiring access to the OBP API or any blockchain tooling directly.
+The OBP Bank Node includes a built-in web dashboard accessible at `http://localhost:{OBP_BANK_NODE_PORT}/dashboard`. It provides real-time visibility into the bank's cross-border payment activity — for operations, treasury, and compliance teams — without requiring access to the OBP API or any blockchain tooling directly.
 
 The dashboard is read-only. All data is sourced from the OBP Bank Node's local outbox database and the Cardano API. It is intended for internal bank use only and is bound to localhost by default.
 
@@ -1174,4 +1174,4 @@ GNU Affero General Public License v3.0 (AGPLv3).
 ---
 
 
-*© TESOBE GmbH 2026 — Open Corridor Project*
+*© TESOBE GmbH 2026 — OBP Bank Node Project*

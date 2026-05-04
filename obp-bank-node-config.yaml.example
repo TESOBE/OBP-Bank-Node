@@ -11,14 +11,14 @@ bank:
   view_id: "owner"
 
 obp_api:
-  base_url: "https://sandbox.opencorridor.io"
+  base_url: "https://apisandbox.openbankproject.com"
   oauth2_consumer_key: "provided-at-registration"
   oauth2_consumer_secret: "provided-at-registration"
   oauth2_access_token: "provided-at-registration"
   oauth2_token_secret: "provided-at-registration"
 
 rabbitmq:
-  host: "rmq.opencorridor.io"
+  host: "rmq.openbankproject.com"
   port: 5672
   username: "provided-at-registration"
   password: "provided-at-registration"
