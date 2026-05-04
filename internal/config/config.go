@@ -45,12 +45,17 @@ type OBPAPIConfig struct {
 }
 
 type RabbitMQConfig struct {
-	Host         string `yaml:"host"`
-	Port         int    `yaml:"port"`
-	Username     string `yaml:"username"`
-	Password     string `yaml:"password"`
-	VirtualHost  string `yaml:"virtual_host"`
-	InboundQueue string `yaml:"inbound_queue"`
+	Host        string `yaml:"host"`
+	Port        int    `yaml:"port"`
+	Username    string `yaml:"username"`
+	Password    string `yaml:"password"`
+	VirtualHost string `yaml:"virtual_host"`
+	// RequestQueue is the OBP RPC request queue we consume from. Matches
+	// OBP-API's `rabbitmq_connector.request_queue` property; default
+	// `obp_rpc_queue`. OBP-API publishes RPC requests here; we dispatch by
+	// AMQP MessageId and publish the reply envelope to the per-request
+	// ReplyTo queue carried in the message properties.
+	RequestQueue string `yaml:"request_queue"`
 }
 
 type CardanoConfig struct {
@@ -154,6 +159,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Outbox.Path == "" {
 		c.Outbox.Path = "/app/outbox/obp-bank-node.db"
+	}
+	if c.RabbitMQ.RequestQueue == "" {
+		c.RabbitMQ.RequestQueue = "obp_rpc_queue"
 	}
 	if c.Dashboard.BindAddress == "" {
 		c.Dashboard.BindAddress = "127.0.0.1"

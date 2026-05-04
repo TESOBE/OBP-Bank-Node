@@ -29,18 +29,24 @@ import (
 // Server holds dependencies needed by the handlers — composed at startup in
 // cmd/obp-bank-node/main.go.
 type Server struct {
-	cfg      *config.Config
-	log      *zap.Logger
-	platform platform.Client
-	cardano  cardano.Writer
-	outbox   *outbox.Outbox
-	startedAt time.Time
+	cfg               *config.Config
+	log               *zap.Logger
+	platform          platform.Client
+	cardano           cardano.Writer
+	outbox            *outbox.Outbox
+	rabbitmqConnected func() bool
+	startedAt         time.Time
 }
 
-func NewServer(cfg *config.Config, log *zap.Logger, p platform.Client, c cardano.Writer, ob *outbox.Outbox) *Server {
+// NewServer constructs the API server. rabbitmqConnected is a callback the
+// /health handler invokes to report the live broker connection state — pass
+// (*messaging.RabbitMQConsumer).Connected. May be nil in tests; nil reports as
+// "unknown".
+func NewServer(cfg *config.Config, log *zap.Logger, p platform.Client, c cardano.Writer, ob *outbox.Outbox, rabbitmqConnected func() bool) *Server {
 	return &Server{
 		cfg: cfg, log: log, platform: p, cardano: c, outbox: ob,
-		startedAt: time.Now().UTC(),
+		rabbitmqConnected: rabbitmqConnected,
+		startedAt:         time.Now().UTC(),
 	}
 }
 

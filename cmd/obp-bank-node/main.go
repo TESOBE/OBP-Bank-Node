@@ -88,10 +88,11 @@ func main() {
 	}
 	log.Info("delivery mode initialised", zap.String("mode", deliverer.Name()))
 
-	// RabbitMQ consumer (Interface C). Stub keeps the subscription "alive"
-	// without actually connecting to a broker. Its handlers route incoming
-	// credits straight to the configured deliverer.
-	consumer := messaging.NewStubConsumer(log.Named("messaging"), cfg.RabbitMQ.InboundQueue)
+	// RabbitMQ consumer (Interface C). Real AMQP client — if the broker is
+	// down at startup the consumer logs a warning and keeps reconnecting in
+	// the background; the bank node continues to accept Interface A1 calls
+	// (Section 11 — Outbox and Resilience).
+	consumer := messaging.NewRabbitMQConsumer(cfg.RabbitMQ, log.Named("messaging"))
 	handlers := messaging.Handlers{
 		OnCreditNotification: func(ctx context.Context, c *models.CreditInstruction) error {
 			if err := ob.SaveCredit(ctx, c); err != nil {
@@ -109,6 +110,50 @@ func main() {
 			}
 			return nil
 		},
+
+		// Section 5: netting snapshot — log + (future) reconcile against
+		// Cardano. The on-chain Record 2 write is the OBP API's responsibility
+		// in the spec wording; we receive the snapshot for visibility and
+		// audit.
+		OnNettingSnapshot: func(ctx context.Context, snap *models.NettingSnapshot) error {
+			log.Info("netting snapshot received",
+				zap.String("netting_snapshot_id", snap.NettingSnapshotID),
+				zap.String("netting_blockchain", snap.NettingBlockchain),
+				zap.Strings("currencies", snap.Currencies))
+			return nil
+		},
+
+		// Section 5: settlement instruction. For Cardano-system instructions
+		// we'd initiate an ADA transfer here; for fiat rails (CHAPS, NIBSS)
+		// the bank's treasury system would handle it after we surface the
+		// instruction. v0.1 logs and returns success — concrete settlement
+		// adapters slot in next.
+		OnSettlementInstruction: func(ctx context.Context, instr *models.SettlementInstruction) error {
+			log.Info("settlement instruction received",
+				zap.String("netting_snapshot_id", instr.NettingSnapshotID),
+				zap.String("settlement_system", instr.SettlementSystem),
+				zap.String("currency", instr.Value.Currency),
+				zap.String("amount", instr.Value.Amount),
+				zap.String("destination", instr.DestinationAddress))
+			return nil
+		},
+
+		// Section 5: status update — patch the Transaction Request's status
+		// in the local outbox so the bank's status query (Section 8) reflects
+		// what the OBP API knows.
+		OnStatusUpdate: func(ctx context.Context, upd *models.StatusUpdate) error {
+			log.Info("status update received",
+				zap.String("transaction_request_id", upd.TransactionRequestID),
+				zap.String("status", upd.Status))
+			if err := ob.UpdateStatus(ctx, upd.TransactionRequestID, upd.Status); err != nil {
+				log.Warn("status update: outbox UpdateStatus failed (TR may be unknown locally)",
+					zap.String("transaction_request_id", upd.TransactionRequestID),
+					zap.Error(err))
+				// Don't propagate — an unknown TR isn't a reason to requeue
+				// the message; the upstream status update is informational.
+			}
+			return nil
+		},
 	}
 
 	rootCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -118,8 +163,16 @@ func main() {
 		log.Fatal("consumer start", zap.Error(err))
 	}
 
-	// REST API server (Interface A1, A2 status + partial OBP proxy).
-	apiServer := api.NewServer(cfg, log.Named("api"), platformClient, cardanoWriter, ob)
+	// Brief pause so the RabbitMQ consumer's first connect attempt either
+	// succeeds or fails before we print the preflight summary — otherwise
+	// it'd always show "disconnected (retrying)" purely from a race.
+	time.Sleep(2 * time.Second)
+	printPreflightStatus(os.Stderr, cfg, consumer.Connected)
+
+	// REST API server (Interface A1, A2 status + partial OBP proxy). The
+	// consumer's Connected method is passed in so /health can report the live
+	// RabbitMQ state instead of a hardcoded "connected".
+	apiServer := api.NewServer(cfg, log.Named("api"), platformClient, cardanoWriter, ob, consumer.Connected)
 	httpSrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.OBPBankNode.Port),
 		Handler:           apiServer.Router(),

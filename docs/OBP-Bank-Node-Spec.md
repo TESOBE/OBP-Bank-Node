@@ -486,14 +486,28 @@ The OBP Bank Node authenticates to the OBP API using OAuth2 credentials provisio
 
 ## 5. Interface C — Inbound from OBP API (RabbitMQ)
 
-The OBP Bank Node listens on a bank-specific RabbitMQ queue provisioned by the OBP API. The following message types are received:
+Wire pattern follows OBP-API's existing RabbitMQ connector (see `obp-api/.../rabbitmq/RabbitMQUtils.scala`):
 
-| Message Type | Description | OBP Bank Node Action |
+- **Queue**: shared OBP RPC request queue, default `obp_rpc_queue` (configurable; matches OBP-API's `rabbitmq_connector.request_queue` property).
+- **Pattern**: request/reply RPC. OBP-API publishes a request with AMQP properties `MessageId` (operation name), `CorrelationId` (UUID), and `ReplyTo` (per-request reply queue). The OBP Bank Node dispatches on `MessageId`, processes, and publishes a JSON inbound envelope back to `ReplyTo` with the same `CorrelationId`.
+- **Reply envelope**:
+  ```json
+  {
+    "inboundAdapterCallContext": { "correlationId": "..." },
+    "status": { "errorCode": "", "backendMessages": [] },
+    "data": { ... }
+  }
+  ```
+  On handler error, `status.errorCode` carries the failure reason. On unknown `MessageId`, `errorCode` is `OBP-BANK-NODE-NOT-IMPLEMENTED`.
+
+The following message types (AMQP `MessageId` values) are recognised:
+
+| MessageId | Description | OBP Bank Node Action |
 |---|---|---|
-| `obp.credit.notification` | OBP API instructs bank to credit a customer | Call Interface A2 webhook |
-| `obp.netting.snapshot` | New netting snapshot published | Write to local log; used for Cardano record reconciliation |
-| `obp.settlement.instruction` | OBP API instructs settlement via ADA transfer | Initiate Cardano ADA transfer |
-| `obp.status.update` | Transaction Request status changed | Log; available via OBP Bank Node status query endpoint |
+| `obp_credit_notification` | OBP API instructs bank to credit a customer | Call Interface A2 webhook |
+| `obp_netting_snapshot` | New netting snapshot published | Write to local log; used for Cardano record reconciliation |
+| `obp_settlement_instruction` | OBP API instructs settlement | Initiate settlement via the indicated system (Cardano / CHAPS / NIBSS / …) |
+| `obp_status_update` | Transaction Request status changed | Update local status record; visible via the south-side status query endpoint |
 
 ---
 
@@ -528,19 +542,22 @@ bank:
   view_id: "owner"
 
 obp_api:
-  base_url: "https://apisandbox.openbankproject.com"
+  base_url: "http://localhost:8080"
   oauth2_consumer_key: "provided-at-registration"
   oauth2_consumer_secret: "provided-at-registration"
   oauth2_access_token: "provided-at-registration"
   oauth2_token_secret: "provided-at-registration"
 
 rabbitmq:
-  host: "rmq.openbankproject.com"
+  # Defaults match the rabbitmq:3-management Docker image:
+  #   AMQP        amqp://guest:guest@localhost:5672/
+  #   Management  http://localhost:15672  (guest / guest)
+  host: "localhost"
   port: 5672
-  username: "provided-at-registration"
-  password: "provided-at-registration"
-  virtual_host: "/obp"
-  inbound_queue: "obp.{bank_id}.inbound"
+  username: "guest"
+  password: "guest"
+  virtual_host: "/"
+  request_queue: "obp_rpc_queue"
 
 cardano:
   wallet_address: "addr1q..."

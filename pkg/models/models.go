@@ -148,6 +148,39 @@ type ExceptionRecord struct {
 	Timestamp            time.Time `json:"timestamp"`
 }
 
+// NettingSnapshot — the body of an `obp.netting.snapshot` message on
+// Interface C. Published by the OBP API when a netting cycle closes.
+type NettingSnapshot struct {
+	NettingSnapshotID string    `json:"netting_snapshot_id"`
+	NettingBlockchain string    `json:"netting_blockchain"`
+	Currencies        []string  `json:"currencies,omitempty"`
+	PublishedAt       time.Time `json:"published_at"`
+}
+
+// SettlementInstruction — the body of an `obp.settlement.instruction`
+// message on Interface C. Tells the bank to settle a netting snapshot via
+// a particular settlement system (Cardano, CHAPS, NIBSS, …).
+//
+// Value carries the currency-and-amount in whatever the settlement system
+// uses — `"ADA"` for Cardano bearer settlement, an ISO 4217 code for fiat
+// rails like CHAPS or NIBSS. DestinationAddress is whatever the settlement
+// system needs to identify the receiver (Cardano wallet address, SWIFT BIC,
+// NIBSS bank code, etc.).
+type SettlementInstruction struct {
+	NettingSnapshotID  string    `json:"netting_snapshot_id"`
+	SettlementSystem   string    `json:"settlement_system"`
+	Value              Value     `json:"value"`
+	DestinationAddress string    `json:"destination_address,omitempty"`
+	InstructedAt       time.Time `json:"instructed_at"`
+}
+
+// StatusUpdate — the body of an `obp.status.update` message on Interface C.
+type StatusUpdate struct {
+	TransactionRequestID string    `json:"transaction_request_id"`
+	Status               string    `json:"status"`
+	UpdatedAt            time.Time `json:"updated_at"`
+}
+
 // APIError is the canonical error body returned by the south-side REST surface.
 // Codes prefixed `OBP-` mirror OBP's own error codes; codes prefixed `OBP Bank Node-` are
 // OBP Bank Node-specific (Section 3.2 error table).

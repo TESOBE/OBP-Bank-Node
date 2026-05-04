@@ -11,19 +11,22 @@ bank:
   view_id: "owner"
 
 obp_api:
-  base_url: "https://apisandbox.openbankproject.com"
+  base_url: "http://localhost:8080"
   oauth2_consumer_key: "provided-at-registration"
   oauth2_consumer_secret: "provided-at-registration"
   oauth2_access_token: "provided-at-registration"
   oauth2_token_secret: "provided-at-registration"
 
 rabbitmq:
-  host: "rmq.openbankproject.com"
+  # Defaults match the rabbitmq:3-management Docker image:
+  #   AMQP        amqp://guest:guest@localhost:5672/
+  #   Management  http://localhost:15672  (guest / guest)
+  host: "localhost"
   port: 5672
-  username: "provided-at-registration"
-  password: "provided-at-registration"
-  virtual_host: "/obp"
-  inbound_queue: "obp.ke.01.kcs.inbound"
+  username: "guest"
+  password: "guest"
+  virtual_host: "/"
+  request_queue: "obp_rpc_queue"
 
 cardano:
   wallet_address: "addr1q..."
