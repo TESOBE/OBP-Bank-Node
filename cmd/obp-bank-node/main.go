@@ -163,6 +163,13 @@ func main() {
 		log.Fatal("consumer start", zap.Error(err))
 	}
 
+	// If the chosen delivery mode acks asynchronously (currently: database),
+	// run a poll loop that picks up rows the CBS has marked PROCESSED and
+	// forwards each to the outbox so MarkCreditDelivered records the ack.
+	if poller, ok := deliverer.(delivery.Poller); ok {
+		go runDeliveryPollLoop(rootCtx, poller, ob, log.Named("delivery.poll"))
+	}
+
 	// Brief pause so the RabbitMQ consumer's first connect attempt either
 	// succeeds or fails before we print the preflight summary — otherwise
 	// it'd always show "disconnected (retrying)" purely from a race.
@@ -193,5 +200,44 @@ func main() {
 	_ = httpSrv.Shutdown(shutdownCtx)
 	_ = promSrv.Shutdown(shutdownCtx)
 	_ = consumer.Close()
+	if closer, ok := deliverer.(interface{ Close() error }); ok {
+		_ = closer.Close()
+	}
 	log.Info("stopped")
+}
+
+// runDeliveryPollLoop ticks every 5 seconds, asks the deliverer for processed
+// credits, and marks each one delivered in the local outbox. Idempotent on
+// transactionRequestID, so re-seeing the same row is harmless.
+func runDeliveryPollLoop(ctx context.Context, p delivery.Poller, ob *outbox.Outbox, log *zap.Logger) {
+	const interval = 5 * time.Second
+	t := time.NewTicker(interval)
+	defer t.Stop()
+
+	log.Info("delivery poll loop started", zap.Duration("interval", interval))
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info("delivery poll loop stopped")
+			return
+		case <-t.C:
+			processed, err := p.Poll(ctx)
+			if err != nil {
+				log.Warn("poll failed", zap.Error(err))
+				continue
+			}
+			if len(processed) == 0 {
+				continue
+			}
+			log.Info("CBS-processed credits picked up; marking delivered in outbox",
+				zap.Int("count", len(processed)))
+			for _, pc := range processed {
+				if err := ob.MarkCreditDelivered(ctx, pc.TransactionRequestID, pc.CBSReference); err != nil {
+					log.Warn("MarkCreditDelivered failed",
+						zap.String("transaction_request_id", pc.TransactionRequestID),
+						zap.Error(err))
+				}
+			}
+		}
+	}
 }

@@ -27,6 +27,25 @@ type Delivery interface {
 	Name() string
 }
 
+// Poller is implemented by delivery modes where the CBS acknowledges credits
+// asynchronously via a side channel rather than in the Deliver response.
+// Currently only the database mode (the CBS polls a staging table and writes
+// PROCESSED + cbs_reference back into the row).
+//
+// main.go runs a background loop calling Poll on whichever deliverer
+// implements this; each returned ProcessedCredit is forwarded to the outbox
+// so the local record reflects the CBS-side ack.
+type Poller interface {
+	Poll(ctx context.Context) ([]ProcessedCredit, error)
+}
+
+// ProcessedCredit is what Poller returns: a credit the CBS has finished
+// processing and is ready for the OBP Bank Node to mark delivered.
+type ProcessedCredit struct {
+	TransactionRequestID string
+	CBSReference         string
+}
+
 // NewFromConfig picks the right implementation for the configured mode.
 func NewFromConfig(cfg *config.CBSDelivery, secret string, log *zap.Logger) (Delivery, error) {
 	switch cfg.Mode {
