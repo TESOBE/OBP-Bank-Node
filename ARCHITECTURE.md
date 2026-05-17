@@ -117,7 +117,7 @@ blockchain:
   type: cardano   # cardano | ethereum | bitcoin | mock
   cardano:
     ogmios_url: "ws://localhost:1337"
-    network: "preview"
+    network: "preprod"
     wallet_signing_key_path: "./secrets/cardano.skey"
     wallet_address: "addr_test1q..."
 ```
@@ -135,9 +135,24 @@ blockchain:
 ## Cardano backend
 
 The `CardanoConnector` impl talks to a **real `cardano-node`** running on the
-**preview testnet**, with **Ogmios** in front of it for JSON-RPC over
-WebSocket. Cardano-node is bootstrapped from a **Mithril snapshot** to skip
-multi-hour initial sync (~30 min via snapshot vs 4–12 h from genesis).
+**preprod testnet**, with **Ogmios** in front of it for JSON-RPC over
+WebSocket. Cardano-node syncs from genesis (one-time, ~2–4 h on preprod),
+then resumes in seconds on every restart.
+
+Preprod (not preview) was chosen because preview's Mithril aggregator
+(`pre-release-preview`) requires pre-release client builds that aren't
+published with per-version Docker tags — only `latest` (released) and
+`unstable` (developer-only) tags exist on GHCR. Preprod uses released
+tooling, mirrors mainnet config, and is the recommended staging environment
+for anything heading to mainnet. The only material difference vs preview is
+block time (~20s instead of ~2s), which doesn't affect OBP Bank Node's
+metadata-only transaction flow.
+
+Mithril (the fast-bootstrap snapshot protocol) was attempted but ran into
+client/aggregator version skew that the published Docker tags didn't cover.
+Genesis sync is the reliable path for now. Mithril can be revisited later
+when versioning is pinned to a known-good pair; the wrestling isn't worth it
+for a one-time-per-developer cost.
 
 ```
 Bank Node (Rust)
@@ -146,7 +161,7 @@ Bank Node (Rust)
 Ogmios
    │ Unix socket / Ouroboros mini-protocols
    ▼
-cardano-node (preview testnet)
+cardano-node (preprod testnet)
 ```
 
 Promise / Settlement / Exception records are written as **metadata-only

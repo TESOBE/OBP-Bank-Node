@@ -1,9 +1,9 @@
-# Integrating Your Bank with Prime.
+# Integrating Your Bank with Open Corridor.
 
 # The OBP Bank Node
 
 Everything your bank's Core Banking System (CBS) needs to do to send and
-receive (cross-border) payments through the Prime network. The Bank Node
+receive (cross-border) payments through the Open Corridor network. The Bank Node
 is a single binary you run inside your own network. Your CBS only ever talks to
 it over `local-node`.
 
@@ -15,14 +15,19 @@ it over `local-node`.
            ↕   the Bank Node calls you back for inbound credits)
      OBP Bank Node
        ↕   ↕   ↕
-    OBP API  RabbitMQ  Cardano        ← all configured for you
+    OBP API  RabbitMQ  Cardano
 ```
 
-Three things on your side:
+OBP API and RabbitMQ credentials are provisioned by TESOBE at registration.
+The Cardano node is yours to operate — either co-located with the Bank Node
+or via a managed provider (Demeter.run, etc.).
+
+Four things on your side:
 
 1. **Call** one REST endpoint when a customer initiates a cross-border payment.
 2. **Receive** credit notifications via a webhook your CBS exposes.
-3. **Fill in** one YAML config file.
+3. **Operate** a Cardano node (or use a managed provider like Demeter.run).
+4. **Fill in** one YAML config file.
 
 ---
 
@@ -193,10 +198,6 @@ rabbitmq:
   password:      "..."
   virtual_host:  "/bank.ke.01.kcs"
   request_queue: "obp_rpc_queue"
-
-cardano:
-  network:            "preview"
-  blockfrost_api_key: "..."
 ```
 
 ### You provide
@@ -206,9 +207,14 @@ obp_bank_node:
   port:          8088
   local_secret:  "<rotate on first run; this is the Bearer your CBS sends>"
 
-cardano:
-  wallet_address:    "addr1q..."                # your Cardano wallet
-  signing_key_path:  "./secrets/cardano.skey"   # never leaves your host
+blockchain:
+  type: "cardano"
+  cardano:
+    network:              "preprod"                  # TESOBE tells you: preprod (staging) or mainnet (production)
+    ogmios_url:           "ws://localhost:1337"      # Ogmios in front of your cardano-node
+    wallet_address_path:  "./secrets/cardano.addr"
+    wallet_vkey_path:     "./secrets/cardano.vkey"
+    wallet_skey_path:     "./secrets/cardano.skey"   # never leaves your host
 
 cbs_delivery:
   mode: "webhook_obp"

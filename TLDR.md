@@ -19,7 +19,7 @@ The bank only deals with one thing locally: a REST endpoint on `localhost`. Ever
 - **A — South** (bank ↔ node): a localhost REST endpoint shaped exactly like an OBP Transaction Request, plus an outgoing webhook (or DB write, or file drop) for inbound credits.
 - **B — North outbound** (node → OBP API): submits the payment as an OBP Transaction Request via OAuth2.
 - **C — North inbound** (OBP API → node): RabbitMQ consumer for credit notifications, netting snapshots, settlement instructions, status updates.
-- **D — Blockchain** (node ↔ Cardano): writes Promise records, settlement references, and exception markers via Blockfrost.
+- **D — Blockchain** (node ↔ Cardano): writes Promise records, settlement references, and exception markers to a local `cardano-node` via Ogmios (JSON-RPC over WebSocket).
 
 ## The two flows
 

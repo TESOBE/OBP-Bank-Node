@@ -38,8 +38,9 @@ Read in this order if returning cold:
 5. **`PROVISIONING_API.md`** — concrete changes inside OBP-API to implement
    `CERT_TODO.md`. The *where* for provisioning, with file references and
    ordering. Companion to `CERT_TODO.md`, same shape as `OBP_API_CHANGES.md`.
-6. **`NEXT_TODO.md`** — Cardano writer implementation (Blockfrost on preview
-   testnet via `cardano-cli` subprocess for v0.1).
+6. **`NEXT_TODO.md`** — Cardano writer status: Phase 1 done (Ogmios client +
+   wallet loading + `confirm()`); Phase 2 (tx build/sign/submit via `pallas`)
+   outstanding.
 
 ## Decisions committed (don't re-open without reason)
 
@@ -104,9 +105,11 @@ In rough order of how big a commitment each is:
   can be implemented against a concrete target.
 
 **Medium / incremental Bank Node work:**
-- Wire `cardano-cli` subprocess for real Promise writes against Cardano
-  preview testnet (per `NEXT_TODO.md`). Needs Blockfrost preview project key
-  + tADA wallet.
+- Phase 2 of the Rust `CardanoConnector`: build, sign, and submit
+  metadata-only transactions for Promise / Settlement Reference / Exception
+  records via `pallas` against the local preprod node (already syncing in
+  Docker — see `docker/README.md`). Funded preprod wallet already on disk
+  (1000 tADA).
 - Add TLS support to the RabbitMQ consumer (config block + `amqps://` dial
   path) so we can later test against an mTLS-enabled broker.
 - Add an outbox replay loop on the Bank Node side (Section 11 resilience —

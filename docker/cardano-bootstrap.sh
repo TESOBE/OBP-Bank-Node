@@ -1,23 +1,21 @@
 #!/usr/bin/env bash
 #
-# Bring up the local Cardano stack (cardano-node + Ogmios) for OBP Bank Node
-# development, bootstrapping from a Mithril snapshot.
-#
-# First run: ~30 min (Mithril snapshot download + node replay).
-# Subsequent runs: seconds (snapshot already on disk, node resumes).
+# Manage the local Cardano stack (cardano-node + Ogmios) for OBP Bank Node
+# development. Network: PREPROD. Sync: from genesis (2-4 h on first run,
+# resumes in seconds on every restart afterwards).
 #
 # Usage:
-#   ./docker/cardano-bootstrap.sh            # start the stack
-#   ./docker/cardano-bootstrap.sh down       # stop and keep the chain DB
-#   ./docker/cardano-bootstrap.sh nuke       # stop and DELETE the chain DB
-#                                            #   (forces a full re-bootstrap)
+#   ./docker/cardano-bootstrap.sh up       # start the stack and return
+#   ./docker/cardano-bootstrap.sh status   # show sync progress
+#   ./docker/cardano-bootstrap.sh logs     # tail cardano-node-ogmios logs
+#   ./docker/cardano-bootstrap.sh down     # stop, keep chain DB
+#   ./docker/cardano-bootstrap.sh nuke     # stop and DELETE chain DB
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.cardano.yml"
 OGMIOS_HEALTH_URL="http://localhost:1337/health"
-WAIT_TIMEOUT_SECS=2400  # 40 min — covers Mithril download + node replay
 
 require() {
   command -v "$1" >/dev/null 2>&1 || { echo "ERROR: '$1' is required but not installed." >&2; exit 1; }
@@ -31,36 +29,47 @@ cmd="${1:-up}"
 
 case "$cmd" in
   up)
-    echo "==> Starting Cardano stack (preview testnet)"
+    echo "==> Starting Cardano stack (preprod testnet)"
     docker compose -f "$COMPOSE_FILE" up -d
-
-    echo "==> Streaming Mithril bootstrap progress (Ctrl-C is safe — stack stays up)"
-    docker compose -f "$COMPOSE_FILE" logs -f mithril-bootstrap &
-    LOGS_PID=$!
-
-    echo "==> Waiting for Ogmios health endpoint (timeout: ${WAIT_TIMEOUT_SECS}s)"
-    deadline=$(( $(date +%s) + WAIT_TIMEOUT_SECS ))
-    until curl -fsS "$OGMIOS_HEALTH_URL" >/dev/null 2>&1; do
-      if [ "$(date +%s)" -gt "$deadline" ]; then
-        echo "ERROR: Ogmios did not become healthy within ${WAIT_TIMEOUT_SECS}s." >&2
-        echo "Check logs: docker compose -f $COMPOSE_FILE logs cardano-node-ogmios" >&2
-        kill "$LOGS_PID" 2>/dev/null || true
-        exit 1
-      fi
-      sleep 5
-    done
-
-    kill "$LOGS_PID" 2>/dev/null || true
     echo
-    echo "==> READY"
-    echo "    Ogmios WebSocket: ws://localhost:1337"
-    echo "    Ogmios HTTP:      $OGMIOS_HEALTH_URL"
+    echo "==> Stack is running in the background."
+    echo "    Initial sync from genesis takes ~2-4 hours."
     echo
-    echo "    Verify chain tip:"
-    echo '      curl -sS http://localhost:1337/health | jq .'
+    echo "    Check progress:"
+    echo "      $0 status"
     echo
-    echo "    Stop stack:"
+    echo "    Tail logs:"
+    echo "      $0 logs"
+    echo
+    echo "    Stop:"
     echo "      $0 down"
+    ;;
+
+  status)
+    if ! docker compose -f "$COMPOSE_FILE" ps --quiet cardano-node-ogmios | grep -q .; then
+      echo "Stack is not running. Start with: $0 up"
+      exit 1
+    fi
+    echo "==> Container state"
+    docker compose -f "$COMPOSE_FILE" ps
+    echo
+    echo "==> Ogmios health"
+    if response=$(curl -fsS "$OGMIOS_HEALTH_URL" 2>/dev/null); then
+      echo "$response" | python3 -m json.tool 2>/dev/null || echo "$response"
+      # Try to extract networkSynchronization for a clear summary line
+      sync=$(echo "$response" | grep -oE '"networkSynchronization":[[:space:]]*[0-9.]+' | grep -oE '[0-9.]+$' || true)
+      if [ -n "$sync" ]; then
+        echo
+        printf "==> Network sync: %.2f%%\n" "$(echo "$sync * 100" | bc -l 2>/dev/null || echo "$sync")"
+      fi
+    else
+      echo "Ogmios not yet reachable on $OGMIOS_HEALTH_URL"
+      echo "(cardano-node may still be starting up — check logs)"
+    fi
+    ;;
+
+  logs)
+    docker compose -f "$COMPOSE_FILE" logs -f --tail=100 cardano-node-ogmios
     ;;
 
   down)
@@ -70,7 +79,7 @@ case "$cmd" in
 
   nuke)
     echo "==> Stopping stack AND deleting chain DB volume"
-    read -r -p "    Are you sure? Next 'up' will re-download the Mithril snapshot (~30 min). [y/N] " ans
+    read -r -p "    Are you sure? Next 'up' will re-sync from genesis (~2-4 h). [y/N] " ans
     case "$ans" in
       y|Y|yes|YES)
         docker compose -f "$COMPOSE_FILE" down -v
@@ -84,7 +93,7 @@ case "$cmd" in
     ;;
 
   *)
-    echo "Usage: $0 [up|down|nuke]" >&2
+    echo "Usage: $0 [up|status|logs|down|nuke]" >&2
     exit 2
     ;;
 esac

@@ -23,7 +23,7 @@ Bank                                       OBP-API
      "requested_validity_days": 365,       • Map cert CN to broker permissions
      "intended_use": ["rabbitmq",          • Persist cert metadata (no private key)
                       "obp_api",           • Bundle config response
-                      "blockfrost"]
+                      "cardano_provider"]
    }
 4. ←  {                                  
         "bank_certificate": "-----BEGIN CERT-----…",
@@ -89,8 +89,8 @@ Response:
       "auth":     "mtls"
     },
     "cardano": {
-      "blockfrost_base_url": "https://cardano-preview.blockfrost.io/api/v0",
-      "auth":                "mtls"
+      "ogmios_url": "wss://cardano-preprod.example.com:1337",
+      "auth":       "mtls"
     }
   }
 }

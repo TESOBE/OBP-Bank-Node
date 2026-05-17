@@ -28,11 +28,14 @@ rabbitmq:
   virtual_host: "/"
   request_queue: "obp_rpc_queue"
 
-cardano:
-  wallet_address: "addr1q..."
-  signing_key_path: "/secrets/cardano.skey"
-  network: "mainnet"
-  blockfrost_api_key: "provided-at-registration"
+blockchain:
+  type: "cardano"                          # mock | cardano
+  cardano:
+    ogmios_url: "ws://localhost:1337"
+    network: "preprod"                     # preprod | preview | mainnet
+    wallet_address_path: "/secrets/cardano.addr"
+    wallet_vkey_path: "/secrets/cardano.vkey"
+    wallet_skey_path: "/secrets/cardano.skey"
 
 cbs_delivery:
   mode: "webhook_obp"     # webhook_obp | webhook_iso20022 | database | file

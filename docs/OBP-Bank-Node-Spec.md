@@ -51,11 +51,15 @@ The OBP Bank Node-specific message types layered on top of that envelope are:
 
 | Interface | Direction | Protocol | Purpose |
 |---|---|---|---|
-| A — South | Bank CBS → OBP Bank Node | REST (HTTP) | Bank initiates outbound payment |
-| A — South | OBP Bank Node → Bank CBS | REST (HTTP webhook) | OBP Bank Node notifies bank to credit customer |
-| B — North outbound | OBP Bank Node → OBP API | OBP REST API | Submit Transaction Request to OBP API |
-| C — North inbound | OBP API → OBP Bank Node | RabbitMQ | Receive instructions from OBP API |
-| D — Blockchain | OBP Bank Node ↔ Cardano | Cardano node/API | Write/read Promise and Settlement records |
+| **A1** — South inbound | Bank CBS → OBP Bank Node | REST / JSON (localhost) | Bank initiates outbound payment, queries status |
+| **A2** — South outbound | OBP Bank Node → Bank CBS | webhook / Postgres write / file drop | OBP Bank Node notifies bank to credit customer |
+| **B** — North outbound | OBP Bank Node → OBP API | HTTPS + OAuth2 | Submit Transaction Request to OBP API, fetch counterparty state |
+| **C** — North inbound | OBP API → OBP Bank Node | AMQP (RabbitMQ) over TLS | Receive credit notifications, netting snapshots, settlement instructions, status updates |
+| **D** — Blockchain | OBP Bank Node ↔ Cardano | JSON-RPC (Ogmios) over WebSocket | Write Promise / Settlement Reference / Exception records, read chain state |
+
+See [`../INTERFACES.md`](../INTERFACES.md) for the canonical table with the
+additional `Action` (Bank Node POV), `Trigger`, and `What flows` columns.
+Per-interface detail follows in sections 3–6.
 
 ### 2.2 Deployment
 
@@ -63,7 +67,7 @@ The OBP Bank Node is delivered as a Docker image. The bank runs it as a containe
 
 - OBP API gRPC/REST endpoints (hosted by TESOBE)
 - RabbitMQ broker (hosted by TESOBE, credentials provisioned at registration)
-- Cardano node or Blockfrost API endpoint
+- Cardano node (operated locally by the bank, or via a managed provider)
 
 No inbound ports are exposed to the internet. All connections are outbound from the bank's network.
 
@@ -456,7 +460,7 @@ The OBP Bank Node implements a subset of the OBP API. Banks call these endpoints
 
 ### Version Support
 
-The OBP Bank Node responds to both `/obp-bank-node/v5.1.0/` and `/obp-bank-node/v5.0.0/` prefixes on all implemented endpoints, routing both to the same internal handler. This avoids version coupling — banks do not need to update their CBS integration when OBP releases a new minor version.
+The OBP Bank Node currently exposes a single version prefix: `/obp-bank-node/v5.1.0/`. Additional version aliases (e.g. forwards-compatibility for a future `v5.2.0`, or backwards-compatibility to `v5.0.0`) can be added by routing the extra prefixes to the same internal handlers when a deployment requires it. Pre-emptive multi-version routing was rejected as route duplication without users.
 
 ### Non-Implemented Endpoints
 
@@ -562,8 +566,8 @@ rabbitmq:
 cardano:
   wallet_address: "addr1q..."
   signing_key_path: "/secrets/cardano.skey"
-  network: "mainnet"
-  blockfrost_api_key: "provided-at-registration"
+  network: "preprod"
+  ogmios_url: "ws://localhost:1337"
 
 cbs_delivery:
   # Choose mode: webhook_obp | webhook_iso20022 | database | file
@@ -694,7 +698,7 @@ Contact TESOBE to register your bank on the OBP API network. You will receive:
 
 - OBP OAuth2 credentials for the OBP API
 - RabbitMQ connection credentials
-- Cardano Blockfrost API key
+- Ogmios URL of the bank's `cardano-node` (or managed provider)
 - Your bank's OBP API `bank_id`
 - A pre-populated `obp-bank-node-config.yaml`
 
@@ -905,7 +909,7 @@ The OBP Bank Node makes outbound connections only. Your firewall needs to allow 
 |---|---|---|
 | `api.openbankproject.com` | 443 | OBP API REST API |
 | `rmq.openbankproject.com` | 5672 | RabbitMQ (or 5671 for TLS) |
-| Cardano Blockfrost endpoint | 443 | Blockchain record writing |
+| Cardano node / managed provider (Ogmios) | 1337 (or 443 if managed/TLS) | Blockchain record writing |
 
 No inbound ports need to be opened to the internet. The OBP Bank Node does not expose any public endpoint.
 
@@ -1093,7 +1097,7 @@ The OBP Bank Node is implemented in Go. Key reasons:
 | REST API server | `github.com/go-chi/chi` | Lightweight, idiomatic router |
 | HTTP client (OBP) | `net/http` stdlib | Standard library sufficient |
 | SQLite outbox | `github.com/mattn/go-sqlite3` | Mature, CGO-based; or `modernc.org/sqlite` for pure Go |
-| Cardano / Blockfrost | `net/http` stdlib | Blockfrost is REST — no SDK needed |
+| Cardano / Ogmios | `tokio-tungstenite` (Rust) | JSON-RPC over WebSocket to local cardano-node |
 | Configuration | `github.com/spf13/viper` | YAML config with env var override |
 | Logging | `go.uber.org/zap` | Structured logging with correlation IDs |
 | Metrics | `github.com/prometheus/client_golang` | Prometheus metrics |
@@ -1121,7 +1125,7 @@ obp-bank-node/
 │   ├── platform/
 │   │   └── client.go            # OBP REST API client (outbound to OBP API)
 │   ├── cardano/
-│   │   └── blockfrost.go        # Cardano record writing via Blockfrost
+│   │   └── ogmios.rs            # Cardano record writing via Ogmios JSON-RPC
 │   ├── delivery/
 │   │   ├── delivery.go          # Delivery interface
 │   │   ├── webhook_obp.go       # Mode 1: REST webhook OBP format

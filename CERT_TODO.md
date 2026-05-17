@@ -8,7 +8,7 @@ Migrate per-bank authentication from username/password to **X.509 client certifi
 - TESOBE only signs CSRs — no secret material to transmit, no delivery-window risk.
 - Hardware-backed keys (HSM / PKCS#11) are a drop-in if the bank wants them.
 - Cert revocation (CRL / short-lived certs) gives a cleaner rotation story than password rotation.
-- One cert can authenticate every interface the bank touches (RabbitMQ, OBP API, Blockfrost replacement, admin UIs).
+- One cert can authenticate every interface the bank touches (RabbitMQ, OBP API, managed Cardano-node provider, admin UIs).
 
 ## Self-service flow
 
@@ -92,7 +92,7 @@ The same cert can secure every interface the bank touches:
 
 - mTLS to RabbitMQ (Interface C)
 - mTLS to OBP API (Interface B) — replaces OAuth2 entirely
-- mTLS to a Cardano-as-a-service Blockfrost equivalent
+- mTLS to a managed Cardano node provider (e.g. Demeter.run)
 - mTLS to admin / observability dashboards
 
 One credential to issue, rotate, revoke.

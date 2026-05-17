@@ -261,8 +261,9 @@ All four new outbound messages plus the modified `obp_create_transaction_request
 - `open_corridor_bank_broker.{bank_id}.host`, `.port`, `.vhost`, `.username`, `.password` per
   bank — or move this to a DB table during onboarding. **DB table is more
   self-service-friendly.**
-- Settlement-system credentials per currency (Cardano: Blockfrost API key + node URL;
-  CHAPS: rail creds; etc.) — DB table again, since they're bank-keyed
+- Settlement-system credentials per currency (Cardano: Ogmios URL of the
+  bank's cardano-node or managed provider; CHAPS: rail creds; etc.) — DB
+  table again, since they're bank-keyed
 - Default cycle policy seed on first run (admin-overridable later)
 
 ## 12. Tests
