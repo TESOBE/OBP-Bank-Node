@@ -16,6 +16,8 @@ fn router() -> axum::Router {
     let state = BankNodeState {
         connector: Arc::new(MockConnector::new()),
         blockchain_label: "mock",
+        bank_id: "test.bank.id".into(),
+        account_id: "test-account-id".into(),
     };
     build_router(state)
 }
@@ -63,7 +65,7 @@ async fn versioned_health_endpoint_responds() {
 }
 
 #[tokio::test]
-async fn initiate_payment_returns_202_with_uuid_and_echoes_value() {
+async fn initiate_payment_returns_202_with_uuid_and_state_identity() {
     let payload = serde_json::json!({
         "value": { "currency": "KES", "amount": "50000.00" },
         "description": "Invoice payment INV-2026-0042",
@@ -79,10 +81,7 @@ async fn initiate_payment_returns_202_with_uuid_and_echoes_value() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri(
-                    "/obp-bank-node/v5.1.0/banks/gh.29.uk/accounts/8ca8a7e4/views/owner\
-                     /transaction-request-types/SIMPLE/transaction-requests",
-                )
+                .uri("/obp-bank-node/v5.1.0/transaction-requests")
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&payload).unwrap()))
                 .unwrap(),
@@ -93,8 +92,9 @@ async fn initiate_payment_returns_202_with_uuid_and_echoes_value() {
     let v: serde_json::Value = serde_json::from_slice(&body_bytes(resp).await).unwrap();
     assert_eq!(v["status"], "INITIATED");
     assert_eq!(v["type"], "COUNTERPARTY");
-    assert_eq!(v["from"]["bank_id"], "gh.29.uk");
-    assert_eq!(v["from"]["account_id"], "8ca8a7e4");
+    // `from` comes from state (bank identity), not from the URL.
+    assert_eq!(v["from"]["bank_id"], "test.bank.id");
+    assert_eq!(v["from"]["account_id"], "test-account-id");
     assert_eq!(v["value"]["currency"], "KES");
     assert_eq!(v["value"]["amount"], "50000.00");
     assert!(v["transaction_request_id"].as_str().unwrap().len() > 0);
@@ -108,10 +108,7 @@ async fn get_transaction_request_returns_stub_status() {
         .oneshot(
             Request::builder()
                 .method(Method::GET)
-                .uri(
-                    "/obp-bank-node/v5.1.0/banks/gh.29.uk/accounts/8ca8a7e4/views/owner\
-                     /transaction-requests/abc-123",
-                )
+                .uri("/obp-bank-node/v5.1.0/transaction-requests/abc-123")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -129,10 +126,7 @@ async fn list_transaction_requests_returns_empty_array() {
         .oneshot(
             Request::builder()
                 .method(Method::GET)
-                .uri(
-                    "/obp-bank-node/v5.1.0/banks/gh.29.uk/accounts/8ca8a7e4/views/owner\
-                     /transaction-requests",
-                )
+                .uri("/obp-bank-node/v5.1.0/transaction-requests")
                 .body(Body::empty())
                 .unwrap(),
         )

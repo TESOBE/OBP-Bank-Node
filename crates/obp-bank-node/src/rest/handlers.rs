@@ -15,49 +15,20 @@ use axum::{
     Json,
 };
 use chrono::Utc;
-use serde::Deserialize;
 use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::types::*;
 use super::BankNodeState;
 
-#[derive(Debug, Deserialize)]
-pub struct InitiatePath {
-    pub bank_id: String,
-    pub account_id: String,
-    pub view_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct StatusPath {
-    pub bank_id: String,
-    #[allow(dead_code)]
-    pub account_id: String,
-    #[allow(dead_code)]
-    pub view_id: String,
-    pub transaction_request_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ListPath {
-    pub bank_id: String,
-    #[allow(dead_code)]
-    pub account_id: String,
-    #[allow(dead_code)]
-    pub view_id: String,
-}
-
 pub async fn initiate_payment(
-    State(_state): State<BankNodeState>,
-    Path(p): Path<InitiatePath>,
+    State(state): State<BankNodeState>,
     Json(req): Json<InitiateRequest>,
 ) -> Response {
     let id = Uuid::new_v4().to_string();
     info!(
-        bank_id = %p.bank_id,
-        account_id = %p.account_id,
-        view_id = %p.view_id,
+        bank_id = %state.bank_id,
+        account_id = %state.account_id,
         transaction_request_id = %id,
         currency = %req.value.currency,
         amount = %req.value.amount,
@@ -69,8 +40,8 @@ pub async fn initiate_payment(
         transaction_request_id: id,
         kind: "COUNTERPARTY",
         from: FromAccount {
-            bank_id: p.bank_id,
-            account_id: p.account_id,
+            bank_id: state.bank_id.clone(),
+            account_id: state.account_id.clone(),
         },
         to: ToCounterparty {
             // Real counterparty resolution lands with the OBP API client.
@@ -89,15 +60,14 @@ pub async fn initiate_payment(
 
 pub async fn get_transaction_request(
     State(_state): State<BankNodeState>,
-    Path(p): Path<StatusPath>,
+    Path(transaction_request_id): Path<String>,
 ) -> Response {
     warn!(
-        transaction_request_id = %p.transaction_request_id,
-        bank_id = %p.bank_id,
+        transaction_request_id = %transaction_request_id,
         "get_transaction_request (Phase 1 stub — returns INITIATED for any id)"
     );
     let body = TransactionRequestStatus {
-        transaction_request_id: p.transaction_request_id,
+        transaction_request_id,
         status: "INITIATED".into(),
         promise_id: None,
         promise_blockchain: None,
@@ -111,12 +81,9 @@ pub async fn get_transaction_request(
     Json(body).into_response()
 }
 
-pub async fn list_transaction_requests(
-    State(_state): State<BankNodeState>,
-    Path(p): Path<ListPath>,
-) -> Response {
+pub async fn list_transaction_requests(State(state): State<BankNodeState>) -> Response {
     warn!(
-        bank_id = %p.bank_id,
+        bank_id = %state.bank_id,
         "list_transaction_requests (Phase 1 stub — returns empty array)"
     );
     Json(Vec::<TransactionRequestStatus>::new()).into_response()

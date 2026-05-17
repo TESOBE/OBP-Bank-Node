@@ -23,7 +23,7 @@ The bank only deals with one thing locally: a REST endpoint on `localhost`. Ever
 
 ## The two flows
 
-**Outbound payment.** Customer initiates a cross-border payment. The bank's CBS POSTs to `localhost:8088/obp-bank-node/v5.1.0/banks/{bank_id}/accounts/{account_id}/views/{view_id}/transaction-request-types/SIMPLE/transaction-requests` with amount, currency, description, and inline beneficiary routing (BIC+IBAN, MOBILE_PHONE, OBP, etc.). The node:
+**Outbound payment.** Customer initiates a cross-border payment. The bank's CBS POSTs to `localhost:8088/obp-bank-node/v5.1.0/transaction-requests` with amount, currency, description, and inline beneficiary routing (BIC+IBAN, MOBILE_PHONE, OBP, etc.). The node:
 1. Persists the request to a local SQLite outbox (durability before any external call).
 2. Resolves the routing to an OBP API counterparty.
 3. Submits the Transaction Request to the OBP API.

@@ -23,6 +23,7 @@ use crate::rest::{build_router, BankNodeState};
 #[derive(Debug, Deserialize, Serialize)]
 struct Config {
     server: ServerConfig,
+    bank: BankConfig,
     blockchain: BlockchainConfig,
 }
 
@@ -32,6 +33,7 @@ impl Default for Config {
             server: ServerConfig {
                 bind: "0.0.0.0:8088".into(),
             },
+            bank: BankConfig::default(),
             blockchain: BlockchainConfig {
                 kind: BlockchainKind::Mock,
                 cardano: None,
@@ -43,6 +45,26 @@ impl Default for Config {
 #[derive(Debug, Deserialize, Serialize)]
 struct ServerConfig {
     bind: String,
+}
+
+/// The single bank this Bank Node serves. Sourced from the `bank:` block in
+/// `obp-bank-node-config.yaml`; defaults are placeholders so the binary boots
+/// without a config file.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct BankConfig {
+    bank_id: String,
+    /// Settlement account to debit. Future: support a map keyed by currency
+    /// for multi-currency settlement.
+    account_id: String,
+}
+
+impl Default for BankConfig {
+    fn default() -> Self {
+        BankConfig {
+            bank_id: "PLACEHOLDER-bank-id".into(),
+            account_id: "PLACEHOLDER-account-id".into(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -78,6 +100,8 @@ async fn main() -> anyhow::Result<()> {
 
     info!(
         bind = %config.server.bind,
+        bank_id = %config.bank.bank_id,
+        account_id = %config.bank.account_id,
         blockchain = blockchain_label,
         version = env!("CARGO_PKG_VERSION"),
         "OBP Bank Node starting"
@@ -86,6 +110,8 @@ async fn main() -> anyhow::Result<()> {
     let state = BankNodeState {
         connector,
         blockchain_label,
+        bank_id: config.bank.bank_id.clone(),
+        account_id: config.bank.account_id.clone(),
     };
     let app = build_router(state);
 

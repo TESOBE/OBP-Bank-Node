@@ -36,7 +36,7 @@ Four things on your side:
 ### Initiate a payment
 
 ```
-POST http://local-node:8088/obp-bank-node/v5.1.0/banks/{bank_id}/accounts/{account_id}/views/{view_id}/transaction-request-types/SIMPLE/transaction-requests
+POST http://local-node:8088/obp-bank-node/v5.1.0/transaction-requests
 Authorization: Bearer <local_secret>
 Content-Type: application/json
 ```
@@ -91,7 +91,7 @@ etc.).
 ### Query a payment
 
 ```
-GET  http://local-node:8088/obp-bank-node/v5.1.0/banks/{bank_id}/accounts/{account_id}/views/{view_id}/transaction-requests/{transaction_request_id}
+GET  http://local-node:8088/obp-bank-node/v5.1.0/transaction-requests/{transaction_request_id}
 Authorization: Bearer <local_secret>
 ```
 
@@ -105,7 +105,7 @@ Status values:
 ### List recent payments
 
 ```
-GET  http://local-node:8088/obp-bank-node/v5.1.0/banks/{bank_id}/accounts/{account_id}/views/{view_id}/transaction-requests
+GET  http://local-node:8088/obp-bank-node/v5.1.0/transaction-requests
 Authorization: Bearer <local_secret>
 ```
 
@@ -322,7 +322,7 @@ curl -s http://local-node:8088/health | jq
 `rabbitmq` should report `connected`. Send a test payment:
 
 ```bash
-curl -X POST http://local-node:8088/obp-bank-node/v5.1.0/banks/ke.01.kcs/accounts/<account_id>/views/owner/transaction-request-types/SIMPLE/transaction-requests \
+curl -X POST http://local-node:8088/obp-bank-node/v5.1.0/transaction-requests \
   -H "Authorization: Bearer <local_secret>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -341,7 +341,7 @@ You should get a `202` with a `transaction_request_id`. Query it back:
 
 ```bash
 curl -H "Authorization: Bearer <local_secret>" \
-  http://local-node:8088/obp-bank-node/v5.1.0/banks/ke.01.kcs/accounts/<account_id>/views/owner/transaction-requests/<transaction_request_id>
+  http://local-node:8088/obp-bank-node/v5.1.0/transaction-requests/<transaction_request_id>
 ```
 
 That's the entire bank-side surface area: one outbound REST call, one inbound

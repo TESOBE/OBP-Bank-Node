@@ -36,7 +36,7 @@ Four things on your side:
 ### Initiate a payment
 
 ```
-POST http://local-node:8088/obp-bank-node/v5.1.0/banks/{bank_id}/accounts/{account_id}/views/{view_id}/transaction-request-types/SIMPLE/transaction-requests
+POST http://local-node:8088/obp-bank-node/v5.1.0/transaction-requests
 Authorization: Bearer <local_secret>
 Content-Type: application/json
 ```
@@ -91,7 +91,7 @@ etc.).
 ### Query a payment
 
 ```
-GET  http://local-node:8088/obp-bank-node/v5.1.0/banks/{bank_id}/accounts/{account_id}/views/{view_id}/transaction-requests/{transaction_request_id}
+GET  http://local-node:8088/obp-bank-node/v5.1.0/transaction-requests/{transaction_request_id}
 Authorization: Bearer <local_secret>
 ```
 
@@ -105,7 +105,7 @@ Status values:
 ### List recent payments
 
 ```
-GET  http://local-node:8088/obp-bank-node/v5.1.0/banks/{bank_id}/accounts/{account_id}/views/{view_id}/transaction-requests
+GET  http://local-node:8088/obp-bank-node/v5.1.0/transaction-requests
 Authorization: Bearer <local_secret>
 ```
 

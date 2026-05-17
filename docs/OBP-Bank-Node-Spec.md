@@ -90,10 +90,10 @@ The "client exposes an endpoint" pattern is intentional — the OBP Bank Node ac
 #### Endpoint
 
 ```
-POST http://localhost:{OBP_BANK_NODE_PORT}/obp-bank-node/v5.1.0/banks/{BANK_ID}/accounts/{ACCOUNT_ID}/views/{VIEW_ID}/transaction-request-types/SIMPLE/transaction-requests
+POST http://localhost:{OBP_BANK_NODE_PORT}/obp-bank-node/v5.1.0/transaction-requests
 ```
 
-The path is mounted under `/obp-bank-node/v5.X.X/` rather than `/obp/v5.X.X/` to make it explicit that the bank's CBS is calling the local node, not the upstream OBP API. The request body and field semantics are identical to an OBP SIMPLE Transaction Request — banks already familiar with OBP can reuse the same payload shapes and validators unchanged.
+The path is mounted under `/obp-bank-node/v5.X.X/` rather than `/obp/v5.X.X/` to make it explicit that the bank's CBS is calling the local node, not the upstream OBP API. The URL deliberately omits `bank_id`, `account_id`, and `view_id` — one Bank Node serves exactly one bank, so those values are config on the Bank Node, not parameters in the URL. The **request body** is byte-for-byte an OBP SIMPLE Transaction Request, so banks already familiar with OBP can reuse the same payload shapes and validators unchanged.
 
 The OBP Bank Node currently implements the following OBP endpoint subset (see Section 3.4 for the full list). Additional OBP endpoints may be added progressively.
 
@@ -453,9 +453,9 @@ The OBP Bank Node implements a subset of the OBP API. Banks call these endpoints
 
 | Method | OBP Endpoint | OBP Bank Node Behaviour |
 |---|---|---|
-| `POST` | `/obp-bank-node/v5.1.0/banks/{BANK_ID}/accounts/{ACCOUNT_ID}/views/{VIEW_ID}/transaction-request-types/SIMPLE/transaction-requests` | Core payment initiation — see Section 3.2. Submits to OBP API via OBP REST. Writes Cardano Promise record. |
-| `GET` | `/obp-bank-node/v5.1.0/banks/{BANK_ID}/accounts/{ACCOUNT_ID}/views/{VIEW_ID}/transaction-requests/{TRANSACTION_REQUEST_ID}` | Returns current status of a Transaction Request including OBP Bank Node-specific fields (`promise_id`, `promise_blockchain`, `netting_snapshot_id`, `netting_blockchain`, `settlement_id`, `settlement_system`). |
-| `GET` | `/obp-bank-node/v5.1.0/banks/{BANK_ID}/accounts/{ACCOUNT_ID}/views/{VIEW_ID}/transaction-requests` | Returns list of Transaction Requests submitted via this OBP Bank Node instance. |
+| `POST` | `/obp-bank-node/v5.1.0/transaction-requests` | Core payment initiation — see Section 3.2. Submits to OBP API via OBP REST. Writes Cardano Promise record. |
+| `GET` | `/obp-bank-node/v5.1.0/transaction-requests/{TRANSACTION_REQUEST_ID}` | Returns current status of a Transaction Request including OBP Bank Node-specific fields (`promise_id`, `promise_blockchain`, `netting_snapshot_id`, `netting_blockchain`, `settlement_id`, `settlement_system`). |
+| `GET` | `/obp-bank-node/v5.1.0/transaction-requests` | Returns list of Transaction Requests submitted via this OBP Bank Node instance. |
 | `GET` | `/obp-bank-node/v5.1.0/health` | OBP Bank Node health and connection status (see Section 9). |
 
 ### Version Support
@@ -607,7 +607,7 @@ telemetry:
 The OBP Bank Node exposes a status endpoint for the bank to query the state of a payment instruction:
 
 ```
-GET http://localhost:{OBP_BANK_NODE_PORT}/obp-bank-node/v5.1.0/banks/{BANK_ID}/accounts/{ACCOUNT_ID}/views/{VIEW_ID}/transaction-requests/{TRANSACTION_REQUEST_ID}
+GET http://localhost:{OBP_BANK_NODE_PORT}/obp-bank-node/v5.1.0/transaction-requests/{TRANSACTION_REQUEST_ID}
 ```
 
 **Response:**
@@ -721,7 +721,7 @@ docker run -d \
 
 Your CBS team implements two things:
 
-1. **Call Interface A1** when a customer initiates an outbound interbank payment — `POST localhost:8088/obp-bank-node/v5.1.0/banks/{BANK_ID}/accounts/{ACCOUNT_ID}/views/owner/transaction-request-types/SIMPLE/transaction-requests`
+1. **Call Interface A1** when a customer initiates an outbound interbank payment — `POST localhost:8088/obp-bank-node/v5.1.0/transaction-requests`
 
 2. **Receive Interface A2** — expose a webhook endpoint at your configured `CBS_CREDIT_WEBHOOK_URL` that accepts the credit notification body and posts the credit to the beneficiary account.
 
@@ -767,7 +767,7 @@ You need to implement exactly two things:
 When one of your customers initiates a cross-border interbank payment, your CBS calls a local REST endpoint on the OBP Bank Node. This is the same format as an OBP Transaction Request — if your team already knows OBP, there is nothing new to learn.
 
 ```
-POST http://localhost:8088/obp-bank-node/v5.1.0/banks/{BANK_ID}/accounts/{ACCOUNT_ID}/views/owner/transaction-request-types/SIMPLE/transaction-requests
+POST http://localhost:8088/obp-bank-node/v5.1.0/transaction-requests
 Authorization: Bearer {your-local-secret}
 Content-Type: application/json
 
