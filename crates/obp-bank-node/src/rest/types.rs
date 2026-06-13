@@ -6,14 +6,14 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Body of `POST .../transaction-request-types/SIMPLE/transaction-requests`.
+/// Body of `POST .../transaction-request-types/OPEN_CORRIDOR/transaction-requests`.
 #[derive(Debug, Deserialize)]
 pub struct InitiateRequest {
     pub value: MoneyValue,
     pub description: String,
     pub to: BeneficiaryRouting,
-    #[serde(default = "default_charge_policy")]
-    pub charge_policy: String,
+    /// FATF Travel Rule data on the upstream payer. Mandatory for OPEN_CORRIDOR.
+    pub originator: Originator,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -25,34 +25,46 @@ pub struct MoneyValue {
 /// Inline beneficiary routing — no pre-registered counterparty required.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct BeneficiaryRouting {
-    #[serde(rename = "otherBankRoutingScheme")]
     pub other_bank_routing_scheme: String,
-    #[serde(rename = "otherBankRoutingAddress")]
     pub other_bank_routing_address: String,
-    #[serde(rename = "otherAccountRoutingScheme")]
     pub other_account_routing_scheme: String,
-    #[serde(rename = "otherAccountRoutingAddress")]
     pub other_account_routing_address: String,
 }
 
-fn default_charge_policy() -> String {
-    "SHARED".to_string()
+/// FATF Travel Rule (Recommendation 16) data on the actual payer upstream of
+/// the bank's settlement account — i.e. the bank's customer.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct Originator {
+    pub name: String,
+    pub address: String,
+    pub account_routing: AccountRouting,
+    /// `"explicit"` on responses; absent on the inbound request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
-/// HTTP 202 body returned from payment initiation.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct AccountRouting {
+    pub scheme: String,
+    pub address: String,
+}
+
+/// HTTP 202 body returned from payment initiation. Mirrors the OBP
+/// OPEN_CORRIDOR Transaction Request response shape (see `A1_A2.md`).
 #[derive(Debug, Serialize)]
 pub struct InitiatedResponse {
     pub transaction_request_id: String,
     #[serde(rename = "type")]
     pub kind: &'static str,
     pub from: FromAccount,
-    pub to: ToCounterparty,
+    pub to: BeneficiaryRouting,
+    pub originator: Originator,
     pub value: MoneyValue,
     pub description: String,
     pub status: &'static str,
     pub promise_id: Option<String>,
+    pub promise_blockchain: Option<String>,
     pub start_date: DateTime<Utc>,
-    pub end_date: Option<DateTime<Utc>>,
     /// Always null — the OBP Bank Node does not trigger SCA challenges.
     pub challenge: Option<()>,
 }
@@ -61,11 +73,6 @@ pub struct InitiatedResponse {
 pub struct FromAccount {
     pub bank_id: String,
     pub account_id: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ToCounterparty {
-    pub counterparty_id: String,
 }
 
 /// Body of `GET .../transaction-requests/{id}`.

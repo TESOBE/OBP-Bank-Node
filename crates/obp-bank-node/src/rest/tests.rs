@@ -7,14 +7,14 @@ use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{Method, Request, StatusCode};
-use obp_blockchain::mock::MockConnector;
+use obp_blockchain::mock::MockBackend;
 use tower::ServiceExt;
 
 use super::{build_router, BankNodeState};
 
 fn router() -> axum::Router {
     let state = BankNodeState {
-        connector: Arc::new(MockConnector::new()),
+        backend: Arc::new(MockBackend::new()),
         blockchain_label: "mock",
         bank_id: "test.bank.id".into(),
         account_id: "test-account-id".into(),
@@ -70,12 +70,16 @@ async fn initiate_payment_returns_202_with_uuid_and_state_identity() {
         "value": { "currency": "KES", "amount": "50000.00" },
         "description": "Invoice payment INV-2026-0042",
         "to": {
-            "otherBankRoutingScheme": "OBP",
-            "otherBankRoutingAddress": "ke.01.kcs",
-            "otherAccountRoutingScheme": "OBP",
-            "otherAccountRoutingAddress": "7bc9a8e4-5d02-40e3-b129-1c3bf89de9f1"
+            "other_bank_routing_scheme": "OBP",
+            "other_bank_routing_address": "ke.01.kcs",
+            "other_account_routing_scheme": "OBP",
+            "other_account_routing_address": "7bc9a8e4-5d02-40e3-b129-1c3bf89de9f1"
         },
-        "charge_policy": "SHARED"
+        "originator": {
+            "name": "Acme Coffee Ltd",
+            "address": "12 Market Street, Nairobi, Kenya",
+            "account_routing": { "scheme": "IBAN", "address": "KE12KCBL0000009876543210" }
+        }
     });
     let resp = router()
         .oneshot(
@@ -91,10 +95,14 @@ async fn initiate_payment_returns_202_with_uuid_and_state_identity() {
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let v: serde_json::Value = serde_json::from_slice(&body_bytes(resp).await).unwrap();
     assert_eq!(v["status"], "INITIATED");
-    assert_eq!(v["type"], "COUNTERPARTY");
+    assert_eq!(v["type"], "OPEN_CORRIDOR");
     // `from` comes from state (bank identity), not from the URL.
     assert_eq!(v["from"]["bank_id"], "test.bank.id");
     assert_eq!(v["from"]["account_id"], "test-account-id");
+    // Inline routing and originator are echoed back (snake_case, OPEN_CORRIDOR).
+    assert_eq!(v["to"]["other_bank_routing_scheme"], "OBP");
+    assert_eq!(v["originator"]["name"], "Acme Coffee Ltd");
+    assert_eq!(v["originator"]["source"], "explicit");
     assert_eq!(v["value"]["currency"], "KES");
     assert_eq!(v["value"]["amount"], "50000.00");
     assert!(v["transaction_request_id"].as_str().unwrap().len() > 0);

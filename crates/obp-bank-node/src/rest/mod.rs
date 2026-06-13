@@ -4,7 +4,7 @@
 //! URLs are intentionally short: one Bank Node serves exactly one bank, so
 //! `bank_id`, `account_id`, and `view_id` are not on the URL — the Bank Node
 //! knows them from config (see [`BankNodeState`]). The request body for
-//! payment initiation still mirrors the OBP `SIMPLE` Transaction Request
+//! payment initiation still mirrors the OBP `OPEN_CORRIDOR` Transaction Request
 //! shape so banks already familiar with OBP can reuse their validators.
 
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use obp_blockchain::BlockchainConnector;
+use obp_blockchain::BlockchainBackend;
 
 pub mod handlers;
 pub mod types;
@@ -23,7 +23,7 @@ mod tests;
 
 #[derive(Clone)]
 pub struct BankNodeState {
-    pub connector: Arc<dyn BlockchainConnector>,
+    pub backend: Arc<dyn BlockchainBackend>,
     pub blockchain_label: &'static str,
     pub bank_id: String,
     pub account_id: String,

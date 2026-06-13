@@ -1,4 +1,4 @@
-//! In-memory connector for tests and offline development.
+//! In-memory backend for tests and offline development.
 //!
 //! Writes deterministic SHA-256-derived tx IDs and records every call.
 
@@ -8,23 +8,23 @@ use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    BlockchainConnector, ConfirmationStatus, ExceptionRecord, PromiseRecord, Result,
+    BlockchainBackend, ConfirmationStatus, ExceptionRecord, PromiseRecord, Result,
     SettlementRecord, TxReference,
 };
 
 #[derive(Debug, Default)]
-pub struct MockConnector {
+pub struct MockBackend {
     writes: Mutex<Vec<TxReference>>,
 }
 
-impl MockConnector {
+impl MockBackend {
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Snapshot every TxReference returned so far. Test-only helper.
     pub fn writes(&self) -> Vec<TxReference> {
-        self.writes.lock().expect("mock connector mutex poisoned").clone()
+        self.writes.lock().expect("mock backend mutex poisoned").clone()
     }
 }
 
@@ -41,7 +41,7 @@ fn make_ref(kind: &str, id: &str) -> TxReference {
 }
 
 #[async_trait]
-impl BlockchainConnector for MockConnector {
+impl BlockchainBackend for MockBackend {
     async fn write_promise(&self, p: &PromiseRecord) -> Result<TxReference> {
         let r = make_ref("promise", &p.transaction_request_id);
         self.writes.lock().expect("mutex poisoned").push(r.clone());
@@ -83,7 +83,7 @@ mod tests {
 
     #[tokio::test]
     async fn promise_writes_are_content_deterministic() {
-        let c = MockConnector::new();
+        let c = MockBackend::new();
         let r1 = c.write_promise(&sample_promise("tr-1")).await.unwrap();
         let r2 = c.write_promise(&sample_promise("tr-1")).await.unwrap();
         let r3 = c.write_promise(&sample_promise("tr-2")).await.unwrap();
@@ -93,7 +93,7 @@ mod tests {
 
     #[tokio::test]
     async fn writes_are_recorded() {
-        let c = MockConnector::new();
+        let c = MockBackend::new();
         c.write_promise(&sample_promise("a")).await.unwrap();
         c.write_promise(&sample_promise("b")).await.unwrap();
         assert_eq!(c.writes().len(), 2);
@@ -101,7 +101,7 @@ mod tests {
 
     #[tokio::test]
     async fn confirm_returns_confirmed() {
-        let c = MockConnector::new();
+        let c = MockBackend::new();
         let r = c.write_promise(&sample_promise("a")).await.unwrap();
         let status = c.confirm(&r).await.unwrap();
         assert_eq!(status, ConfirmationStatus::Confirmed { depth: 1 });

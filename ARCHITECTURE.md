@@ -6,6 +6,51 @@ captured here are committed — re-open with reason, not on a whim.
 For *what* the node does and *why* it exists, see `TLDR.md` and
 `docs/OBP-Bank-Node-Spec.md`. This file is *how* it is built.
 
+## Terminology — what this is, and what it is not
+
+The Bank Node is **not** an OBP Connector and **not** an OBP South-Side
+Adapter, despite surface similarities to both. The distinction matters because
+both terms have precise meanings in the OBP/TESOBE world:
+
+- **OBP Connector** — a Scala trait *inside* OBP-API (e.g.
+  `KafkaMappedConnector_vXxx`). In-process: OBP-API calls
+  `connector.getBankAccount(...)` and the connector translates to a backend.
+  To be one, you are code compiled into OBP-API. The Bank Node is a separate
+  process and is therefore not this.
+- **OBP (South-Side) Adapter** — a separate bank-side process that the
+  Kafka/Akka connector *calls* over a message bus; OBP-API is the caller, the
+  adapter responds to request messages with CBS data. The Bank Node inverts
+  this on Interface B: it is a *client* of OBP-API's north-side REST
+  (`POST /obp/v7.0.0/.../OPEN_CORRIDOR/transaction-requests`) — it calls
+  OBP-API, rather than being called by it. A true adapter never calls OBP-API's
+  REST.
+
+  Just as telling is **code vs configuration**: a south-side adapter carries
+  substantial *bank-specific code* — the translation logic for that one bank's
+  CBS (its SQL, stored procedures, field mappings, API quirks) is written into
+  the adapter, so each bank effectively gets its own adapter build. The Bank Node
+  carries **no bank-specific code at all**: it ships as one binary whose per-bank
+  behaviour is entirely *configuration* (the YAML config block plus a choice of
+  standard delivery mode). The only bank-specific code in an integration lives on
+  the bank's side of the A1/A2 boundary — the CBS's own webhook receiver or file
+  picker — never in the Node.
+
+What it actually is: a **bank-side node / edge gateway** in the Open Corridor
+network — an OBP-API *client* (Interface B) plus a CBS-facing gateway
+(Interfaces A1/A2), a message consumer (Interface C), and a blockchain anchor
+(Interface D). Interface C is the one adapter-shaped part (OBP-initiated, node
+consumes), but those are notifications, not synchronous CBS lookups. The
+correct label is **OBP Bank Node**; if a one-liner is needed: *a bank-side
+gateway that acts as an OBP-API client, not an in-process connector or a
+south-side adapter.*
+
+**Why the blockchain trait is `BlockchainBackend`, not `BlockchainConnector`:**
+the pluggable chain seam in `crates/obp-blockchain/src/lib.rs` was deliberately
+named `BlockchainBackend` (impls `CardanoBackend`, `MockBackend`) to avoid
+colliding with the OBP-API **Connector** concept above. As a result the bare
+word "connector" in this repo refers only to the OBP-API concept — never to the
+blockchain seam, which is always a *backend*.
+
 ## Language: Rust
 
 The OBP Bank Node is implemented in Rust. A prior Go skeleton existed and was
@@ -58,12 +103,12 @@ OBP-Bank-Node/
 │   │       │   └── file_drop.rs
 │   │       ├── obp_api/        # reqwest client + OAuth2 (Interface B)
 │   │       └── health.rs
-│   └── obp-blockchain/         # connector trait + impls (Interface D)
+│   └── obp-blockchain/         # backend trait + impls (Interface D)
 │       ├── Cargo.toml
 │       └── src/
-│           ├── lib.rs          # BlockchainConnector trait, chain-agnostic types
-│           ├── cardano/        # CardanoConnector impl (pallas + CML + Ogmios)
-│           ├── mock.rs         # MockConnector for tests
+│           ├── lib.rs          # BlockchainBackend trait, chain-agnostic types
+│           ├── cardano/        # CardanoBackend impl (pallas + CML + Ogmios)
+│           ├── mock.rs         # MockBackend for tests
 │           └── ethereum/       # placeholder for future
 ├── docker/
 │   ├── docker-compose.cardano.yml
@@ -96,13 +141,13 @@ add ceremony without changing compile times meaningfully at this size.
 | Ogmios client       | custom thin client over `tokio-tungstenite`    | No mature off-the-shelf Rust Ogmios client  |
 | File-drop delivery  | `notify` (optional)                            | Filesystem watcher if we need it            |
 
-## Connector layer pattern
+## Blockchain backend layer
 
 Blockchain interaction sits behind a Rust trait:
 
 ```rust
 #[async_trait]
-pub trait BlockchainConnector: Send + Sync {
+pub trait BlockchainBackend: Send + Sync {
     async fn write_promise(&self, p: &PromiseRecord) -> Result<TxReference>;
     async fn write_settlement(&self, s: &SettlementRecord) -> Result<TxReference>;
     async fn write_exception(&self, e: &ExceptionRecord) -> Result<TxReference>;
@@ -129,12 +174,12 @@ blockchain:
 - Each new chain is real implementation work (UTxO vs account, metadata vs
   smart contract). The trait keeps the *contract* uniform; it doesn't make
   chain-swapping cheap.
-- `MockConnector` is the first impl built — used for unit tests and for
+- `MockBackend` is the first impl built — used for unit tests and for
   developing the node without a chain dependency.
 
 ## Cardano backend
 
-The `CardanoConnector` impl talks to a **real `cardano-node`** running on the
+The `CardanoBackend` impl talks to a **real `cardano-node`** running on the
 **preprod testnet**, with **Ogmios** in front of it for JSON-RPC over
 WebSocket. Cardano-node syncs from genesis (one-time, ~2–4 h on preprod),
 then resumes in seconds on every restart.
@@ -186,7 +231,7 @@ signing key stays in the Rust process.
 These are explicit decisions to **not do** now, with the conditions for
 revisiting:
 
-- **Promote `CardanoConnector` to a sidecar process.** Justified when (a)
+- **Promote `CardanoBackend` to a sidecar process.** Justified when (a)
   signing-key isolation in a separate address space is required for security
   review, or (b) a second blockchain implementation needs independent release
   cadence. Contract should be **gRPC over Unix domain socket** (typed proto,

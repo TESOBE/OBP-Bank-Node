@@ -1,6 +1,6 @@
 //! OBP Bank Node — main binary.
 //!
-//! Wires together config, the blockchain connector, and the south-side REST
+//! Wires together config, the blockchain backend, and the south-side REST
 //! router. AMQP consumer, outbox, delivery modes, and OBP API client will
 //! land in dedicated modules over subsequent commits.
 
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-use obp_blockchain::{cardano::CardanoConfig, mock::MockConnector, BlockchainConnector};
+use obp_blockchain::{cardano::CardanoConfig, mock::MockBackend, BlockchainBackend};
 
 use crate::rest::{build_router, BankNodeState};
 
@@ -92,7 +92,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = load_config()?;
-    let connector = build_connector(&config.blockchain).await?;
+    let backend = build_backend(&config.blockchain).await?;
     let blockchain_label: &'static str = match config.blockchain.kind {
         BlockchainKind::Mock => "mock",
         BlockchainKind::Cardano => "cardano",
@@ -108,7 +108,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let state = BankNodeState {
-        connector,
+        backend,
         blockchain_label,
         bank_id: config.bank.bank_id.clone(),
         account_id: config.bank.account_id.clone(),
@@ -144,17 +144,17 @@ fn load_config() -> anyhow::Result<Config> {
     fig.extract().context("failed to parse config")
 }
 
-async fn build_connector(cfg: &BlockchainConfig) -> anyhow::Result<Arc<dyn BlockchainConnector>> {
+async fn build_backend(cfg: &BlockchainConfig) -> anyhow::Result<Arc<dyn BlockchainBackend>> {
     match cfg.kind {
-        BlockchainKind::Mock => Ok(Arc::new(MockConnector::new())),
+        BlockchainKind::Mock => Ok(Arc::new(MockBackend::new())),
         BlockchainKind::Cardano => {
             let cardano_cfg = cfg
                 .cardano
                 .clone()
                 .context("blockchain.type=cardano requires a blockchain.cardano block")?;
-            let c = obp_blockchain::cardano::CardanoConnector::new(cardano_cfg)
+            let c = obp_blockchain::cardano::CardanoBackend::new(cardano_cfg)
                 .await
-                .context("failed to construct CardanoConnector")?;
+                .context("failed to construct CardanoBackend")?;
             Ok(Arc::new(c))
         }
     }

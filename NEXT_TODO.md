@@ -5,7 +5,7 @@ is superseded.
 
 The current Cardano direction lives in [`ARCHITECTURE.md`](ARCHITECTURE.md):
 local `cardano-node` on preprod, Ogmios JSON-RPC over WebSocket, Rust
-`CardanoConnector` behind the `BlockchainConnector` trait.
+`CardanoBackend` behind the `BlockchainBackend` trait.
 
 ## Status
 

@@ -16,7 +16,7 @@ never a customer-level one.
 | `Bank` | Each participating bank exists as a Bank entity |
 | `BankAccount` | Has balance, currency, holder bank — perfect shape for settlement accounts |
 | `Transaction` | Debit/credit between two BankAccounts, with status, metadata, completed_at |
-| `TransactionRequest` | Instruction → Transaction lifecycle, already supports SIMPLE with inline routing |
+| `TransactionRequest` | Instruction → Transaction lifecycle, already supports OPEN_CORRIDOR with inline routing |
 | `View` | Per-account permissions — owner sees everything, others see filtered/nothing |
 | `Connector` (RabbitMQ + others) | The wire layer Bank Nodes already talk to OBP-API on |
 | `MessageDocs` | Auto-generated docs for the RabbitMQ message catalogue |
@@ -145,7 +145,7 @@ CREATE TABLE open_corridor_settlement_policies (
 
 ### 1. Existing TR endpoint — extended, not replaced
 
-`POST /banks/{bank_id}/accounts/{account_id}/views/owner/transaction-request-types/SIMPLE/transaction-requests`
+`POST /banks/{bank_id}/accounts/{account_id}/views/owner/transaction-request-types/OPEN_CORRIDOR/transaction-requests`
 
 The from-account being `OPEN_CORRIDOR_SETTLEMENT` triggers the Promise path:
 - Resolve `to.otherBank...` routing to a receiving bank's settlement account ID

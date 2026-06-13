@@ -1,4 +1,4 @@
-//! Cardano connector — Phase 1: foundation.
+//! Cardano backend — Phase 1: foundation.
 //!
 //! - Talks to a local `cardano-node` via Ogmios (JSON-RPC over WebSocket).
 //! - Loads the Shelley payment key trio (.skey/.vkey/.addr) at construction.
@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::{
-    BlockchainConnector, BlockchainError, ConfirmationStatus, ExceptionRecord, PromiseRecord,
+    BlockchainBackend, BlockchainError, ConfirmationStatus, ExceptionRecord, PromiseRecord,
     Result, SettlementRecord, TxReference,
 };
 
@@ -39,13 +39,13 @@ pub struct CardanoConfig {
     pub wallet_skey_path: PathBuf,
 }
 
-pub struct CardanoConnector {
+pub struct CardanoBackend {
     ogmios: OgmiosClient,
     wallet: Arc<Wallet>,
     network: String,
 }
 
-impl CardanoConnector {
+impl CardanoBackend {
     /// Connect to Ogmios and load the wallet from disk.
     pub async fn new(config: CardanoConfig) -> Result<Self> {
         let ogmios = OgmiosClient::new(&config.ogmios_url);
@@ -86,7 +86,7 @@ impl CardanoConnector {
 }
 
 #[async_trait]
-impl BlockchainConnector for CardanoConnector {
+impl BlockchainBackend for CardanoBackend {
     async fn write_promise(&self, _p: &PromiseRecord) -> Result<TxReference> {
         Err(write_not_yet_implemented("promise"))
     }
@@ -144,11 +144,11 @@ fn map_ogmios(e: ogmios::OgmiosError) -> BlockchainError {
 fn write_not_yet_implemented(kind: &str) -> BlockchainError {
     warn!(
         record_kind = kind,
-        "CardanoConnector.write_{kind} called but Phase 2 (tx build + sign + submit) is not yet \
-         implemented — use MockConnector until chain sync finishes and tx-builder lands"
+        "CardanoBackend.write_{kind} called but Phase 2 (tx build + sign + submit) is not yet \
+         implemented — use MockBackend until chain sync finishes and tx-builder lands"
     );
     BlockchainError::Internal(format!(
-        "write_{kind}: CardanoConnector tx submission not yet implemented (Phase 2). \
+        "write_{kind}: CardanoBackend tx submission not yet implemented (Phase 2). \
          Phase 1 supports connect, wallet load, and confirm() only. \
          Set blockchain.type=mock until Phase 2 lands."
     ))

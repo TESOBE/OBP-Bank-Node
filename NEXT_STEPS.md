@@ -5,22 +5,44 @@ decisions.
 
 ## Where we are
 
-End-to-end OBP Bank Node skeleton is **working** locally:
+The Rust rewrite is early. What exists and builds today
+(`cargo run -p obp-bank-node`):
 
-- Built and run with `./start.sh` (port 8088 by default)
-- South-side REST API live on `/obp-bank-node/v5.X.X/...`
-- RabbitMQ consumer (real `amqp091-go`) connected to local broker on `obp_rpc_queue`,
-  dispatching by AMQP `MessageId`, replying via OBP inbound-envelope to `replyTo`
-- All four CBS delivery modes implemented; **Postgres mode is fully functional**
-  (auto-creates schema, INSERT works, poll loop picks up CBS-PROCESSED rows and
-  marks delivered in the local outbox)
-- `/health` reports live RabbitMQ state; preflight banner prints on startup
-- OBP API client, Cardano writer remain stubbed (deliberate — see `NEXT_TODO.md`,
-  `CERT_TODO.md`)
+- **Cargo workspace, two crates** — `obp-bank-node` (binary) and
+  `obp-blockchain` (backend trait + impls). See `ARCHITECTURE.md`.
+- **Config loading (figment)** — `server` / `bank` / `blockchain` blocks,
+  layered YAML (`obp-bank-node-config.yaml`) + `OBP_BN_` env overrides. Boots
+  with placeholder defaults if no config file is present. (Config is currently
+  an inline struct in `main.rs`; a dedicated `config.rs` module is planned.)
+- **South-side REST API (Interface A)** — axum, port 8088. Routes live:
+  `POST /obp-bank-node/v5.1.0/transaction-requests`,
+  `GET .../transaction-requests/{id}`, `GET .../transaction-requests`, and
+  `/health` (+ versioned alias). **All handlers are Phase 1 stubs**: they mint a
+  UUID, log, and return a hardcoded `202` / `INITIATED` shape — no outbox, no
+  OBP-API call, no chain write. (Note: the `initiate_payment` stub still emits
+  the old `COUNTERPARTY` / `counterparty_id` response — it has not been migrated
+  to the `OPEN_CORRIDOR` + inline-routing + `originator` body in `A1_A2.md`. The
+  *request* type does already parse snake_case routing fields.)
+- **Blockchain connector (Interface D), partial** — `BlockchainBackend` trait,
+  `MockBackend`, and a `CardanoBackend` whose `new()` (Ogmios client + wallet
+  loading) and `confirm()` work. `write_promise` / `write_settlement` /
+  `write_exception` return "not yet implemented" — that is Phase 2 (see
+  `NEXT_TODO.md`).
 
-Last live smoke test: round-tripped a fake `obp_credit_notification` through
-RabbitMQ → handler → Postgres INSERT → simulated CBS update → poll loop →
-outbox MarkCreditDelivered. Reply envelope correlation IDs round-tripped cleanly.
+**Not built yet in Rust** (existed only in the deleted Go skeleton):
+
+- **AMQP / RabbitMQ consumer (Interface C)** — no `lapin` dependency yet; the
+  entire inbound-message path is absent.
+- **OBP API client (Interface B)** — no `reqwest` client yet.
+- **Outbox (durability)** — no `sqlx` / SQLite persistence yet.
+- **CBS delivery modes (A2)** — none of webhook-OBP / webhook-ISO20022 /
+  database / file-drop are implemented yet.
+
+So the binary boots, serves the REST surface with stubbed responses, and can
+reach a Cardano node for `confirm()` — but no payment yet flows end-to-end. The
+Go skeleton's "working end-to-end" state (RabbitMQ round-trip, functional
+Postgres delivery) did **not** carry over; that code was deleted on the switch
+to Rust.
 
 ## The design docs in this repo
 
@@ -105,15 +127,20 @@ In rough order of how big a commitment each is:
   can be implemented against a concrete target.
 
 **Medium / incremental Bank Node work:**
-- Phase 2 of the Rust `CardanoConnector`: build, sign, and submit
+- Phase 2 of the Rust `CardanoBackend`: build, sign, and submit
   metadata-only transactions for Promise / Settlement Reference / Exception
   records via `pallas` against the local preprod node (already syncing in
   Docker — see `docker/README.md`). Funded preprod wallet already on disk
   (1000 tADA).
-- Add TLS support to the RabbitMQ consumer (config block + `amqps://` dial
-  path) so we can later test against an mTLS-enabled broker.
-- Add an outbox replay loop on the Bank Node side (Section 11 resilience —
-  currently we persist but don't replay).
+- Build the RabbitMQ consumer (Interface C) in Rust with `lapin` — the inbound
+  message path (`obp_rpc_queue`, dispatch by `MessageId`, OBP inbound-envelope
+  reply). TLS / `amqps://` is a follow-on once the broker is mTLS-enabled (see
+  `CERT_TODO.md`).
+- Build the SQLite outbox (`sqlx`) for durability, then the replay loop
+  (Section 11 resilience). Neither exists in the Rust port yet.
+- Build the OBP API client (Interface B) with `reqwest` + OAuth2 and wire
+  `initiate_payment` to persist → submit → write Promise (replacing the stub),
+  migrating the response body to the `OPEN_CORRIDOR` shape on the way.
 
 **Large / OBP-API ledger work:**
 - Start `OBP_API_CHANGES.md` step 1: schema migrations (additive, nullable —
@@ -126,26 +153,29 @@ In rough order of how big a commitment each is:
 
 ## Quick re-orientation
 
-To get the Bank Node back up:
+To build and run the Bank Node:
 
 ```bash
 cd /home/simonredfern/Documents/workspace_2024/OBP-Bank-Node
-./start.sh                  # builds, runs, prints preflight banner
+cargo run -p obp-bank-node      # binds 0.0.0.0:8088
 ```
 
-Pre-reqs: local RabbitMQ container running on 5672/15672 (guest/guest).
-Optional: local OBP-API on 8080 (preflight will mark it reachable).
+No external services are required to boot: with no config file it uses
+placeholder `bank` values and the `mock` blockchain connector. To exercise the
+real `CardanoBackend`, set `blockchain.type: cardano` in
+`obp-bank-node-config.yaml` and run a local `cardano-node` + Ogmios (see
+`docker/README.md`).
 
-To verify everything is wired:
+To check it is up:
 
 ```bash
 curl -s http://localhost:8088/health | jq
-# rabbitmq should be "connected"; obp_api/cardano show "stub"
+# { "status": "healthy", "service": "OBP-Bank-Node", "version": "...",
+#   "blockchain": "mock" | "cardano", "timestamp": "..." }
 ```
 
-To test the Postgres delivery mode end-to-end, see the smoke-test commands
-in the chat history (or just glance at `internal/delivery/database.go`'s
-implementation).
+The REST handlers are stubs — `POST /transaction-requests` returns a `202` with
+a minted `transaction_request_id` but does not yet persist or forward anything.
 
 ## Memory / Claude session
 

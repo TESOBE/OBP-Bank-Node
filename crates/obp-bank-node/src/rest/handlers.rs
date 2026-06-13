@@ -1,7 +1,7 @@
 //! Route handlers for the south-side REST API.
 //!
 //! Phase 1: stub responses. Once the outbox, OBP API client, and full
-//! `CardanoConnector` write path land, these handlers will:
+//! `CardanoBackend` write path land, these handlers will:
 //!   1. Persist the request to the outbox (durability before any external call)
 //!   2. Resolve beneficiary routing to an OBP API counterparty
 //!   3. Submit the OBP Transaction Request
@@ -36,23 +36,27 @@ pub async fn initiate_payment(
         "initiate_payment (Phase 1 stub — outbox / OBP-API / chain wiring not yet implemented)"
     );
 
+    // Echo the caller's inline routing and originator straight back. Real
+    // destination resolution and the Promise write land with the OBP API client
+    // and the full CardanoBackend write path.
+    let mut originator = req.originator;
+    originator.source = Some("explicit".into());
+
     let body = InitiatedResponse {
         transaction_request_id: id,
-        kind: "COUNTERPARTY",
+        kind: "OPEN_CORRIDOR",
         from: FromAccount {
             bank_id: state.bank_id.clone(),
             account_id: state.account_id.clone(),
         },
-        to: ToCounterparty {
-            // Real counterparty resolution lands with the OBP API client.
-            counterparty_id: "TODO-counterparty-resolution".into(),
-        },
+        to: req.to,
+        originator,
         value: req.value,
         description: req.description,
         status: "INITIATED",
         promise_id: None,
+        promise_blockchain: None,
         start_date: Utc::now(),
-        end_date: None,
         challenge: None,
     };
     (StatusCode::ACCEPTED, Json(body)).into_response()

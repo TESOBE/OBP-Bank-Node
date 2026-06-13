@@ -93,7 +93,7 @@ The "client exposes an endpoint" pattern is intentional — the OBP Bank Node ac
 POST http://localhost:{OBP_BANK_NODE_PORT}/obp-bank-node/v5.1.0/transaction-requests
 ```
 
-The path is mounted under `/obp-bank-node/v5.X.X/` rather than `/obp/v5.X.X/` to make it explicit that the bank's CBS is calling the local node, not the upstream OBP API. The URL deliberately omits `bank_id`, `account_id`, and `view_id` — one Bank Node serves exactly one bank, so those values are config on the Bank Node, not parameters in the URL. The **request body** is byte-for-byte an OBP SIMPLE Transaction Request, so banks already familiar with OBP can reuse the same payload shapes and validators unchanged.
+The path is mounted under `/obp-bank-node/v5.X.X/` rather than `/obp/v5.X.X/` to make it explicit that the bank's CBS is calling the local node, not the upstream OBP API. The URL deliberately omits `bank_id`, `account_id`, and `view_id` — one Bank Node serves exactly one bank, so those values are config on the Bank Node, not parameters in the URL. The **request body** is byte-for-byte an OBP OPEN_CORRIDOR Transaction Request, so banks already familiar with OBP can reuse the same payload shapes and validators unchanged.
 
 The OBP Bank Node currently implements the following OBP endpoint subset (see Section 3.4 for the full list). Additional OBP endpoints may be added progressively.
 
@@ -111,7 +111,7 @@ The `OBP_BANK_NODE_LOCAL_SECRET` is set by the bank in their OBP Bank Node confi
 
 #### Request Body
 
-Identical to OBP Transaction Request (SIMPLE) body. The bank provides beneficiary routing details inline — no pre-registered counterparty required.
+Identical to OBP Transaction Request (OPEN_CORRIDOR) body. The bank provides beneficiary routing details inline — no pre-registered counterparty required.
 
 ```json
 {
@@ -121,12 +121,16 @@ Identical to OBP Transaction Request (SIMPLE) body. The bank provides beneficiar
   },
   "description": "Invoice payment INV-2026-0042",
   "to": {
-    "otherBankRoutingScheme": "OBP",
-    "otherBankRoutingAddress": "ke.01.kcs",
-    "otherAccountRoutingScheme": "OBP",
-    "otherAccountRoutingAddress": "7bc9a8e4-5d02-40e3-b129-1c3bf89de9f1"
+    "other_bank_routing_scheme": "OBP",
+    "other_bank_routing_address": "ke.01.kcs",
+    "other_account_routing_scheme": "OBP",
+    "other_account_routing_address": "7bc9a8e4-5d02-40e3-b129-1c3bf89de9f1"
   },
-  "charge_policy": "SHARED"
+  "originator": {
+    "name": "Acme Coffee Ltd",
+    "address": "12 Market Street, Nairobi, Kenya",
+    "account_routing": { "scheme": "IBAN", "address": "KE12KCBL0000009876543210" }
+  }
 }
 ```
 
@@ -135,17 +139,19 @@ Identical to OBP Transaction Request (SIMPLE) body. The bank provides beneficiar
 | `value.currency` | string (ISO 4217) | Yes | Currency of the payment. Must match the sending account currency. |
 | `value.amount` | string (decimal) | Yes | Payment amount. Must be positive. |
 | `description` | string | Yes | Payment description / reference. Included in the OBP Transaction Request and the Cardano Promise record hash. |
-| `to.otherBankRoutingScheme` | string | Yes | Routing scheme for the beneficiary bank. See supported schemes below. |
-| `to.otherBankRoutingAddress` | string | Yes | Beneficiary bank identifier in the given scheme. |
-| `to.otherAccountRoutingScheme` | string | Yes | Routing scheme for the beneficiary account. See supported schemes below. |
-| `to.otherAccountRoutingAddress` | string | Yes | Beneficiary account identifier in the given scheme. |
-| `charge_policy` | string | No | `SHARED`, `SENDER`, or `RECEIVER`. Defaults to `SHARED`. |
+| `to.other_bank_routing_scheme` | string | Yes | Routing scheme for the beneficiary bank. See supported schemes below. |
+| `to.other_bank_routing_address` | string | Yes | Beneficiary bank identifier in the given scheme. |
+| `to.other_account_routing_scheme` | string | Yes | Routing scheme for the beneficiary account. See supported schemes below. |
+| `to.other_account_routing_address` | string | Yes | Beneficiary account identifier in the given scheme. |
+| `originator.name` | string | Yes | Name of the upstream payer (the bank's customer). FATF Travel Rule. |
+| `originator.address` | string | Yes | Address of the upstream payer. FATF Travel Rule. |
+| `originator.account_routing` | object | Yes | `scheme` + `address` identifying the payer's account. FATF Travel Rule. |
 
 #### Supported Routing Schemes
 
 The OBP Bank Node accepts the following routing scheme combinations. It resolves them internally to OBP API identifiers — the bank uses whatever routing language its CBS already knows.
 
-| `otherBankRoutingScheme` | `otherBankRoutingAddress` example | `otherAccountRoutingScheme` | `otherAccountRoutingAddress` example | Notes |
+| `other_bank_routing_scheme` | `other_bank_routing_address` example | `other_account_routing_scheme` | `other_account_routing_address` example | Notes |
 |---|---|---|---|---|
 | `OBP` | `ke.01.kcs` | `OBP` | `7bc9a8e4-6d02-40e3-a129-0b2bf89de9f0` | OBP-native identifiers. Simplest for OBP-familiar banks. |
 | `BIC` | `KCBLKENX` | `IBAN` | `KE12KCBL0000001234567890` | Standard international routing. Preferred for European corridors. |
@@ -157,9 +163,9 @@ The OBP Bank Node resolves all schemes to OBP API identifiers before submitting 
 
 The OBP Bank Node maintains an internal routing registry, populated from the OBP API at startup and refreshed periodically. When it first encounters a new routing address successfully resolved by the OBP API, it caches the mapping locally — so subsequent payments to the same beneficiary resolve instantly from the local cache.
 
-#### Why SIMPLE rather than COUNTERPARTY
+#### Why OPEN_CORRIDOR rather than COUNTERPARTY
 
-The SIMPLE type avoids the need for pre-registered counterparties, which would require banks to explicitly provision each corridor before making a payment. With SIMPLE, the bank provides routing details inline at payment time. The OBP Bank Node handles counterparty resolution and any internal registration with the OBP API transparently — the bank never sees or manages counterparties.
+The OPEN_CORRIDOR type avoids the need for pre-registered counterparties, which would require banks to explicitly provision each corridor before making a payment. With OPEN_CORRIDOR, the bank provides routing details inline at payment time. The OBP Bank Node handles counterparty resolution and any internal registration with the OBP API transparently — the bank never sees or manages counterparties.
 
 #### Synchronous Response
 
@@ -170,13 +176,22 @@ The OBP Bank Node responds synchronously with an acknowledgement. This response 
 ```json
 {
   "transaction_request_id": "4050046c-63b3-4868-8a22-14b4181d33a6",
-  "type": "COUNTERPARTY",
+  "type": "OPEN_CORRIDOR",
   "from": {
     "bank_id": "gh.29.uk",
     "account_id": "8ca8a7e4-6d02-40e3-a129-0b2bf89de9f0"
   },
   "to": {
-    "counterparty_id": "9fg8a7e4-6d02-40e3-a129-0b2bf89de8uh"
+    "other_bank_routing_scheme": "BIC",
+    "other_bank_routing_address": "KCBLKENXXXX",
+    "other_account_routing_scheme": "IBAN",
+    "other_account_routing_address": "KE12KCBL0000001234567890"
+  },
+  "originator": {
+    "name": "Acme Coffee Ltd",
+    "address": "12 Market Street, Nairobi, Kenya",
+    "account_routing": { "scheme": "IBAN", "address": "KE12KCBL0000009876543210" },
+    "source": "explicit"
   },
   "value": {
     "currency": "KES",
@@ -185,8 +200,8 @@ The OBP Bank Node responds synchronously with an acknowledgement. This response 
   "description": "Invoice payment INV-2026-0042",
   "status": "INITIATED",
   "promise_id": null,
+  "promise_blockchain": null,
   "start_date": "2026-05-04T10:23:45Z",
-  "end_date": null,
   "challenge": null
 }
 ```
@@ -201,7 +216,7 @@ The OBP Bank Node responds synchronously with an acknowledgement. This response 
 
 #### Note on `challenge: null`
 
-In standard OBP, a Transaction Request may return a challenge if SCA is required. The OBP Bank Node explicitly suppresses this — the bank has already completed SCA before calling the OBP Bank Node. The OBP Bank Node submits the Transaction Request to OBP with `charge_policy` set and a pre-auth context that bypasses the challenge flow.
+In standard OBP, a Transaction Request may return a challenge if SCA is required. The OBP Bank Node explicitly suppresses this — the bank has already completed SCA before calling the OBP Bank Node. The OBP Bank Node submits the Transaction Request to OBP with a pre-auth context that bypasses the challenge flow.
 
 #### Error Responses
 
@@ -228,7 +243,7 @@ The delivery mechanism is configurable. The OBP Bank Node supports multiple mode
 
 #### Delivery Mode 1: REST Webhook — OBP Format (Recommended)
 
-The OBP Bank Node POSTs a credit notification to a URL configured in the OBP Bank Node config file. The request body uses OBP Transaction Request (SIMPLE) format — familiar to any bank already connected to OBP, and straightforward to implement for those that are not.
+The OBP Bank Node POSTs a credit notification to a URL configured in the OBP Bank Node config file. The request body uses OBP Transaction Request (OPEN_CORRIDOR) format — familiar to any bank already connected to OBP, and straightforward to implement for those that are not.
 
 **Config:**
 ```yaml
@@ -248,7 +263,6 @@ Content-Type: application/json
   "transaction_request_id": "4050046c-63b3-4868-8a22-14b4181d33a6",
   "netting_snapshot_id": "snap-3a4b5c6d-7e8f-9a0b-1c2d-3e4f5a6b7c8d",
   "netting_blockchain": "Cardano",
-  "type": "SIMPLE",
   "from": {
     "bank_id": "gh.29.uk",
     "bank_routing": {
@@ -264,13 +278,17 @@ Content-Type: application/json
       "address": "7bc9a8e4-5d02-40e3-b129-1c3bf89de9f1"
     }
   },
+  "originator": {
+    "name": "Acme Coffee Ltd",
+    "address": "12 Market Street, Nairobi, Kenya",
+    "account_routing": { "scheme": "IBAN", "address": "KE12KCBL0000009876543210" }
+  },
   "value": {
     "currency": "KES",
     "amount": "50000.00"
   },
   "description": "Invoice payment INV-2026-0042",
   "value_date": "2026-05-04",
-  "charge_policy": "SHARED",
   "promise_id": "abc123def456...",
   "promise_blockchain": "Cardano"
 }
@@ -281,7 +299,7 @@ Content-Type: application/json
 | `transaction_request_id` | OBP Bank Node-local reference — use the `transaction_request_id` to track status. Use this to acknowledge and reconcile. |
 | `transaction_request_id` | OBP Transaction Request ID from the originating payment. |
 | `netting_snapshot_id` | Cardano Netting Snapshot this credit relates to. |
-| `type` | Always `SIMPLE` in this delivery mode. |
+| `originator` | FATF Travel Rule data (`name`, `address`, `account_routing`) on the upstream payer, propagated from the sending bank's A1 call. |
 | `from.bank_id` | Originating bank OBP identifier. |
 | `to.bank_id` / `to.account_id` | Receiving bank and beneficiary account — this bank's identifiers. |
 | `value.currency` / `value.amount` | Credit amount and currency. |
@@ -481,7 +499,7 @@ Calls to OBP endpoints not listed above return:
 The OBP Bank Node calls the upstream OBP REST API to submit a Transaction Request. This is the standard OBP Transaction Request (COUNTERPARTY) endpoint:
 
 ```
-POST {OBP_API_URL}/obp-bank-node/v5.1.0/banks/{BANK_ID}/accounts/{ACCOUNT_ID}/views/owner/transaction-request-types/SIMPLE/transaction-requests
+POST {OBP_API_URL}/obp-bank-node/v5.1.0/banks/{BANK_ID}/accounts/{ACCOUNT_ID}/views/owner/transaction-request-types/OPEN_CORRIDOR/transaction-requests
 ```
 
 The OBP Bank Node authenticates to the OBP API using OAuth2 credentials provisioned during bank registration. The OBP Bank Node maps the Interface A1 request body directly to this OBP call — no translation required since the formats are identical.
@@ -778,10 +796,15 @@ Content-Type: application/json
   },
   "description": "Invoice payment INV-2026-0042",
   "to": {
-    "otherBankRoutingScheme": "BIC",
-    "otherBankRoutingAddress": "KCBLKENX",
-    "otherAccountRoutingScheme": "ACCOUNT_NUMBER",
-    "otherAccountRoutingAddress": "1234567890"
+    "other_bank_routing_scheme": "BIC",
+    "other_bank_routing_address": "KCBLKENX",
+    "other_account_routing_scheme": "ACCOUNT_NUMBER",
+    "other_account_routing_address": "1234567890"
+  },
+  "originator": {
+    "name": "Acme Coffee Ltd",
+    "address": "12 Market Street, Nairobi, Kenya",
+    "account_routing": { "scheme": "IBAN", "address": "KE12KCBL0000009876543210" }
   }
 }
 ```
@@ -812,7 +835,6 @@ Content-Type: application/json
 
 {
   "transaction_request_id": "4050046c-63b3-4868-8a22-14b4181d33a6",
-  "type": "SIMPLE",
   "from": {
     "bank_id": "gh.29.uk",
     "bank_routing": {
@@ -828,13 +850,17 @@ Content-Type: application/json
       "address": "7bc9a8e4-5d02-40e3-b129-1c3bf89de9f1"
     }
   },
+  "originator": {
+    "name": "Acme Coffee Ltd",
+    "address": "12 Market Street, Nairobi, Kenya",
+    "account_routing": { "scheme": "IBAN", "address": "KE12KCBL0000009876543210" }
+  },
   "value": {
     "currency": "KES",
     "amount": "50000.00"
   },
   "description": "Invoice payment INV-2026-0042",
   "value_date": "2026-05-04",
-  "charge_policy": "SHARED",
   "promise_id": "abc123def456...",
   "promise_blockchain": "Cardano"
 }
@@ -1078,111 +1104,99 @@ The dashboard does not expose any write operations. It is read-only by design.
 
 ## 16. Implementation — Technology Decisions
 
-### 16.1 Language: Go
+### 16.1 Language: Rust
 
-The OBP Bank Node is implemented in Go. Key reasons:
+The OBP Bank Node is implemented in Rust. `ARCHITECTURE.md` is the source of
+truth for this decision and its rationale (Cardano's serious tooling — `pallas`,
+`cardano-multiplatform-lib`, `oura`, `mithril` — is Rust, and doing Cardano
+natively avoids running a Rust sidecar from a Go node). Summary of properties:
 
-1. **Single binary deployment** — the OBP Bank Node compiles to a single self-contained binary. Docker images are small (~20MB). No runtime dependencies, no classpath issues.
-2. **Low memory footprint** — critical for deployment alongside CBS software on constrained hardware in African banking environments. A running OBP Bank Node instance targets <50MB RAM.
-3. **Excellent concurrency model** — goroutines handle the OBP Bank Node's concurrent concerns naturally: RabbitMQ listener, REST API server, Cardano writer, outbox processor, and dashboard server all run concurrently with minimal boilerplate.
-4. **Fast startup** — instant. The OBP Bank Node is ready in milliseconds after `docker run`.
-5. **Contributor accessibility** — Go is readable by any developer familiar with Java, Python, or C. The barrier to a first contribution is hours, not weeks. Important for attracting African bank developer contributions.
-6. **Strong standard library** — HTTP server, JSON, SQLite, TLS, and concurrent primitives are all in the standard library or well-maintained first-party packages.
+1. **Single static binary** — compiles to one self-contained binary (musl static
+   linking). Docker images are small (~20MB), no runtime dependencies.
+2. **Low memory footprint** — targets <50MB RAM, for deployment alongside CBS
+   software on constrained hardware in African banking environments.
+3. **Cardano tooling is native** — chain codecs, transaction building, and the
+   Ogmios client all run in-process; no second language for the chain code.
+4. **Fast startup** — ready in milliseconds after `docker run`.
+5. **Async concurrency** — `tokio` handles the node's concurrent concerns (RabbitMQ
+   consumer, REST server, Cardano writer, outbox worker) in one runtime.
 
 ### 16.2 Key Dependencies
 
-| Concern | Library | Notes |
+See `ARCHITECTURE.md` → "Library picks" for the authoritative crate list. Summary:
+
+| Concern | Crate | Notes |
 |---|---|---|
-| RabbitMQ client | `github.com/rabbitmq/amqp091-go` | Official RabbitMQ Go client |
-| REST API server | `github.com/go-chi/chi` | Lightweight, idiomatic router |
-| HTTP client (OBP) | `net/http` stdlib | Standard library sufficient |
-| SQLite outbox | `github.com/mattn/go-sqlite3` | Mature, CGO-based; or `modernc.org/sqlite` for pure Go |
-| Cardano / Ogmios | `tokio-tungstenite` (Rust) | JSON-RPC over WebSocket to local cardano-node |
-| Configuration | `github.com/spf13/viper` | YAML config with env var override |
-| Logging | `go.uber.org/zap` | Structured logging with correlation IDs |
-| Metrics | `github.com/prometheus/client_golang` | Prometheus metrics |
-| Testing | `testing` stdlib + `github.com/stretchr/testify` | Standard + assertions |
-| Dashboard UI | Embedded `html/template` + HTMX | Server-side rendered, minimal JS |
+| Async runtime | `tokio` (multi-thread) | Forced by every other async crate |
+| REST API server | `axum` + `tower-http` | Tokio-native router (south side) |
+| HTTP client (OBP) | `reqwest` | OBP API client + webhook delivery |
+| RabbitMQ client | `lapin` | Tokio-native AMQP |
+| SQLite outbox | `sqlx` | Async, compile-time-checked queries |
+| Cardano / Ogmios | `pallas` + `cardano-multiplatform-lib` + custom Ogmios client over `tokio-tungstenite` | JSON-RPC over WebSocket to local cardano-node |
+| Configuration | `figment` | YAML + env + CLI layered |
+| Logging | `tracing` + `tracing-subscriber` | Structured JSON output |
+| Metrics | `metrics` + `metrics-exporter-prometheus` | Prometheus scrape endpoint |
+| Errors | `thiserror` (library) + `anyhow` (binary) | Typed enums / glue layer |
 
 ### 16.3 Project Structure
 
+A Cargo workspace with two crates. See `ARCHITECTURE.md` → "Crate layout" for the
+authoritative tree and the reasoning (Cardano deps are heavy, so chain code is
+isolated in `obp-blockchain` to keep `obp-bank-node` fast to rebuild).
+
 ```
-obp-bank-node/
-├── cmd/
-│   └── obp-bank-node/
-│       └── main.go              # Entry point
-├── internal/
-│   ├── config/
-│   │   └── config.go            # Config loading and validation
-│   ├── api/
-│   │   ├── server.go            # REST API server (south side)
-│   │   ├── payment.go           # POST /obp-bank-node/.../transaction-requests
-│   │   ├── status.go            # GET /obp-bank-node/.../transaction-requests/{transaction_request_id}
-│   ├── messaging/
-│   │   ├── consumer.go          # RabbitMQ consumer
-│   │   ├── producer.go          # RabbitMQ producer (if needed)
-│   │   └── handlers.go          # Message type handlers
-│   ├── platform/
-│   │   └── client.go            # OBP REST API client (outbound to OBP API)
-│   ├── cardano/
-│   │   └── ogmios.rs            # Cardano record writing via Ogmios JSON-RPC
-│   ├── delivery/
-│   │   ├── delivery.go          # Delivery interface
-│   │   ├── webhook_obp.go       # Mode 1: REST webhook OBP format
-│   │   ├── webhook_iso20022.go  # Mode 2: REST webhook ISO 20022 format
-│   │   ├── database.go          # Mode 3: Database write
-│   │   └── file.go              # Mode 4: File drop
-│   ├── outbox/
-│   │   └── outbox.go            # SQLite outbox for reliable delivery
-│   ├── dashboard/
-│   │   ├── server.go            # Dashboard HTTP server
-│   │   ├── operations.go        # Operations view handlers
-│   │   ├── treasury.go          # Treasury view handlers
-│   │   ├── compliance.go        # Compliance view handlers
-│   │   └── templates/           # HTML templates
-│   └── telemetry/
-│       ├── telemetry.go         # Telemetry interface
-│       ├── prometheus.go        # Prometheus implementation
-│       └── console.go           # Console implementation (dev)
-├── pkg/
-│   └── models/
-│       └── models.go            # Shared data models (TransactionRequest etc.)
+OBP-Bank-Node/
+├── Cargo.toml                  # workspace root
+├── Cargo.lock
+├── crates/
+│   ├── obp-bank-node/          # main binary
+│   │   └── src/
+│   │       ├── main.rs
+│   │       ├── config.rs       # figment-based layered config
+│   │       ├── rest/           # axum south-side API (A1/A2)
+│   │       ├── amqp/           # lapin RabbitMQ consumer (Interface C)
+│   │       ├── outbox/         # sqlx SQLite outbox (durability)
+│   │       ├── delivery/       # CBS delivery modes (webhook OBP / ISO 20022 / db / file)
+│   │       ├── obp_api/        # reqwest client + OAuth2 (Interface B)
+│   │       └── health.rs
+│   └── obp-blockchain/         # backend trait + impls (Interface D)
+│       └── src/
+│           ├── lib.rs          # BlockchainBackend trait, chain-agnostic types
+│           ├── cardano/        # CardanoBackend (pallas + CML + Ogmios)
+│           └── mock.rs         # MockBackend for tests
 ├── docker/
-│   └── Dockerfile
-├── obp-bank-node-config.yaml.example      # Example configuration
-├── go.mod
-├── go.sum
+│   ├── docker-compose.cardano.yml
+│   └── cardano-bootstrap.sh
+├── docs/
+├── obp-bank-node-config.yaml.example
 ├── README.md
-├── ARCHITECTURE.md
-└── BANK-QUICKSTART.md           # Bank-facing quick start guide
+└── ARCHITECTURE.md
 ```
 
 ### 16.4 Core Interfaces
 
-The OBP Bank Node is built around three core interfaces that keep concerns cleanly separated:
+The OBP Bank Node is built around traits that keep concerns cleanly separated.
+The blockchain trait is the load-bearing one (see `ARCHITECTURE.md` →
+"Blockchain backend layer" for the rules that keep it chain-agnostic):
 
-```go
-// Delivery — how credits reach the bank's CBS
-type Delivery interface {
-    Deliver(ctx context.Context, credit *CreditInstruction) error
-    Name() string
-}
-
-// PlatformClient — how the OBP Bank Node talks to the OBP API
-type PlatformClient interface {
-    CreateTransactionRequest(ctx context.Context, req *TransactionRequest) (*TransactionRequestResponse, error)
-    GetTransactionRequest(ctx context.Context, id string) (*TransactionRequestResponse, error)
-}
-
-// BlockchainWriter — how the OBP Bank Node writes records on-chain
-type BlockchainWriter interface {
-    WritePromise(ctx context.Context, promise *PromiseRecord) (string, error)
-    WriteSettlementReference(ctx context.Context, ref *SettlementReference) (string, error)
-    WriteException(ctx context.Context, ex *ExceptionRecord) (string, error)
+```rust
+#[async_trait]
+pub trait BlockchainBackend: Send + Sync {
+    async fn write_promise(&self, p: &PromiseRecord) -> Result<TxReference>;
+    async fn write_settlement(&self, s: &SettlementRecord) -> Result<TxReference>;
+    async fn write_exception(&self, e: &ExceptionRecord) -> Result<TxReference>;
+    async fn confirm(&self, r: &TxReference) -> Result<ConfirmationStatus>;
 }
 ```
 
-These interfaces mean the Delivery mode, Platform client, and Blockchain writer are all swappable — mock implementations for testing, real implementations for production.
+Delivery (how credits reach the CBS) and the OBP API client (Interface B) sit
+behind their own traits in the same way. Each has a `Mock` implementation for
+tests and a real implementation for production, so they are swappable without
+touching callers.
+
+Note: `BlockchainBackend` is the pluggable chain backend — it is deliberately
+**not** called a "connector" so the word stays reserved for the OBP-API
+Connector concept. See the terminology note in `ARCHITECTURE.md`.
 
 ### 16.5 Repository
 

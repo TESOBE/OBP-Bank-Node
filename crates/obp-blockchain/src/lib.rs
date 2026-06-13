@@ -1,7 +1,7 @@
-//! Blockchain connector abstraction for OBP Bank Node.
+//! Blockchain backend abstraction for OBP Bank Node.
 //!
 //! Implementations live in submodules (`cardano`, `mock`). Callers depend
-//! only on the [`BlockchainConnector`] trait and the chain-agnostic record
+//! only on the [`BlockchainBackend`] trait and the chain-agnostic record
 //! types declared in this module.
 
 use async_trait::async_trait;
@@ -78,7 +78,7 @@ pub struct ExceptionRecord {
 }
 
 #[async_trait]
-pub trait BlockchainConnector: Send + Sync + 'static {
+pub trait BlockchainBackend: Send + Sync + 'static {
     async fn write_promise(&self, p: &PromiseRecord) -> Result<TxReference>;
     async fn write_settlement(&self, s: &SettlementRecord) -> Result<TxReference>;
     async fn write_exception(&self, e: &ExceptionRecord) -> Result<TxReference>;

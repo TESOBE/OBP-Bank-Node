@@ -48,12 +48,16 @@ Request body:
   "value":       { "currency": "KES", "amount": "1500.00" },
   "description": "Invoice 4471",
   "to": {
-    "otherBankRoutingScheme":     "BIC",
-    "otherBankRoutingAddress":    "KCBLKENXXXX",
-    "otherAccountRoutingScheme":  "IBAN",
-    "otherAccountRoutingAddress": "GB29NWBK60161331926819"
+    "other_bank_routing_scheme":     "BIC",
+    "other_bank_routing_address":    "KCBLKENXXXX",
+    "other_account_routing_scheme":  "IBAN",
+    "other_account_routing_address": "GB29NWBK60161331926819"
   },
-  "charge_policy": "SHARED"
+  "originator": {
+    "name":    "Acme Coffee Ltd",
+    "address": "12 Market Street, Nairobi, Kenya",
+    "account_routing": { "scheme": "IBAN", "address": "KE12KCBL0000009876543210" }
+  }
 }
 ```
 
@@ -62,17 +66,22 @@ Response — `202 Accepted`:
 ```json
 {
   "transaction_request_id": "tr-abc-123",
-  "type":                   "SIMPLE",
+  "type":                   "OPEN_CORRIDOR",
   "from": { "bank_id": "ke.01.kcs", "account_id": "…" },
   "to": {
-    "otherBankRoutingScheme":     "BIC",
-    "otherBankRoutingAddress":    "KCBLKENXXXX",
-    "otherAccountRoutingScheme":  "IBAN",
-    "otherAccountRoutingAddress": "GB29NWBK60161331926819"
+    "other_bank_routing_scheme":     "BIC",
+    "other_bank_routing_address":    "KCBLKENXXXX",
+    "other_account_routing_scheme":  "IBAN",
+    "other_account_routing_address": "GB29NWBK60161331926819"
+  },
+  "originator": {
+    "name":    "Acme Coffee Ltd",
+    "address": "12 Market Street, Nairobi, Kenya",
+    "account_routing": { "scheme": "IBAN", "address": "KE12KCBL0000009876543210" },
+    "source":  "explicit"
   },
   "value":         { "currency": "KES", "amount": "1500.00" },
   "description":   "Invoice 4471",
-  "charge_policy": "SHARED",
   "status":        "PROMISE_WRITTEN",
   "promise_id":         "<cardano tx hash>",
   "promise_blockchain": "Cardano",
@@ -141,14 +150,17 @@ The payload is the same in every mode:
 {
   "transaction_request_id": "tr-abc-123",
   "netting_snapshot_id":    "snap-…",
-  "type":                   "COUNTERPARTY",
   "from": { "bank_id": "…", "bank_routing": { "scheme": "BIC", "address": "…" } },
   "to":   { "bank_id": "…", "account_id": "…",
             "account_routing": { "scheme": "IBAN", "address": "…" } },
+  "originator": {
+    "name":    "Acme Coffee Ltd",
+    "address": "12 Market Street, Nairobi, Kenya",
+    "account_routing": { "scheme": "IBAN", "address": "KE12KCBL0000009876543210" }
+  },
   "value":              { "currency": "KES", "amount": "1500.00" },
   "description":        "Invoice 4471",
   "value_date":         "2026-05-09",
-  "charge_policy":      "SHARED",
   "promise_id":         "<cardano tx hash>",
   "promise_blockchain": "Cardano"
 }
@@ -329,10 +341,15 @@ curl -X POST http://local-node:8088/obp-bank-node/v5.1.0/transaction-requests \
     "value": { "currency": "KES", "amount": "100.00" },
     "description": "test",
     "to": {
-      "otherBankRoutingScheme":     "BIC",
-      "otherBankRoutingAddress":    "KCBLKENXXXX",
-      "otherAccountRoutingScheme":  "IBAN",
-      "otherAccountRoutingAddress": "GB29NWBK60161331926819"
+      "other_bank_routing_scheme":     "BIC",
+      "other_bank_routing_address":    "KCBLKENXXXX",
+      "other_account_routing_scheme":  "IBAN",
+      "other_account_routing_address": "GB29NWBK60161331926819"
+    },
+    "originator": {
+      "name":    "Acme Coffee Ltd",
+      "address": "12 Market Street, Nairobi, Kenya",
+      "account_routing": { "scheme": "IBAN", "address": "KE12KCBL0000009876543210" }
     }
   }'
 ```

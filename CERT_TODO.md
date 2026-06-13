@@ -73,7 +73,7 @@ rabbitmq:
   # username/password absent — identity comes from the cert
 ```
 
-Code change in `internal/messaging/consumer.go`: branch on `protocol` to call `amqp.DialTLS` with a `*tls.Config` populated from the TLS block. Roughly 30 lines.
+Code change in `crates/obp-bank-node/src/amqp/`: branch on `protocol` to connect lapin over TLS (`amqps://` URI) via `Connection::connect_with_config` with an `OwnedTLSConfig` built from the TLS block (client cert/key + CA chain). Roughly 30 lines.
 
 ## The CA tax
 
@@ -104,8 +104,8 @@ One credential to issue, rotate, revoke.
 | Stand up CA | TESOBE infra | Vault PKI recommended |
 | Enable `rabbitmq-auth-mechanism-ssl` plugin | Broker | One-line plugin enable + config |
 | Issue a broker server cert from the CA | TESOBE | Standard TLS server cert |
-| Add `tls:` block to `RabbitMQConfig` | `internal/config/config.go` | Optional; absent = current password mode |
-| Implement `amqps://` dialer | `internal/messaging/consumer.go` | Branch on `protocol`; build `*tls.Config`, call `amqp.DialTLS` |
+| Add `tls:` block to `RabbitMQConfig` | `crates/obp-bank-node/src/config.rs` | Optional; absent = current password mode |
+| Implement `amqps://` connection | `crates/obp-bank-node/src/amqp/` | Branch on `protocol`; build `OwnedTLSConfig`, call `Connection::connect_with_config` |
 | `POST /obp/v5.1.0/banks/{bank_id}/provision-bank-node` (cert mode) | OBP-API | Accepts CSR, signs against CA, creates vhost + maps permissions to CN, returns signed cert + chain + config bundle |
 | Renewal endpoint | OBP-API | `POST /provision-bank-node/renew` accepts a fresh CSR, returns new cert; old cert valid until it naturally expires |
 | Revocation | OBP-API + CA | Add cert serial to CRL; broker re-reads CRL on schedule |

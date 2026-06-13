@@ -1,8 +1,18 @@
 ## What it is
 
-A small Go service a bank runs inside its own network. It connects the bank's Core Banking System (CBS) to the cross-border payment network (an OBP API instance hosted by TESOBE) — without the bank needing to run any OBP infrastructure itself.
+A small Rust service a bank runs inside its own network. It connects the bank's Core Banking System (CBS) to the cross-border payment network (an OBP API instance hosted by TESOBE) — without the bank needing to run any OBP infrastructure itself.
 
 The bank only deals with one thing locally: a REST endpoint on `localhost`. Everything else — talking to the OBP API, writing to the Cardano blockchain, listening for instructions over RabbitMQ — happens behind that.
+
+## What it is not
+
+It is **not** an OBP Connector and **not** an OBP South-Side Adapter, even though it sits in similar territory:
+
+- An **OBP Connector** is Scala code *inside* OBP-API. The Bank Node is a separate process, so it isn't one.
+- An **OBP Adapter** is *called by* OBP-API over a message bus and responds with CBS data. The Bank Node does the opposite on Interface B — it is a *client* that calls OBP-API's REST.
+- An adapter also carries a lot of **bank-specific code** (translation logic for that one bank's CBS). The Bank Node carries **none** — it's one binary whose per-bank behaviour is pure *configuration* (YAML + a choice of delivery mode). The only bank-specific code lives on the bank's side of the A1/A2 boundary, not in the Node.
+
+It's a bank-side **node / gateway**: an OBP-API client plus a CBS-facing gateway plus a blockchain anchor. (Note: the internal `BlockchainBackend` trait is a pluggable chain backend — deliberately *not* named "connector", so that word stays reserved for the OBP-API concept.) See `ARCHITECTURE.md` for the full distinction.
 
 ## Four interfaces
 
@@ -43,7 +53,7 @@ Failed deliveries retry with backoff for 24 hours; after that the node writes a 
 ## What makes it useful
 
 - **No new API for the bank to learn.** Local endpoint is byte-for-byte an OBP Transaction Request.
-- **No counterparty pre-registration.** SIMPLE type — beneficiary routing is inline; corridors get created implicitly.
+- **No counterparty pre-registration.** OPEN_CORRIDOR type — beneficiary routing is inline; corridors get created implicitly.
 - **No SCA in the path.** Bank handles SCA before calling; node never challenges.
 - **Resilient on bad networks.** Local SQLite outbox absorbs platform outages — important for African deployment context.
 - **Auditable.** Every payment leaves a chain of Cardano records (Promise → Netting Snapshot → Settlement Reference) that compliance can verify independently.
