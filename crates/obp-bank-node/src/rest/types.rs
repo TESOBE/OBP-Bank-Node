@@ -7,7 +7,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Body of `POST .../transaction-request-types/OPEN_CORRIDOR/transaction-requests`.
-#[derive(Debug, Deserialize)]
+///
+/// Also `Serialize`: the handler re-serializes the validated request into the
+/// outbox as the canonical payload the dispatcher replays to OBP-API.
+#[derive(Debug, Deserialize, Serialize)]
 pub struct InitiateRequest {
     pub value: MoneyValue,
     pub description: String,

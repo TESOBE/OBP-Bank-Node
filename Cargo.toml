@@ -37,6 +37,17 @@ figment = { version = "0.10", features = ["yaml", "env"] }
 axum = "0.7"
 tower-http = { version = "0.5", features = ["trace"] }
 
+# HTTP client (Interface B — OBP API)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# durable outbox (SQLite)
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "sqlite",
+    "chrono",
+    "macros",
+] }
+
 # misc
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"

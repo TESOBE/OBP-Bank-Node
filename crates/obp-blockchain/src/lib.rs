@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod cardano;
 pub mod mock;
+pub mod settlement;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BlockchainError {
@@ -45,14 +46,47 @@ pub enum ConfirmationStatus {
 /// A Promise records that a payment has been initiated and is awaiting
 /// netting. Written immediately after the payment is durably stored in the
 /// outbox.
+///
+/// **Hash-commitment only.** The Promise that reaches the chain carries *no*
+/// cleartext payment data — only a salted SHA-256 commitment over the
+/// instruction, a schema tag, and a coarse timestamp. The cleartext and salt
+/// stay off-chain with the corridor parties and are revealed in a dispute
+/// (commit–reveal). This keeps PII/amounts off an immutable public ledger;
+/// non-repudiation comes from the Cardano tx being signed by the originating
+/// bank's wallet, not from the commitment itself.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromiseRecord {
-    pub bank_id: String,
-    pub transaction_request_id: String,
-    pub amount: String,
-    pub currency: String,
-    pub corridor: String,
+    /// Domain-separated schema tag, e.g. `obp.promise.v1`. Carries no payment data.
+    pub schema: String,
+    /// Hex-encoded SHA-256 over `salt ‖ canonical_instruction`.
+    pub commitment: String,
+    /// Coarse on-chain timestamp.
     pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl PromiseRecord {
+    pub const SCHEMA_V1: &'static str = "obp.promise.v1";
+
+    /// Build a v1 Promise commitment. `canonical_instruction` is a deterministic
+    /// serialization of the cleartext instruction (identifiers + payload);
+    /// `salt` must be retained off-chain — and shared with the counterparty —
+    /// so the commitment can be revealed and verified later. Neither input is
+    /// recoverable from the returned record.
+    pub fn commit_v1(
+        canonical_instruction: &[u8],
+        salt: &[u8],
+        created_at: chrono::DateTime<chrono::Utc>,
+    ) -> Self {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(salt);
+        hasher.update(canonical_instruction);
+        Self {
+            schema: Self::SCHEMA_V1.to_string(),
+            commitment: hex::encode(hasher.finalize()),
+            created_at,
+        }
+    }
 }
 
 /// A Settlement records the netted-and-settled outcome of a group of

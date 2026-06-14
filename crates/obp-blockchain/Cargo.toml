@@ -15,6 +15,12 @@ chrono.workspace = true
 ed25519-dalek.workspace = true
 futures-util.workspace = true
 hex.workspace = true
+# Cardano tx building (Phase 2) — individual pallas crates for stable import paths
+pallas-txbuilder = "1.1"
+pallas-primitives = "1.1"
+pallas-crypto = "1.1"
+pallas-codec = "1.1"
+pallas-addresses = "1.1"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

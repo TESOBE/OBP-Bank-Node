@@ -43,7 +43,7 @@ fn make_ref(kind: &str, id: &str) -> TxReference {
 #[async_trait]
 impl BlockchainBackend for MockBackend {
     async fn write_promise(&self, p: &PromiseRecord) -> Result<TxReference> {
-        let r = make_ref("promise", &p.transaction_request_id);
+        let r = make_ref("promise", &p.commitment);
         self.writes.lock().expect("mutex poisoned").push(r.clone());
         Ok(r)
     }
@@ -71,14 +71,9 @@ mod tests {
     use chrono::Utc;
 
     fn sample_promise(id: &str) -> PromiseRecord {
-        PromiseRecord {
-            bank_id: "bank.test".into(),
-            transaction_request_id: id.into(),
-            amount: "100.00".into(),
-            currency: "EUR".into(),
-            corridor: "EUR/EUR".into(),
-            created_at: Utc::now(),
-        }
+        // The id stands in for the cleartext instruction; same id ⇒ same
+        // commitment ⇒ same deterministic mock tx id.
+        PromiseRecord::commit_v1(id.as_bytes(), b"test-salt", Utc::now())
     }
 
     #[tokio::test]

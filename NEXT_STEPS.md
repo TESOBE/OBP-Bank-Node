@@ -17,32 +17,60 @@ The Rust rewrite is early. What exists and builds today
 - **South-side REST API (Interface A)** — axum, port 8088. Routes live:
   `POST /obp-bank-node/v5.1.0/transaction-requests`,
   `GET .../transaction-requests/{id}`, `GET .../transaction-requests`, and
-  `/health` (+ versioned alias). **All handlers are Phase 1 stubs**: they mint a
-  UUID, log, and return a hardcoded `202` / `INITIATED` shape — no outbox, no
-  OBP-API call, no chain write. (Note: the `initiate_payment` stub still emits
-  the old `COUNTERPARTY` / `counterparty_id` response — it has not been migrated
-  to the `OPEN_CORRIDOR` + inline-routing + `originator` body in `A1_A2.md`. The
-  *request* type does already parse snake_case routing fields.)
+  `/health` (+ versioned alias). **Handlers are Phase 1 stubs** for the
+  side-effect path: they mint a UUID, log, and return a `202` / `INITIATED`
+  shape — no outbox, no OBP-API call, no chain write. `initiate_payment` now
+  emits the `OPEN_CORRIDOR` + inline-routing + `originator` response body from
+  `A1_A2.md` (the old `COUNTERPARTY` / `counterparty_id` shape is gone) and
+  performs synchronous request validation (steps 2–3 of the A1.1 table):
+  malformed JSON / missing fields → `OBP-10001`, zero/negative amount →
+  `OBP-40008`, empty `originator` fields → `OBP-BANK-NODE-ORIGINATOR-001`.
+  Currency → settlement-account resolution (`422 OBP-BANK-NODE-ROUTING-001`)
+  is deferred until the OBP API client + per-currency `bank` config land.
 - **Blockchain connector (Interface D), partial** — `BlockchainBackend` trait,
   `MockBackend`, and a `CardanoBackend` whose `new()` (Ogmios client + wallet
   loading) and `confirm()` work. `write_promise` / `write_settlement` /
   `write_exception` return "not yet implemented" — that is Phase 2 (see
   `NEXT_TODO.md`).
 
-**Not built yet in Rust** (existed only in the deleted Go skeleton):
+**Outbound payment path — now built (2026-06-13):**
+
+- **Outbox (durability)** — `outbox.rs`, `sqlx` + SQLite. Lifecycle
+  `INITIATED → SUBMITTED → PROMISE_WRITTEN` / `EXCEPTION`, per-request salt
+  column, RFC3339 timestamps, backoff-aware `claim_due`. `initiate_payment` now
+  persists the request and returns `202` *before* any external call (the 202 is
+  durable); the handler is no longer a stub. `GET`/`list` read the outbox.
+- **OBP API client (Interface B)** — `obp_client.rs`, `reqwest`. Submits the
+  `OPEN_CORRIDOR` TR to `/obp/v7.0.0/...`. Error split: a 400/422 with an
+  `OBP-NNNNN` business code is terminal (`EXCEPTION`); 5xx/timeout/429/auth/404
+  are retryable (a misconfig must not fail a real payment). Auth is abstracted
+  (`ObpAuth`); OAuth1.0a request signing is still a stub — `None` runs against a
+  local/mock OBP-API.
+- **Dispatcher** — `dispatcher.rs`, background tokio task. Drains the outbox:
+  submit to OBP → write the Cardano Promise **commitment** (hash-only, see the
+  privacy decision below) → advance status, with backoff on transport failure.
+  Verified end-to-end live against a stub OBP-API + `MockBackend`:
+  POST → `INITIATED` → (tick) → `PROMISE_WRITTEN` with a SHA-256 `promise_id`.
+
+  **Privacy / dispute model (decided 2026-06-13):** the Promise puts **only a
+  salted SHA-256 commitment** on-chain, never cleartext amount/currency/PII. The
+  chain is a non-repudiation anchor for inter-bank disputes (commit–reveal);
+  authorship comes from Bank A's wallet signature, not the hash. Open follow-up:
+  the salt must travel to the counterparty (Interface C) for the reveal to work.
+
+**Still not built yet in Rust:**
 
 - **AMQP / RabbitMQ consumer (Interface C)** — no `lapin` dependency yet; the
-  entire inbound-message path is absent.
-- **OBP API client (Interface B)** — no `reqwest` client yet.
-- **Outbox (durability)** — no `sqlx` / SQLite persistence yet.
+  entire inbound-message path is absent. (Also owns salt distribution to Bank B.)
 - **CBS delivery modes (A2)** — none of webhook-OBP / webhook-ISO20022 /
   database / file-drop are implemented yet.
+- **OAuth1.0a request signing** for the live OBP-API integration (`ObpAuth`
+  scaffolding is in place).
 
-So the binary boots, serves the REST surface with stubbed responses, and can
-reach a Cardano node for `confirm()` — but no payment yet flows end-to-end. The
-Go skeleton's "working end-to-end" state (RabbitMQ round-trip, functional
-Postgres delivery) did **not** carry over; that code was deleted on the switch
-to Rust.
+So the binary now boots and runs a payment end-to-end on the *outbound* side:
+REST `202` → durable outbox → OBP-API submit → Cardano Promise commitment, all
+asynchronous and crash-safe. What remains for a full round-trip is the inbound
+Interface C path and the CBS delivery modes.
 
 ## The design docs in this repo
 

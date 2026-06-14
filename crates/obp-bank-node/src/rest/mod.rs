@@ -7,13 +7,12 @@
 //! payment initiation still mirrors the OBP `OPEN_CORRIDOR` Transaction Request
 //! shape so banks already familiar with OBP can reuse their validators.
 
-use std::sync::Arc;
-
 use axum::{
     routing::{get, post},
     Router,
 };
-use obp_blockchain::BlockchainBackend;
+
+use crate::outbox::OutboxStore;
 
 pub mod handlers;
 pub mod types;
@@ -21,9 +20,12 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
+/// Shared state for the south-side handlers. The handlers only persist to the
+/// outbox and read it back; the external work (OBP-API, chain) is the
+/// dispatcher's job, so the blockchain backend lives there, not here.
 #[derive(Clone)]
 pub struct BankNodeState {
-    pub backend: Arc<dyn BlockchainBackend>,
+    pub outbox: OutboxStore,
     pub blockchain_label: &'static str,
     pub bank_id: String,
     pub account_id: String,
