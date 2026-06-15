@@ -17,9 +17,10 @@ The Rust rewrite is early. What exists and builds today
 - **South-side REST API (Interface A)** — axum, port 8088. Routes live:
   `POST /obp-bank-node/v5.1.0/transaction-requests`,
   `GET .../transaction-requests/{id}`, `GET .../transaction-requests`, and
-  `/health` (+ versioned alias). **Handlers are Phase 1 stubs** for the
-  side-effect path: they mint a UUID, log, and return a `202` / `INITIATED`
-  shape — no outbox, no OBP-API call, no chain write. `initiate_payment` now
+  `/health` (+ versioned alias). The side-effect path is now wired (see the
+  2026-06-13 outbound update below): `initiate_payment` validates, persists to
+  the outbox, and returns `202` / `INITIATED`, with the dispatcher driving the
+  OBP-API submit and chain write asynchronously. `initiate_payment` now
   emits the `OPEN_CORRIDOR` + inline-routing + `originator` response body from
   `A1_A2.md` (the old `COUNTERPARTY` / `counterparty_id` shape is gone) and
   performs synchronous request validation (steps 2–3 of the A1.1 table):
