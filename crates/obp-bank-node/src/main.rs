@@ -166,31 +166,37 @@ impl Default for EvidenceConfig {
     }
 }
 
-/// Interface B — how to reach OBP-API. The `oauth2_*` fields carry the OBP
-/// OAuth1.0a 4-tuple from registration. Request signing for that scheme is not
-/// wired yet (see [`ObpAuth::OAuth1`]); with the fields empty the client runs
-/// unauthenticated, which is fine against a local/mock OBP-API.
+/// Interface B — how to reach OBP-API. The Bank Node authenticates as a
+/// configured service: OAuth2 client-credentials (set `token_url` + `client_id`
+/// + `client_secret`) or a pre-obtained DirectLogin token. With all of them
+/// empty the client runs unauthenticated, which is fine against a local/mock
+/// OBP-API.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct ObpApiConfig {
     base_url: String,
+    /// OAuth2 token endpoint for the client-credentials grant.
     #[serde(default)]
-    oauth2_consumer_key: String,
+    token_url: String,
     #[serde(default)]
-    oauth2_consumer_secret: String,
+    client_id: String,
     #[serde(default)]
-    oauth2_access_token: String,
+    client_secret: String,
     #[serde(default)]
-    oauth2_token_secret: String,
+    scope: Option<String>,
+    /// Alternative to client-credentials: a pre-obtained DirectLogin token.
+    #[serde(default)]
+    direct_login_token: String,
 }
 
 impl Default for ObpApiConfig {
     fn default() -> Self {
         ObpApiConfig {
             base_url: "http://localhost:8080".into(),
-            oauth2_consumer_key: String::new(),
-            oauth2_consumer_secret: String::new(),
-            oauth2_access_token: String::new(),
-            oauth2_token_secret: String::new(),
+            token_url: String::new(),
+            client_id: String::new(),
+            client_secret: String::new(),
+            scope: None,
+            direct_login_token: String::new(),
         }
     }
 }
@@ -384,20 +390,24 @@ fn build_amqp_uri(cfg: &RabbitMqConfig) -> String {
     )
 }
 
-/// Choose the OBP-API auth scheme from config. With no `oauth2_consumer_key`
-/// the client runs unauthenticated (local/mock OBP-API). OAuth1.0a signing is
-/// still a stub — see [`ObpAuth::OAuth1`].
+/// Choose the OBP-API auth scheme from config. Prefer OAuth2 client-credentials
+/// when a `client_id` is set, fall back to a DirectLogin token, and otherwise
+/// run unauthenticated (local/mock OBP-API).
 fn build_obp_auth(cfg: &ObpApiConfig) -> ObpAuth {
-    if cfg.oauth2_consumer_key.is_empty() {
+    if !cfg.client_id.is_empty() {
+        ObpAuth::ClientCredentials {
+            token_url: cfg.token_url.clone(),
+            client_id: cfg.client_id.clone(),
+            client_secret: cfg.client_secret.clone(),
+            scope: cfg.scope.clone(),
+        }
+    } else if !cfg.direct_login_token.is_empty() {
+        ObpAuth::DirectLogin {
+            token: cfg.direct_login_token.clone(),
+        }
+    } else {
         warn!("no OBP-API credentials configured — OBP client will send unauthenticated requests");
         ObpAuth::None
-    } else {
-        ObpAuth::OAuth1 {
-            consumer_key: cfg.oauth2_consumer_key.clone(),
-            consumer_secret: cfg.oauth2_consumer_secret.clone(),
-            access_token: cfg.oauth2_access_token.clone(),
-            token_secret: cfg.oauth2_token_secret.clone(),
-        }
     }
 }
 

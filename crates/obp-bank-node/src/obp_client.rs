@@ -19,10 +19,11 @@
 //!     business code (e.g. an unroutable destination). Move the row to
 //!     `EXCEPTION`. A misconfiguration must not be mistaken for this.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
-use tracing::{debug, warn};
+use tokio::sync::Mutex;
+use tracing::debug;
 
 /// OBP API version segment for the Transaction Request endpoint.
 const OBP_API_VERSION: &str = "v7.0.0";
@@ -50,14 +51,9 @@ impl ObpClientError {
 
 /// How the Bank Node authenticates to OBP-API.
 ///
-/// The registration config carries an OBP OAuth1.0a 4-tuple
-/// (`oauth2_consumer_key/secret`, `oauth2_access_token/token_secret`).
-/// HMAC-SHA1 request signing for that scheme is not wired yet — [`Self::OAuth1`]
-/// currently sends the request unsigned and warns. Use [`Self::DirectLogin`]
-/// (a single token header, also supported by OBP) or [`Self::None`] until then.
-// `DirectLogin` and the OAuth1 fields are wired through config but not yet
-// consumed by `apply()` (signing is a stub) — kept as the auth surface the
-// live OBP-API integration will fill in.
+/// The Bank Node is a configured server-side service, so it uses OBP-API's
+/// OAuth2 client-credentials (machine-to-machine) grant, or a pre-obtained
+/// DirectLogin token. There is no per-request signing.
 #[allow(dead_code)]
 #[derive(Clone)]
 pub enum ObpAuth {
@@ -65,37 +61,38 @@ pub enum ObpAuth {
     None,
     /// OBP DirectLogin: a pre-obtained token sent as `Authorization: DirectLogin token="..."`.
     DirectLogin { token: String },
-    /// OBP OAuth1.0a. Not yet signing — placeholder for the live integration.
-    OAuth1 {
-        consumer_key: String,
-        consumer_secret: String,
-        access_token: String,
-        token_secret: String,
+    /// OAuth2 client-credentials grant. The client exchanges `client_id` /
+    /// `client_secret` at `token_url` for a short-lived bearer token (cached
+    /// until shortly before expiry, then refreshed).
+    ClientCredentials {
+        token_url: String,
+        client_id: String,
+        client_secret: String,
+        scope: Option<String>,
     },
 }
 
-impl ObpAuth {
-    fn apply(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match self {
-            ObpAuth::None => req,
-            ObpAuth::DirectLogin { token } => {
-                req.header("Authorization", format!("DirectLogin token=\"{token}\""))
-            }
-            ObpAuth::OAuth1 { .. } => {
-                warn!(
-                    "ObpAuth::OAuth1 selected but HMAC-SHA1 signing is not implemented yet — \
-                     sending the request unsigned; OBP-API will reject it if it enforces auth"
-                );
-                req
-            }
-        }
-    }
+/// A fetched OAuth2 bearer token plus the instant we should refresh it at.
+#[derive(Clone)]
+struct CachedToken {
+    bearer: String,
+    refresh_at: Instant,
+}
+
+/// The slice of the OAuth2 token-endpoint response we use.
+#[derive(Deserialize)]
+struct TokenResponse {
+    access_token: String,
+    #[serde(default)]
+    expires_in: Option<u64>,
 }
 
 pub struct ObpClient {
     http: reqwest::Client,
     base_url: String,
     auth: ObpAuth,
+    /// Cached client-credentials token (unused for the other auth schemes).
+    token: Mutex<Option<CachedToken>>,
 }
 
 /// The slice of the OBP Transaction Request response the Bank Node cares about:
@@ -116,7 +113,90 @@ impl ObpClient {
             // Trim a trailing slash so URL joins are unambiguous.
             base_url: base_url.into().trim_end_matches('/').to_string(),
             auth,
+            token: Mutex::new(None),
         })
+    }
+
+    /// Attach OBP-API credentials to a request. For client-credentials this
+    /// fetches (and caches) a bearer token, refreshing it shortly before expiry.
+    async fn authorize(
+        &self,
+        req: reqwest::RequestBuilder,
+    ) -> Result<reqwest::RequestBuilder, ObpClientError> {
+        match &self.auth {
+            ObpAuth::None => Ok(req),
+            ObpAuth::DirectLogin { token } => {
+                Ok(req.header("Authorization", format!("DirectLogin token=\"{token}\"")))
+            }
+            ObpAuth::ClientCredentials { .. } => {
+                let bearer = self.bearer_token().await?;
+                Ok(req.header("Authorization", format!("Bearer {bearer}")))
+            }
+        }
+    }
+
+    /// Return a valid client-credentials bearer token, fetching a fresh one when
+    /// the cache is empty or close to expiry.
+    async fn bearer_token(&self) -> Result<String, ObpClientError> {
+        let ObpAuth::ClientCredentials {
+            token_url,
+            client_id,
+            client_secret,
+            scope,
+        } = &self.auth
+        else {
+            return Err(ObpClientError::Transport(
+                "bearer_token called for a non-client-credentials auth scheme".into(),
+            ));
+        };
+
+        let mut guard = self.token.lock().await;
+        if let Some(cached) = guard.as_ref() {
+            if Instant::now() < cached.refresh_at {
+                return Ok(cached.bearer.clone());
+            }
+        }
+
+        // Standard OAuth2 client-credentials: POST the grant to the token
+        // endpoint, authenticating the client with HTTP Basic.
+        let mut form = vec![("grant_type", "client_credentials".to_string())];
+        if let Some(scope) = scope {
+            form.push(("scope", scope.clone()));
+        }
+        let resp = self
+            .http
+            .post(token_url)
+            .basic_auth(client_id, Some(client_secret))
+            .form(&form)
+            .send()
+            .await
+            .map_err(|e| ObpClientError::Transport(format!("OAuth2 token request: {e}")))?;
+
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| ObpClientError::Transport(format!("reading token response: {e}")))?;
+        if !status.is_success() {
+            return Err(ObpClientError::Transport(format!(
+                "OAuth2 token endpoint returned {status}: {}",
+                truncate(&text, 500)
+            )));
+        }
+
+        let parsed: TokenResponse = serde_json::from_str(&text)
+            .map_err(|e| ObpClientError::Transport(format!("parsing token response: {e}")))?;
+
+        // Refresh a little before the real expiry; default to 5 min when the
+        // server omits `expires_in`.
+        let lifetime = parsed.expires_in.unwrap_or(300);
+        let lead = lifetime.min(30);
+        let refresh_at = Instant::now() + Duration::from_secs(lifetime.saturating_sub(lead));
+        *guard = Some(CachedToken {
+            bearer: parsed.access_token.clone(),
+            refresh_at,
+        });
+        Ok(parsed.access_token)
     }
 
     fn transaction_requests_url(&self, bank_id: &str, account_id: &str) -> String {
@@ -146,7 +226,7 @@ impl ObpClient {
             .post(&url)
             .header("Content-Type", "application/json")
             .body(body_json.to_owned());
-        let req = self.auth.apply(req);
+        let req = self.authorize(req).await?;
 
         let resp = req
             .send()

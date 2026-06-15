@@ -565,10 +565,13 @@ bank:
 
 obp_api:
   base_url: "http://localhost:8080"
-  oauth2_consumer_key: "provided-at-registration"
-  oauth2_consumer_secret: "provided-at-registration"
-  oauth2_access_token: "provided-at-registration"
-  oauth2_token_secret: "provided-at-registration"
+  # OAuth2 client-credentials (machine-to-machine).
+  token_url: "http://localhost:8080/oauth2/token"
+  client_id: "provided-at-registration"
+  client_secret: "provided-at-registration"
+  # scope: "..."          # optional
+  # Alternative: a pre-obtained DirectLogin token.
+  # direct_login_token: ""
 
 rabbitmq:
   # Defaults match the rabbitmq:3-management Docker image:

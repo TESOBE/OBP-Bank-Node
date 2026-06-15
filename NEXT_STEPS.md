@@ -28,11 +28,14 @@ The Rust rewrite is early. What exists and builds today
   `OBP-40008`, empty `originator` fields → `OBP-BANK-NODE-ORIGINATOR-001`.
   Currency → settlement-account resolution (`422 OBP-BANK-NODE-ROUTING-001`)
   is deferred until the OBP API client + per-currency `bank` config land.
-- **Blockchain connector (Interface D), partial** — `BlockchainBackend` trait,
-  `MockBackend`, and a `CardanoBackend` whose `new()` (Ogmios client + wallet
-  loading) and `confirm()` work. `write_promise` / `write_settlement` /
-  `write_exception` return "not yet implemented" — that is Phase 2 (see
-  `NEXT_TODO.md`).
+- **Blockchain connector (Interface D)** — `BlockchainBackend` trait,
+  `MockBackend`, and a `CardanoBackend` with `new()` (Ogmios client + wallet
+  loading), `confirm()`, and the `write_promise` / `write_settlement` /
+  `write_exception` notary writes all implemented: each builds, signs, and
+  submits a metadata-only self-payment via `tx::build_signed_payment` + Ogmios
+  (`NEXT_TODO.md` Phase 2). The remaining `confirm()` limitation is depth — it
+  reports presence via a UTxO lookup, not confirmation depth; a chain-sync
+  follower is the follow-on.
 
 **Outbound payment path — now built (2026-06-13):**
 
@@ -45,8 +48,10 @@ The Rust rewrite is early. What exists and builds today
   `OPEN_CORRIDOR` TR to `/obp/v7.0.0/...`. Error split: a 400/422 with an
   `OBP-NNNNN` business code is terminal (`EXCEPTION`); 5xx/timeout/429/auth/404
   are retryable (a misconfig must not fail a real payment). Auth is abstracted
-  (`ObpAuth`); OAuth1.0a request signing is still a stub — `None` runs against a
-  local/mock OBP-API.
+  (`ObpAuth`): OBP-API's OAuth2 client-credentials (M2M) grant — token fetch +
+  cache with refresh-before-expiry — or a DirectLogin token, selected from
+  config. With no credentials it runs unauthenticated against a local/mock
+  OBP-API.
 - **Dispatcher** — `dispatcher.rs`, background tokio task. Drains the outbox:
   submit to OBP → write the Cardano Promise **commitment** (hash-only, see the
   privacy decision below) → advance status, with backoff on transport failure.
@@ -88,8 +93,6 @@ The Rust rewrite is early. What exists and builds today
 
 - **Other A2 delivery modes** — webhook-ISO20022 / database / file-drop (only
   `webhook_obp` is wired); plus the A2 retry schedule.
-- **OAuth1.0a request signing** for the live OBP-API integration (`ObpAuth`
-  scaffolding is in place).
 - **The OBP-API half** — recording the promise (status/salt/`cardano_tx_hash`)
   and the server-side RabbitMQ publish of `credit_notification`(+salt) /
   `settlement_instruction`. This is the PoC's critical path and lives in the
@@ -193,17 +196,14 @@ In rough order of how big a commitment each is:
   decides a netting cycle is closed and emits the instruction) is still pending.
 
 **Medium / incremental Bank Node work:**
-- Phase 2 of the Rust `CardanoBackend`: build, sign, and submit
-  metadata-only transactions for Promise / Settlement Reference / Exception
-  records via `pallas` against the local preprod node (already syncing in
-  Docker — see `docker/README.md`). Funded preprod wallet already on disk
-  (1000 tADA). Note the *settlement* path already does real ADA tx
-  build/sign/submit; this item is the notary-anchor writes specifically
-  (`write_promise` / `write_settlement` / `write_exception` still stubbed).
+- Integration test of the inbound transport: the `interface_c::Router` logic
+  has good unit coverage, but `consumer.rs` (the `lapin` AMQP wiring — dispatch
+  by `MessageId`, reply-envelope serialization to `replyTo`) has none. Stand the
+  real consumer up against a local RabbitMQ, publish the four message types, and
+  assert evidence capture / CBS delivery / commitment-mismatch refusal. This is
+  the largest untested surface and is fully self-contained (no OBP-API needed).
 - Other A2 CBS delivery modes — only `webhook_obp` is wired; add
   webhook-ISO20022 / database / file-drop, plus the A2 retry schedule.
-- OAuth1.0a request signing for the live OBP-API (`ObpAuth` scaffold is in
-  place; currently `None` → runs against local/mock).
 - Per-vhost multi-tenant topology (`/bank.{bank_id}`) — decided but not yet
   wired in code. TLS / `amqps://` for Interface C is a follow-on once the
   broker is mTLS-enabled (see `CERT_TODO.md`).

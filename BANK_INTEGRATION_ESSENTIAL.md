@@ -197,11 +197,14 @@ bank:
   view_id:    "owner"
 
 obp_api:
-  base_url:               "https://obp-api.example.com"
-  oauth2_consumer_key:    "..."
-  oauth2_consumer_secret: "..."
-  oauth2_access_token:    "..."
-  oauth2_token_secret:    "..."
+  base_url:      "https://obp-api.example.com"
+  # OAuth2 client-credentials (machine-to-machine).
+  token_url:     "https://obp-api.example.com/oauth2/token"
+  client_id:     "..."
+  client_secret: "..."
+  # scope:       "..."          # optional
+  # Alternative: a pre-obtained DirectLogin token.
+  # direct_login_token: "..."
 
 rabbitmq:
   host:          "rmq.openbankproject.com"
