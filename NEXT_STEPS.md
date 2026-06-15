@@ -58,19 +58,47 @@ The Rust rewrite is early. What exists and builds today
   authorship comes from Bank A's wallet signature, not the hash. Open follow-up:
   the salt must travel to the counterparty (Interface C) for the reveal to work.
 
+**Inbound path — now built (2026-06-14):**
+
+- **Interface C consumer (`lapin`)** — connects to the bank's RabbitMQ vhost,
+  consumes `obp_rpc_queue`, dispatches by `MessageId`, replies with the OBP
+  inbound-envelope. Off by default (`rabbitmq.enabled=false`); the message
+  *logic* (`interface_c::Router`) is transport-free and unit-tested without a
+  broker. Handlers: `credit_notification` (full), `settlement_instruction`
+  (seam — chain-settle trigger pending), `netting_snapshot` / `status_update`
+  (record/log), unknown → `OBP-BANK-NODE-NOT-IMPLEMENTED`.
+- **Salt delivery + evidence store** — `obp_credit_notification` carries the
+  evidence triplet (`promise_commitment`, `promise_salt`, `promise_preimage`).
+  The handler recomputes `SHA-256(salt ‖ preimage)` via the shared
+  `PromiseRecord::verify_v1` and **refuses to credit on a mismatch**
+  (`OBP-BANK-NODE-COMMITMENT-MISMATCH`). Verified or not, it lands in a durable
+  `evidence` SQLite store — so Bank B holds the salt + preimage independently of
+  Bank A and can run the commit–reveal proof.
+- **A2 CBS delivery (`webhook_obp`)** — `cbs::CbsClient` posts the credit to the
+  bank's CBS (bearer = `local_secret`), expecting `{status, cbs_reference}`.
+- **Settlement wiring** — the `settlement_instruction` handler now maps the
+  instruction (this node = debtor, `debtor.account` from `settles_from()`) and
+  calls `CardanoAdaSettlement::settle`, which does the FX sizing + real ADA
+  tx build/sign/submit. `main` builds the settlement backend on Cardano (sharing
+  the notary's wallet/Ogmios/submit-lock); mock mode has none. Failures →
+  `OBP-BANK-NODE-SETTLEMENT-FAILED`; no rail → `…-SETTLEMENT-NOT-CONFIGURED`.
+
 **Still not built yet in Rust:**
 
-- **AMQP / RabbitMQ consumer (Interface C)** — no `lapin` dependency yet; the
-  entire inbound-message path is absent. (Also owns salt distribution to Bank B.)
-- **CBS delivery modes (A2)** — none of webhook-OBP / webhook-ISO20022 /
-  database / file-drop are implemented yet.
+- **Other A2 delivery modes** — webhook-ISO20022 / database / file-drop (only
+  `webhook_obp` is wired); plus the A2 retry schedule.
 - **OAuth1.0a request signing** for the live OBP-API integration (`ObpAuth`
   scaffolding is in place).
+- **The OBP-API half** — recording the promise (status/salt/`cardano_tx_hash`)
+  and the server-side RabbitMQ publish of `credit_notification`(+salt) /
+  `settlement_instruction`. This is the PoC's critical path and lives in the
+  OBP-API Scala codebase, not here.
 
-So the binary now boots and runs a payment end-to-end on the *outbound* side:
-REST `202` → durable outbox → OBP-API submit → Cardano Promise commitment, all
-asynchronous and crash-safe. What remains for a full round-trip is the inbound
-Interface C path and the CBS delivery modes.
+So the binary now boots and runs the *outbound* path end-to-end (REST `202` →
+outbox → OBP-API submit → Cardano Promise commitment) and has the *inbound*
+Interface C consumer ready to receive credit notifications, capture the salt as
+evidence, and deliver credits to the CBS. The remaining gap to a full round-trip
+is the OBP-API server-side publishing + the settlement-trigger wiring.
 
 ## The design docs in this repo
 

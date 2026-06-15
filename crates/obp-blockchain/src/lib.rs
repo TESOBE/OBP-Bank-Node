@@ -77,15 +77,29 @@ impl PromiseRecord {
         salt: &[u8],
         created_at: chrono::DateTime<chrono::Utc>,
     ) -> Self {
+        Self {
+            schema: Self::SCHEMA_V1.to_string(),
+            commitment: Self::compute_commitment(canonical_instruction, salt),
+            created_at,
+        }
+    }
+
+    /// The commitment hash: hex SHA-256 over `salt ‖ canonical_instruction`.
+    /// The single definition of the scheme — both the writer ([`Self::commit_v1`])
+    /// and the verifier ([`Self::verify_v1`]) go through here so they can't drift.
+    pub fn compute_commitment(canonical_instruction: &[u8], salt: &[u8]) -> String {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(salt);
         hasher.update(canonical_instruction);
-        Self {
-            schema: Self::SCHEMA_V1.to_string(),
-            commitment: hex::encode(hasher.finalize()),
-            created_at,
-        }
+        hex::encode(hasher.finalize())
+    }
+
+    /// Verify a revealed `(canonical_instruction, salt)` pair against an
+    /// `expected_commitment` (hex). This is the beneficiary's check in the
+    /// commit–reveal proof — recompute the hash and compare, case-insensitively.
+    pub fn verify_v1(canonical_instruction: &[u8], salt: &[u8], expected_commitment: &str) -> bool {
+        Self::compute_commitment(canonical_instruction, salt).eq_ignore_ascii_case(expected_commitment)
     }
 }
 

@@ -103,6 +103,11 @@ pub trait SettlementBackend: Send + Sync + 'static {
     /// Identifier of the rail this backend settles on, e.g. `"cardano-ada"`.
     fn system(&self) -> &str;
 
+    /// The account this backend pays *out of* (the debtor account it controls).
+    /// Callers fill `SettlementInstruction.debtor.account` with this; `settle`
+    /// rejects any instruction whose debtor account doesn't match.
+    fn settles_from(&self) -> &str;
+
     /// Move value to extinguish one netted position. Distinct from
     /// [`BlockchainBackend::write_settlement`](crate::BlockchainBackend::write_settlement),
     /// which only notarizes the outcome and moves nothing.

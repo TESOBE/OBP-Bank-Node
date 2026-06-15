@@ -153,6 +153,10 @@ impl SettlementBackend for CardanoAdaSettlement {
         "cardano-ada"
     }
 
+    fn settles_from(&self) -> &str {
+        &self.wallet.address
+    }
+
     async fn settle(&self, instruction: &SettlementInstruction) -> Result<SettlementOutcome> {
         // This node can only pay out from its own wallet. Reject instructions
         // where we are not the debtor before doing any work.

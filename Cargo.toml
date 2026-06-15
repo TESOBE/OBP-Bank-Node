@@ -40,6 +40,11 @@ tower-http = { version = "0.5", features = ["trace"] }
 # HTTP client (Interface B — OBP API)
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
+# AMQP / RabbitMQ (Interface C — inbound from OBP API)
+lapin = "2"
+tokio-executor-trait = "3"
+tokio-reactor-trait = "1"
+
 # durable outbox (SQLite)
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",

@@ -18,6 +18,9 @@ obp_api:
   oauth2_token_secret: "provided-at-registration"
 
 rabbitmq:
+  # Interface C — inbound from OBP-API. Off by default so the node boots without
+  # a broker; set true to start the consumer.
+  enabled: false
   # Defaults match the rabbitmq:3-management Docker image:
   #   AMQP        amqp://guest:guest@localhost:5672/
   #   Management  http://localhost:15672  (guest / guest)
@@ -25,7 +28,8 @@ rabbitmq:
   port: 5672
   username: "guest"
   password: "guest"
-  virtual_host: "/"
+  # Per-bank isolation: each bank consumes on its own vhost, e.g. /bank.ke.01.kcs
+  virtual_host: "/bank.ke.01.kcs"
   request_queue: "obp_rpc_queue"
 
 blockchain:
@@ -74,3 +78,8 @@ dashboard:
 
 outbox:
   path: "/app/outbox/obp-bank-node.db"
+
+# Beneficiary-side evidence store: received credit notifications + the salts that
+# let this bank open Bank A's on-chain commitment in a dispute (commit–reveal).
+evidence:
+  path: "/app/outbox/evidence.db"

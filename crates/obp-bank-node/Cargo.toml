@@ -31,6 +31,12 @@ axum.workspace = true
 tower-http.workspace = true
 reqwest.workspace = true
 
+# AMQP / RabbitMQ (Interface C)
+lapin.workspace = true
+tokio-executor-trait.workspace = true
+tokio-reactor-trait.workspace = true
+futures-util.workspace = true
+
 # durable outbox
 sqlx.workspace = true
 
@@ -46,3 +52,4 @@ tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 hyper = "1"
 tempfile = "3"
+async-trait.workspace = true
