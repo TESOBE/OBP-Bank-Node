@@ -182,21 +182,30 @@ In rough order of how big a commitment each is:
 - Pick the CA backend (Vault PKI vs step-ca) so `PROVISIONING_API.md` §3
   can be implemented against a concrete target.
 
+**Critical path to a full round-trip (the one true blocker):**
+- **OBP-API server-side half** (Scala, not this repo) — record the promise
+  (status / salt / `cardano_tx_hash`) and publish `credit_notification`(+salt)
+  and `settlement_instruction` to RabbitMQ. Until this exists, the inbound
+  Interface C consumer has nothing to receive. Start at `OBP_API_CHANGES.md`.
+- **Settlement-trigger wiring** — the `settlement_instruction` handler maps the
+  instruction and calls `CardanoAdaSettlement::settle`, but the *trigger* (what
+  decides a netting cycle is closed and emits the instruction) is still pending.
+
 **Medium / incremental Bank Node work:**
 - Phase 2 of the Rust `CardanoBackend`: build, sign, and submit
   metadata-only transactions for Promise / Settlement Reference / Exception
   records via `pallas` against the local preprod node (already syncing in
   Docker — see `docker/README.md`). Funded preprod wallet already on disk
-  (1000 tADA).
-- Build the RabbitMQ consumer (Interface C) in Rust with `lapin` — the inbound
-  message path (`obp_rpc_queue`, dispatch by `MessageId`, OBP inbound-envelope
-  reply). TLS / `amqps://` is a follow-on once the broker is mTLS-enabled (see
-  `CERT_TODO.md`).
-- Build the SQLite outbox (`sqlx`) for durability, then the replay loop
-  (Section 11 resilience). Neither exists in the Rust port yet.
-- Build the OBP API client (Interface B) with `reqwest` + OAuth2 and wire
-  `initiate_payment` to persist → submit → write Promise (replacing the stub),
-  migrating the response body to the `OPEN_CORRIDOR` shape on the way.
+  (1000 tADA). Note the *settlement* path already does real ADA tx
+  build/sign/submit; this item is the notary-anchor writes specifically
+  (`write_promise` / `write_settlement` / `write_exception` still stubbed).
+- Other A2 CBS delivery modes — only `webhook_obp` is wired; add
+  webhook-ISO20022 / database / file-drop, plus the A2 retry schedule.
+- OAuth1.0a request signing for the live OBP-API (`ObpAuth` scaffold is in
+  place; currently `None` → runs against local/mock).
+- Per-vhost multi-tenant topology (`/bank.{bank_id}`) — decided but not yet
+  wired in code. TLS / `amqps://` for Interface C is a follow-on once the
+  broker is mTLS-enabled (see `CERT_TODO.md`).
 
 **Large / OBP-API ledger work:**
 - Start `OBP_API_CHANGES.md` step 1: schema migrations (additive, nullable —
@@ -230,8 +239,13 @@ curl -s http://localhost:8088/health | jq
 #   "blockchain": "mock" | "cardano", "timestamp": "..." }
 ```
 
-The REST handlers are stubs — `POST /transaction-requests` returns a `202` with
-a minted `transaction_request_id` but does not yet persist or forward anything.
+The outbound path is live: `POST /transaction-requests` validates the request,
+persists it to the durable SQLite outbox, and returns a `202` with a minted
+`transaction_request_id` *before* any external call. The background dispatcher
+then submits to OBP-API and writes the Cardano Promise commitment. The inbound
+Interface C consumer is built but off by default (`rabbitmq.enabled=false`);
+enable it to receive credit notifications, capture the salt as evidence, and
+deliver credits to the CBS.
 
 ## Memory / Claude session
 
