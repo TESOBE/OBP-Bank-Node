@@ -21,6 +21,7 @@ use chrono::Utc;
 use tokio::sync::Mutex;
 use tracing::info;
 
+use crate::cardano::follower::ChainFollower;
 use crate::cardano::ogmios::{OgmiosClient, OgmiosError};
 use crate::cardano::wallet::Wallet;
 use crate::cardano::{tx, CardanoBackend};
@@ -43,6 +44,11 @@ pub struct CardanoAdaSettlement {
     /// Serialises submissions from the shared wallet (see
     /// [`CardanoBackend::submit_lock`]).
     submit_lock: Arc<Mutex<()>>,
+    /// Chain-sync follower for real confirmation depth. `None` when built
+    /// standalone via [`Self::new`] (confirm falls back to the UTxO-presence
+    /// check); [`Self::from_backend`] — the production wiring — shares the
+    /// notary backend's follower.
+    follower: Option<Arc<ChainFollower>>,
 }
 
 impl CardanoAdaSettlement {
@@ -58,6 +64,7 @@ impl CardanoAdaSettlement {
             network: network.into(),
             fx,
             submit_lock: Arc::new(Mutex::new(())),
+            follower: None,
         }
     }
 
@@ -72,6 +79,7 @@ impl CardanoAdaSettlement {
             network: backend.network.clone(),
             fx,
             submit_lock: Arc::clone(&backend.submit_lock),
+            follower: Some(Arc::clone(&backend.follower)),
         }
     }
 
@@ -125,11 +133,20 @@ impl CardanoAdaSettlement {
             Some((tx::OBP_METADATA_LABEL, metadatum)),
         )?;
 
-        let submitted_id = self
-            .ogmios
-            .submit_transaction(&signed.cbor_hex)
-            .await
-            .map_err(map_ogmios)?;
+        // Register with the follower BEFORE submitting so the inclusion block
+        // cannot race past the registration.
+        if let Some(f) = &self.follower {
+            f.watch(&signed.tx_id);
+        }
+        let submitted_id = match self.ogmios.submit_transaction(&signed.cbor_hex).await {
+            Ok(id) => id,
+            Err(e) => {
+                if let Some(f) = &self.follower {
+                    f.unwatch(&signed.tx_id);
+                }
+                return Err(map_ogmios(e));
+            }
+        };
         if !submitted_id.eq_ignore_ascii_case(&signed.tx_id) {
             return Err(BlockchainError::Internal(format!(
                 "node reported tx id {submitted_id} but we computed {}",
@@ -203,15 +220,19 @@ impl SettlementBackend for CardanoAdaSettlement {
         })
     }
 
-    /// Coarse confirmation: does a UTxO produced by `tx` exist at the payer's
-    /// address? Same Phase-1 signal as [`CardanoBackend::confirm`]; Phase 2
-    /// promotes both to a chain-sync follower reporting real depth.
+    /// Confirmation via the shared chain-sync follower (real depth, rollback
+    /// handling — see [`CardanoBackend::confirm`]). Falls back to the coarse
+    /// UTxO-presence check (depth 1) when the follower doesn't know the tx:
+    /// built standalone without one, or a tx from a previous process.
     async fn confirm(&self, tx: &TxReference) -> Result<ConfirmationStatus> {
         if tx.chain != "cardano" {
             return Err(BlockchainError::Internal(format!(
                 "confirm: TxReference is for chain '{}', expected 'cardano'",
                 tx.chain
             )));
+        }
+        if let Some(status) = self.follower.as_ref().and_then(|f| f.status(&tx.tx_id)) {
+            return Ok(status);
         }
         let utxos = self
             .ogmios

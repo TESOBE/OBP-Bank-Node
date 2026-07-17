@@ -78,8 +78,9 @@ impl Default for Config {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct SettlementConfig {
     /// Stub settle-time rate: minor units of the book currency per 1 whole ADA
-    /// (e.g. 3542 = 1 ADA ≈ 35.42 KES).
-    ada_rate_minor_per_whole_ada: u128,
+    /// (e.g. 3542 = 1 ADA ≈ 35.42 KES). `u64` because figment's value model
+    /// cannot round-trip `u128`; widened at the `StubFxSource` boundary.
+    ada_rate_minor_per_whole_ada: u64,
 }
 
 impl Default for SettlementConfig {
@@ -431,7 +432,7 @@ async fn build_backend(config: &Config) -> anyhow::Result<Backends> {
             // Settlement shares the backend's wallet/Ogmios/submit-lock. FX is a
             // PoC stub rate; production reads an off-chain price service.
             let fx: Arc<dyn FxSource> =
-                Arc::new(StubFxSource::new(config.settlement.ada_rate_minor_per_whole_ada));
+                Arc::new(StubFxSource::new(config.settlement.ada_rate_minor_per_whole_ada.into()));
             let settlement: Arc<dyn SettlementBackend> =
                 Arc::new(CardanoAdaSettlement::from_backend(&c, fx));
             let backend: Arc<dyn BlockchainBackend> = Arc::new(c);

@@ -48,14 +48,14 @@ impl BlockchainBackend for MockBackend {
         Ok(r)
     }
 
-    async fn write_settlement(&self, s: &SettlementRecord) -> Result<TxReference> {
-        let r = make_ref("settlement", &s.snapshot_id);
+    async fn write_settlement(&self, s: &SettlementRecord, salt: &[u8]) -> Result<TxReference> {
+        let r = make_ref("settlement", &s.commit_v1(salt));
         self.writes.lock().expect("mutex poisoned").push(r.clone());
         Ok(r)
     }
 
-    async fn write_exception(&self, e: &ExceptionRecord) -> Result<TxReference> {
-        let r = make_ref("exception", &e.transaction_request_id);
+    async fn write_exception(&self, e: &ExceptionRecord, salt: &[u8]) -> Result<TxReference> {
+        let r = make_ref("exception", &e.commit_v1(salt));
         self.writes.lock().expect("mutex poisoned").push(r.clone());
         Ok(r)
     }

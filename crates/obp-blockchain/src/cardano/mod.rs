@@ -4,9 +4,12 @@
 //! - Loads the Shelley payment key trio (.skey/.vkey/.addr) at construction.
 //! - `write_*` build, sign, and submit metadata-only self-payments carrying the
 //!   notary record's hash commitment (via the shared [`tx`] builder).
-//! - `confirm()` is a coarse UTxO-presence check; a chain-sync follower
-//!   reporting real depth + rollbacks is the remaining Phase-2 upgrade.
+//! - `confirm()` reads the [`follower`] chain-sync task for real confirmation
+//!   depth (with rollback handling); transactions the follower never saw —
+//!   submitted by an earlier process — fall back to a coarse UTxO-presence
+//!   check reported as depth 1.
 
+pub mod follower;
 pub mod ogmios;
 pub mod settlement;
 pub mod tx;
@@ -20,7 +23,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tracing::info;
 
@@ -29,13 +31,9 @@ use crate::{
     Result, SettlementRecord, TxReference,
 };
 
+use self::follower::ChainFollower;
 use self::ogmios::OgmiosClient;
 use self::wallet::Wallet;
-
-/// Schema tags for the notary record types (domain-separated, versioned). The
-/// Promise tag travels on the [`PromiseRecord`] itself (`obp.promise.v1`).
-const SCHEMA_SETTLEMENT: &str = "obp.settlement.v1";
-const SCHEMA_EXCEPTION: &str = "obp.exception.v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CardanoConfig {
@@ -59,6 +57,10 @@ pub struct CardanoBackend {
     /// select the same UTxO and collide as a double-spend. Shared with the ADA
     /// settlement backend (same wallet) via `CardanoAdaSettlement::from_backend`.
     submit_lock: Arc<Mutex<()>>,
+    /// Chain-sync follower for real confirmation depth (also shared via
+    /// `CardanoAdaSettlement::from_backend`). Every submitted tx id is
+    /// registered with it before submission.
+    follower: Arc<ChainFollower>,
 }
 
 impl CardanoBackend {
@@ -90,6 +92,7 @@ impl CardanoBackend {
             wallet: Arc::new(wallet),
             network: config.network,
             submit_lock: Arc::new(Mutex::new(())),
+            follower: ChainFollower::spawn(config.ogmios_url),
         })
     }
 
@@ -137,11 +140,17 @@ impl CardanoBackend {
             Some((tx::OBP_METADATA_LABEL, metadatum)),
         )?;
 
-        let submitted_id = self
-            .ogmios
-            .submit_transaction(&signed.cbor_hex)
-            .await
-            .map_err(map_ogmios)?;
+        // Register with the follower BEFORE submitting so the inclusion block
+        // cannot race past the registration.
+        self.follower.watch(&signed.tx_id);
+        let submitted = self.ogmios.submit_transaction(&signed.cbor_hex).await;
+        let submitted_id = match submitted {
+            Ok(id) => id,
+            Err(e) => {
+                self.follower.unwatch(&signed.tx_id);
+                return Err(map_ogmios(e));
+            }
+        };
         if !submitted_id.eq_ignore_ascii_case(&signed.tx_id) {
             return Err(BlockchainError::Internal(format!(
                 "node reported tx id {submitted_id} but we computed {}",
@@ -157,19 +166,6 @@ impl CardanoBackend {
     }
 }
 
-/// SHA-256 commitment over a record's canonical JSON. Keeps cleartext fields
-/// (amounts, reasons, identifiers) off-chain while still anchoring them.
-///
-/// TODO: Settlement/Exception commitments are currently unsalted — fold in a
-/// per-record salt (as the Promise path does via the outbox) before production,
-/// so low-entropy fields can't be brute-forced from the on-chain hash.
-fn commit_record<T: Serialize>(record: &T) -> String {
-    let bytes = serde_json::to_vec(record).unwrap_or_default();
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    hex::encode(hasher.finalize())
-}
-
 #[async_trait]
 impl BlockchainBackend for CardanoBackend {
     async fn write_promise(&self, p: &PromiseRecord) -> Result<TxReference> {
@@ -177,26 +173,28 @@ impl BlockchainBackend for CardanoBackend {
         self.write_notary(&p.schema, &p.commitment).await
     }
 
-    async fn write_settlement(&self, s: &SettlementRecord) -> Result<TxReference> {
-        self.write_notary(SCHEMA_SETTLEMENT, &commit_record(s)).await
+    async fn write_settlement(&self, s: &SettlementRecord, salt: &[u8]) -> Result<TxReference> {
+        self.write_notary(SettlementRecord::SCHEMA_V1, &s.commit_v1(salt)).await
     }
 
-    async fn write_exception(&self, e: &ExceptionRecord) -> Result<TxReference> {
-        self.write_notary(SCHEMA_EXCEPTION, &commit_record(e)).await
+    async fn write_exception(&self, e: &ExceptionRecord, salt: &[u8]) -> Result<TxReference> {
+        self.write_notary(ExceptionRecord::SCHEMA_V1, &e.commit_v1(salt)).await
     }
 
-    /// Check whether a previously-submitted tx is present on chain by looking
-    /// for any UTxO whose tx hash matches. This is a coarse confirmation
-    /// signal — it tells us the tx landed and at least one of its outputs is
-    /// still unspent. It cannot report depth without a chain-sync follower.
-    /// A persistent-connection chain-sync subscription will replace this in
-    /// Phase 2.
+    /// Confirmation via the chain-sync follower: real depth
+    /// (`tip − inclusion + 1`), and a rollback past the inclusion block
+    /// reverts to `Pending`. Transactions this process never submitted (and
+    /// so never watched — e.g. from a previous run) fall back to the coarse
+    /// UTxO-presence check, reported as depth 1.
     async fn confirm(&self, r: &TxReference) -> Result<ConfirmationStatus> {
         if r.chain != "cardano" {
             return Err(BlockchainError::Internal(format!(
                 "confirm: TxReference is for chain '{}', expected 'cardano'",
                 r.chain
             )));
+        }
+        if let Some(status) = self.follower.status(&r.tx_id) {
+            return Ok(status);
         }
         let utxos = self
             .ogmios
@@ -224,35 +222,6 @@ fn map_ogmios(e: ogmios::OgmiosError) -> BlockchainError {
             BlockchainError::Rejected(format!("ogmios rpc {code}: {message}"))
         }
         other => BlockchainError::Transport(other.to_string()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn exception(reason: &str) -> ExceptionRecord {
-        ExceptionRecord {
-            bank_id: "ke.01.kcs".into(),
-            transaction_request_id: "tr-1".into(),
-            reason: reason.into(),
-            raised_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
-        }
-    }
-
-    #[test]
-    fn commit_record_is_deterministic_and_hides_cleartext() {
-        let a = commit_record(&exception("unroutable destination"));
-        let b = commit_record(&exception("unroutable destination"));
-        assert_eq!(a, b, "same record ⇒ same commitment");
-        assert_eq!(a.len(), 64, "hex SHA-256");
-        // The cleartext reason must not be recoverable from the commitment.
-        assert!(!a.contains("unroutable"));
-    }
-
-    #[test]
-    fn commit_record_differs_on_different_input() {
-        assert_ne!(commit_record(&exception("reason a")), commit_record(&exception("reason b")));
     }
 }
 

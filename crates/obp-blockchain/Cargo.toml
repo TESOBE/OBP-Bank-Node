@@ -33,3 +33,4 @@ tracing.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 rand = "0.8"
 tempfile = "3"
+tracing-subscriber.workspace = true

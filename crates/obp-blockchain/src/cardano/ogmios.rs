@@ -1,10 +1,14 @@
 //! Minimal Ogmios JSON-RPC client over WebSocket.
 //!
-//! Phase 1 scope: open a fresh WebSocket per call, send a single JSON-RPC
-//! request, await the matching response, close. This is fine for read-only
-//! queries and infrequent submissions; it will be promoted to a persistent
-//! multiplexed connection (with chain-sync subscriptions) once we need real
-//! confirmation streaming.
+//! Two connection styles:
+//!
+//! - [`OgmiosClient`] opens a fresh WebSocket per call. Fine for read-only
+//!   queries and infrequent submissions, and self-healing by construction.
+//! - [`OgmiosSession`] holds one WebSocket open for *stateful* protocols —
+//!   chain-sync (`findIntersection` / `nextBlock`) keeps its cursor per
+//!   connection, so those calls must share a session. Used by the
+//!   [`ChainFollower`](super::follower::ChainFollower); requests are
+//!   sequential (one in flight), which is all chain-sync needs.
 
 use std::time::Duration;
 
@@ -12,8 +16,10 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
+use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tracing::{debug, warn};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -129,6 +135,61 @@ impl OgmiosClient {
                 warn!(?v, "unexpected submitTransaction response shape");
                 OgmiosError::Protocol("submitTransaction: missing transaction.id".into())
             })
+    }
+}
+
+/// A held WebSocket session. Required for chain-sync, whose cursor is
+/// per-connection; a dropped session loses the cursor and must re-intersect.
+pub struct OgmiosSession {
+    ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    url: String,
+}
+
+impl OgmiosSession {
+    pub async fn connect(url: &str) -> Result<Self> {
+        let (ws, _) = tokio_tungstenite::connect_async(url)
+            .await
+            .map_err(|e| OgmiosError::Connect(e.to_string()))?;
+        Ok(Self { ws, url: url.to_string() })
+    }
+
+    /// Send one JSON-RPC request on the held connection and await its
+    /// response. `wait` bounds the response wait — chain-sync's `nextBlock`
+    /// blocks server-side until a block arrives, so callers pass a timeout
+    /// matched to expected block cadence, not the query default.
+    pub async fn request(&mut self, method: &str, params: Value, wait: Duration) -> Result<Value> {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0",
+            method,
+            params,
+            id: "1",
+        };
+        let payload = serde_json::to_string(&req)
+            .map_err(|e| OgmiosError::Protocol(format!("request encode: {e}")))?;
+        debug!(url = %self.url, method, "ogmios session request");
+
+        let fut = async {
+            self.ws
+                .send(Message::Text(payload))
+                .await
+                .map_err(|e| OgmiosError::Transport(e.to_string()))?;
+            while let Some(msg) = self.ws.next().await {
+                let msg = msg.map_err(|e| OgmiosError::Transport(e.to_string()))?;
+                match msg {
+                    Message::Text(text) => return parse_response(&text),
+                    Message::Binary(_) | Message::Ping(_) | Message::Pong(_) => continue,
+                    Message::Close(_) => {
+                        return Err(OgmiosError::Protocol(
+                            "server closed before response".into(),
+                        ));
+                    }
+                    Message::Frame(_) => continue,
+                }
+            }
+            Err(OgmiosError::Protocol("stream ended without response".into()))
+        };
+
+        timeout(wait, fut).await.map_err(|_| OgmiosError::Timeout(wait))?
     }
 }
 
