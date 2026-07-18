@@ -10,21 +10,31 @@
 use std::sync::Arc;
 
 use obp_blockchain::settlement::{PartyRef, SettlementBackend, SettlementInstruction as BcSettlement};
-use obp_blockchain::PromiseRecord;
+use obp_blockchain::{BlockchainError, PromiseRecord};
 use tracing::{info, warn};
 
 use super::types::*;
 use crate::cbs::CbsClient;
 use crate::evidence::{EvidenceStore, NewEvidence};
+use crate::settlement_store::{self, Claim, NewClaim, SettlementRow, SettlementStore};
+
+/// The value leg as the router sees it: the backend that moves funds, the
+/// durable idempotency/finality store, and the depth at which a settlement
+/// counts as final. Constructed together in `main` — a rail without the store
+/// would re-pay on redelivery, so the pairing is not optional.
+pub struct SettlementService {
+    pub backend: Arc<dyn SettlementBackend>,
+    pub store: SettlementStore,
+    pub finality_depth: u32,
+}
 
 pub struct Router {
     pub bank_id: String,
     evidence: EvidenceStore,
     cbs: CbsClient,
-    /// The value-leg backend that actually moves funds when a settlement
-    /// instruction arrives. `None` when this node has no settlement rail
-    /// configured (e.g. the mock blockchain backend).
-    settlement: Option<Arc<dyn SettlementBackend>>,
+    /// `None` when this node has no settlement rail configured (e.g. the mock
+    /// blockchain backend).
+    settlement: Option<SettlementService>,
 }
 
 impl Router {
@@ -32,7 +42,7 @@ impl Router {
         bank_id: impl Into<String>,
         evidence: EvidenceStore,
         cbs: CbsClient,
-        settlement: Option<Arc<dyn SettlementBackend>>,
+        settlement: Option<SettlementService>,
     ) -> Self {
         Self {
             bank_id: bank_id.into(),
@@ -157,10 +167,17 @@ impl Router {
     }
 
     /// `obp_settlement_instruction`: this (debtor) node settles the net on its
-    /// rail. Maps the instruction to the settlement backend's shape — this node
-    /// is the debtor, so `debtor.account` is the backend's own payout account —
-    /// and calls [`SettlementBackend::settle`], which builds, signs, and submits
-    /// the real value transfer (ADA on Cardano).
+    /// rail. Idempotent by design — OBP-API redelivers from its transactional
+    /// outbox, and redelivery doubles as status polling:
+    ///
+    /// 1. Claim a durable row by `idempotency_key` *before* paying. A
+    ///    redelivered/concurrent instruction gets the recorded state back
+    ///    (`SETTLING`/`SUBMITTED`/`FINAL`/`ERROR`), never a second payment.
+    /// 2. On a fresh claim, call [`SettlementBackend::settle`] (real value
+    ///    transfer) and record `SUBMITTED` + the tx.
+    /// 3. The reply's `data.status` is explicit: `SUBMITTED` means broadcast,
+    ///    **not** final — the finality watcher promotes the row to `FINAL` at
+    ///    the configured depth, and OBP-API sees that on its next redelivery.
     async fn settlement_instruction(&self, correlation_id: &str, body: &[u8]) -> ReplyEnvelope {
         let si: SettlementInstruction = match serde_json::from_slice(body) {
             Ok(v) => v,
@@ -173,8 +190,8 @@ impl Router {
             }
         };
 
-        let backend = match &self.settlement {
-            Some(b) => b,
+        let svc = match &self.settlement {
+            Some(s) => s,
             None => {
                 warn!(bank_id = %self.bank_id, "settlement_instruction received but no settlement backend is configured");
                 return ReplyEnvelope::error(
@@ -185,7 +202,9 @@ impl Router {
             }
         };
 
-        // Required value fields.
+        // Required fields. The idempotency key is mandatory for real money —
+        // without it a redelivered instruction is indistinguishable from a new
+        // obligation.
         let amount = match si.amount.as_deref() {
             Some(a) => a,
             None => return ReplyEnvelope::error(correlation_id, error_code::BAD_MESSAGE, "settlement_instruction: amount is required"),
@@ -198,13 +217,60 @@ impl Router {
             Some(a) => a,
             None => return ReplyEnvelope::error(correlation_id, error_code::BAD_MESSAGE, "settlement_instruction: creditor_address is required"),
         };
+        let idempotency_key = match si
+            .idempotency_key
+            .clone()
+            .or_else(|| si.settlement_id.clone())
+            .filter(|k| !k.trim().is_empty())
+        {
+            Some(k) => k,
+            None => {
+                return ReplyEnvelope::error(
+                    correlation_id,
+                    error_code::BAD_MESSAGE,
+                    "settlement_instruction: idempotency_key (or settlement_id) is required",
+                )
+            }
+        };
+
+        // Claim before pay. Whoever inserts the row owns the attempt.
+        let claim = svc
+            .store
+            .claim(NewClaim {
+                idempotency_key: &idempotency_key,
+                settlement_id: si.settlement_id.as_deref(),
+                snapshot_id: si.snapshot_id.as_deref(),
+                currency: si.currency.as_deref().unwrap_or_default(),
+                net_amount_minor,
+                creditor_address: &creditor_address,
+            })
+            .await;
+        match claim {
+            Ok(Claim::Claimed) => { /* fresh attempt below */ }
+            Ok(Claim::Existing(row)) => {
+                let retry = row.status == settlement_store::status::ERROR && row.retryable;
+                if retry {
+                    // Provably-never-on-chain failure: reopen and try again.
+                    if let Err(e) = svc.store.reclaim_for_retry(&idempotency_key).await {
+                        warn!(error = %e, "settlement store: reclaim failed");
+                        return ReplyEnvelope::error(correlation_id, error_code::PLATFORM, "settlement store unavailable");
+                    }
+                } else {
+                    return reply_for_existing(correlation_id, &row, svc.finality_depth);
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "settlement store: claim failed");
+                return ReplyEnvelope::error(correlation_id, error_code::PLATFORM, "settlement store unavailable");
+            }
+        }
 
         // This node is the debtor: pay out of the backend's own account.
         let instruction = BcSettlement {
             snapshot_id: si.snapshot_id.clone().or_else(|| si.settlement_id.clone()).unwrap_or_default(),
             debtor: PartyRef {
                 bank_id: self.bank_id.clone(),
-                account: backend.settles_from().to_string(),
+                account: svc.backend.settles_from().to_string(),
             },
             creditor: PartyRef {
                 bank_id: si.creditor_bank_id.clone().unwrap_or_default(),
@@ -212,34 +278,59 @@ impl Router {
             },
             currency: si.currency.clone().unwrap_or_default(),
             net_amount_minor,
-            idempotency_key: si
-                .idempotency_key
-                .clone()
-                .or_else(|| si.settlement_id.clone())
-                .unwrap_or_default(),
+            idempotency_key: idempotency_key.clone(),
         };
 
         info!(
             bank_id = %self.bank_id,
             settlement_id = ?si.settlement_id,
-            system = backend.system(),
+            system = svc.backend.system(),
             net_amount_minor,
             "settlement_instruction: settling on chain"
         );
 
-        match backend.settle(&instruction).await {
-            Ok(outcome) => ReplyEnvelope::ok(
-                correlation_id,
-                serde_json::json!({
-                    "settlement_id": si.settlement_id,
-                    "tx_id": outcome.tx.tx_id,
-                    "blockchain": outcome.tx.chain,
-                    "asset": outcome.asset,
-                    "asset_amount": outcome.asset_amount,
-                }),
-            ),
+        match svc.backend.settle(&instruction).await {
+            Ok(outcome) => {
+                if let Err(e) = svc
+                    .store
+                    .mark_submitted(
+                        &idempotency_key,
+                        &outcome.tx.tx_id,
+                        &outcome.tx.chain,
+                        &outcome.asset,
+                        &outcome.asset_amount,
+                    )
+                    .await
+                {
+                    // The transfer is on chain but the store write failed: the
+                    // row stays SETTLING, which redelivery surfaces as
+                    // in-flight rather than re-paying. Loud log for ops.
+                    tracing::error!(error = %e, tx_id = %outcome.tx.tx_id, "settlement store: mark_submitted failed AFTER broadcast");
+                }
+                ReplyEnvelope::ok(
+                    correlation_id,
+                    serde_json::json!({
+                        "settlement_id": si.settlement_id,
+                        "status": settlement_store::status::SUBMITTED,
+                        "tx_id": outcome.tx.tx_id,
+                        "blockchain": outcome.tx.chain,
+                        "asset": outcome.asset,
+                        "asset_amount": outcome.asset_amount,
+                        "depth": 0,
+                        "finality_depth": svc.finality_depth,
+                    }),
+                )
+            }
             Err(e) => {
-                warn!(error = %e, settlement_id = ?si.settlement_id, "settlement failed");
+                // `Rejected` provably never reached the chain (guard/validation
+                // failures, or the node refusing the tx) → retryable on
+                // redelivery. Transport/internal errors are ambiguous — the tx
+                // may be on chain — so they stick until reconciled.
+                let retryable = matches!(e, BlockchainError::Rejected(_));
+                if let Err(se) = svc.store.mark_error(&idempotency_key, &e.to_string(), retryable).await {
+                    warn!(error = %se, "settlement store: mark_error failed");
+                }
+                warn!(error = %e, settlement_id = ?si.settlement_id, retryable, "settlement failed");
                 ReplyEnvelope::error(correlation_id, error_code::SETTLEMENT_FAILED, e.to_string())
             }
         }
@@ -284,9 +375,41 @@ impl Router {
     }
 }
 
+/// The reply for a redelivered settlement instruction: the recorded state,
+/// never a new payment. `SETTLING`/`SUBMITTED`/`FINAL` are ok-replies with an
+/// explicit `status` (this is how OBP-API polls finality); a sticky `ERROR`
+/// repeats the recorded failure.
+fn reply_for_existing(
+    correlation_id: &str,
+    row: &SettlementRow,
+    finality_depth: u32,
+) -> ReplyEnvelope {
+    match row.status.as_str() {
+        settlement_store::status::ERROR => ReplyEnvelope::error(
+            correlation_id,
+            error_code::SETTLEMENT_FAILED,
+            row.error_reason.clone().unwrap_or_else(|| "settlement failed".into()),
+        ),
+        status => ReplyEnvelope::ok(
+            correlation_id,
+            serde_json::json!({
+                "settlement_id": row.settlement_id,
+                "status": status,
+                "tx_id": row.tx_id,
+                "blockchain": row.blockchain,
+                "asset": row.asset,
+                "asset_amount": row.asset_amount,
+                "depth": row.last_depth,
+                "finality_depth": finality_depth,
+            }),
+        ),
+    }
+}
+
 /// Parse a decimal major-unit amount (e.g. `"25000.00"`) into integer minor
-/// units at `decimals` places. PoC assumes `decimals = 2` (KES-like currencies);
-/// a per-currency exponent is future work. Truncates beyond `decimals`.
+/// units at `decimals` places. Assumes `decimals = 2` (KES-like currencies) —
+/// a documented limitation; per-currency exponent is on the list. Truncates
+/// beyond `decimals`.
 fn parse_minor_units(amount: &str, decimals: u32) -> Result<u128, String> {
     let amount = amount.trim();
     let (int_part, frac_part) = amount.split_once('.').unwrap_or((amount, ""));
@@ -339,14 +462,36 @@ mod tests {
         format!("http://{addr}/credit")
     }
 
+    /// Finality depth used across router tests.
+    const TEST_FINALITY_DEPTH: u32 = 5;
+
     async fn router_with_cbs(cbs_url: &str) -> Router {
-        router_with(cbs_url, None).await
+        router_with(cbs_url, None).await.0
     }
 
-    async fn router_with(cbs_url: &str, settlement: Option<Arc<dyn SettlementBackend>>) -> Router {
+    /// Returns the router plus a handle on the settlement store so tests can
+    /// inspect/advance settlement rows.
+    async fn router_with(
+        cbs_url: &str,
+        settlement: Option<Arc<dyn SettlementBackend>>,
+    ) -> (Router, Option<SettlementStore>) {
         let evidence = EvidenceStore::connect_in_memory().await.unwrap();
         let cbs = CbsClient::new(cbs_url, None, 5).unwrap();
-        Router::new("ke.01.kcs", evidence, cbs, settlement)
+        let (service, store) = match settlement {
+            Some(backend) => {
+                let store = SettlementStore::connect_in_memory().await.unwrap();
+                (
+                    Some(SettlementService {
+                        backend,
+                        store: store.clone(),
+                        finality_depth: TEST_FINALITY_DEPTH,
+                    }),
+                    Some(store),
+                )
+            }
+            None => (None, None),
+        };
+        (Router::new("ke.01.kcs", evidence, cbs, service), store)
     }
 
     /// A settlement backend test double: records calls and returns a canned tx.
@@ -505,6 +650,17 @@ mod tests {
         assert!(u.is_ok());
     }
 
+    fn settlement_body(idem: &str) -> String {
+        serde_json::json!({
+            "settlement_id": "s1",
+            "currency": "KES",
+            "amount": "25000.00",
+            "creditor_address": "addr_test1creditor",
+            "idempotency_key": idem,
+        })
+        .to_string()
+    }
+
     #[tokio::test]
     async fn settlement_instruction_triggers_the_backend() {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -514,25 +670,76 @@ mod tests {
             last_creditor: std::sync::Mutex::new(None),
             last_minor: std::sync::Mutex::new(None),
         });
-        let r = router_with("http://127.0.0.1:1/credit", Some(settlement.clone())).await;
+        let (r, store) = router_with("http://127.0.0.1:1/credit", Some(settlement.clone())).await;
 
-        let body = serde_json::json!({
-            "settlement_id": "s1",
-            "currency": "KES",
-            "amount": "25000.00",
-            "creditor_address": "addr_test1creditor",
-            "idempotency_key": "idem-1",
-        })
-        .to_string();
+        let body = settlement_body("idem-1");
         let reply = r.handle(message_id::SETTLEMENT_INSTRUCTION, "c", body.as_bytes()).await;
 
         assert!(reply.is_ok(), "expected ok, got {:?}", reply.status);
         assert_eq!(reply.data["tx_id"], "settle-tx-1");
         assert_eq!(reply.data["asset"], "ADA");
+        // Broadcast is not settlement: the reply is explicit about it.
+        assert_eq!(reply.data["status"], settlement_store::status::SUBMITTED);
+        assert_eq!(reply.data["finality_depth"], TEST_FINALITY_DEPTH);
         assert_eq!(calls.load(Ordering::SeqCst), 1, "settle called once");
         // The debtor account was filled from the backend, and minor units parsed.
         assert_eq!(settlement.last_creditor.lock().unwrap().as_deref(), Some("addr_test1creditor"));
         assert_eq!(*settlement.last_minor.lock().unwrap(), Some(2_500_000)); // 25000.00 → cents
+        // Durably recorded for the finality watcher.
+        let row = store.unwrap().get("idem-1").await.unwrap().unwrap();
+        assert_eq!(row.status, settlement_store::status::SUBMITTED);
+        assert_eq!(row.tx_id.as_deref(), Some("settle-tx-1"));
+    }
+
+    #[tokio::test]
+    async fn redelivered_instruction_reports_state_and_never_pays_twice() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let settlement = Arc::new(MockSettlement {
+            from: "addr_test1me".into(),
+            calls: calls.clone(),
+            last_creditor: std::sync::Mutex::new(None),
+            last_minor: std::sync::Mutex::new(None),
+        });
+        let (r, store) = router_with("http://127.0.0.1:1/credit", Some(settlement)).await;
+        let body = settlement_body("idem-1");
+
+        let first = r.handle(message_id::SETTLEMENT_INSTRUCTION, "c1", body.as_bytes()).await;
+        assert_eq!(first.data["status"], settlement_store::status::SUBMITTED);
+
+        // Redelivery (OBP-API outbox retry / status poll): recorded state back,
+        // no second payment.
+        let second = r.handle(message_id::SETTLEMENT_INSTRUCTION, "c2", body.as_bytes()).await;
+        assert!(second.is_ok());
+        assert_eq!(second.data["status"], settlement_store::status::SUBMITTED);
+        assert_eq!(second.data["tx_id"], "settle-tx-1");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "settle must run exactly once");
+
+        // Once the watcher finalizes, redelivery reports FINAL with depth.
+        let store = store.unwrap();
+        store.record_depth("idem-1", 3).await.unwrap();
+        store.mark_final("idem-1", TEST_FINALITY_DEPTH).await.unwrap();
+        let third = r.handle(message_id::SETTLEMENT_INSTRUCTION, "c3", body.as_bytes()).await;
+        assert_eq!(third.data["status"], settlement_store::status::FINAL);
+        assert_eq!(third.data["depth"], TEST_FINALITY_DEPTH);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn settlement_without_any_idempotency_key_is_bad_message() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let settlement = Arc::new(MockSettlement {
+            from: "addr_test1me".into(),
+            calls: calls.clone(),
+            last_creditor: std::sync::Mutex::new(None),
+            last_minor: std::sync::Mutex::new(None),
+        });
+        let (r, _) = router_with("http://127.0.0.1:1/credit", Some(settlement)).await;
+        // No idempotency_key AND no settlement_id → refuse; a redelivered
+        // instruction would be indistinguishable from a new obligation.
+        let body = br#"{"currency":"KES","amount":"10.00","creditor_address":"x"}"#;
+        let reply = r.handle(message_id::SETTLEMENT_INSTRUCTION, "c", body).await;
+        assert_eq!(reply.status.error_code, error_code::BAD_MESSAGE);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -543,35 +750,89 @@ mod tests {
         assert_eq!(reply.status.error_code, error_code::SETTLEMENT_NOT_CONFIGURED);
     }
 
-    #[tokio::test]
-    async fn settlement_failure_maps_to_settlement_failed() {
-        // A backend that rejects (e.g. not the debtor) → SETTLEMENT_FAILED.
-        struct Failing;
-        #[async_trait::async_trait]
-        impl SettlementBackend for Failing {
-            fn system(&self) -> &str {
-                "failing"
-            }
-            fn settles_from(&self) -> &str {
-                "addr_test1me"
-            }
-            async fn settle(
-                &self,
-                _i: &BcSettlement,
-            ) -> obp_blockchain::Result<obp_blockchain::settlement::SettlementOutcome> {
-                Err(obp_blockchain::BlockchainError::Rejected("nope".into()))
-            }
-            async fn confirm(
-                &self,
-                _tx: &obp_blockchain::TxReference,
-            ) -> obp_blockchain::Result<obp_blockchain::ConfirmationStatus> {
-                Ok(obp_blockchain::ConfirmationStatus::Pending)
-            }
+    /// A backend that fails with the scripted error `fail_times` times, then
+    /// succeeds.
+    struct FlakyImpl {
+        error: fn() -> obp_blockchain::BlockchainError,
+        fail_times: usize,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl SettlementBackend for FlakyImpl {
+        fn system(&self) -> &str {
+            "flaky"
         }
-        let r = router_with("http://127.0.0.1:1/credit", Some(Arc::new(Failing))).await;
-        let body = br#"{"settlement_id":"s1","currency":"KES","amount":"10.00","creditor_address":"x"}"#;
-        let reply = r.handle(message_id::SETTLEMENT_INSTRUCTION, "c", body).await;
-        assert_eq!(reply.status.error_code, error_code::SETTLEMENT_FAILED);
+        fn settles_from(&self) -> &str {
+            "addr_test1me"
+        }
+        async fn settle(
+            &self,
+            _i: &BcSettlement,
+        ) -> obp_blockchain::Result<obp_blockchain::settlement::SettlementOutcome> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n < self.fail_times {
+                return Err((self.error)());
+            }
+            Ok(obp_blockchain::settlement::SettlementOutcome {
+                tx: obp_blockchain::TxReference {
+                    chain: "cardano".into(),
+                    tx_id: "settle-tx-retry".into(),
+                    submitted_at: chrono::Utc::now(),
+                },
+                asset: "ADA".into(),
+                asset_amount: "1".into(),
+                fx: None,
+            })
+        }
+        async fn confirm(
+            &self,
+            _tx: &obp_blockchain::TxReference,
+        ) -> obp_blockchain::Result<obp_blockchain::ConfirmationStatus> {
+            Ok(obp_blockchain::ConfirmationStatus::Pending)
+        }
+    }
+
+    #[tokio::test]
+    async fn rejected_failure_is_retryable_on_redelivery() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let backend = Arc::new(FlakyImpl {
+            error: || obp_blockchain::BlockchainError::Rejected("fx unavailable".into()),
+            fail_times: 1,
+            calls: calls.clone(),
+        });
+        let (r, _) = router_with("http://127.0.0.1:1/credit", Some(backend)).await;
+        let body = settlement_body("idem-r");
+
+        let first = r.handle(message_id::SETTLEMENT_INSTRUCTION, "c1", body.as_bytes()).await;
+        assert_eq!(first.status.error_code, error_code::SETTLEMENT_FAILED);
+
+        // `Rejected` provably never reached the chain → redelivery retries.
+        let second = r.handle(message_id::SETTLEMENT_INSTRUCTION, "c2", body.as_bytes()).await;
+        assert!(second.is_ok(), "retryable failure must reopen: {:?}", second.status);
+        assert_eq!(second.data["status"], settlement_store::status::SUBMITTED);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn transport_failure_is_sticky_no_automatic_repay() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let backend = Arc::new(FlakyImpl {
+            error: || obp_blockchain::BlockchainError::Transport("socket died mid-submit".into()),
+            fail_times: 1,
+            calls: calls.clone(),
+        });
+        let (r, _) = router_with("http://127.0.0.1:1/credit", Some(backend)).await;
+        let body = settlement_body("idem-t");
+
+        let first = r.handle(message_id::SETTLEMENT_INSTRUCTION, "c1", body.as_bytes()).await;
+        assert_eq!(first.status.error_code, error_code::SETTLEMENT_FAILED);
+
+        // Transport is ambiguous — the transfer may be on chain. Redelivery
+        // must repeat the recorded error, not pay again.
+        let second = r.handle(message_id::SETTLEMENT_INSTRUCTION, "c2", body.as_bytes()).await;
+        assert_eq!(second.status.error_code, error_code::SETTLEMENT_FAILED);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "no automatic second attempt");
     }
 
     #[test]

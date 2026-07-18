@@ -5,7 +5,7 @@
 //! holds: a `202` survives even if the process dies before any external call.
 //!
 //! Per outbox row, in lifecycle order:
-//!   1. `INITIATED` → submit the OPEN_CORRIDOR Transaction Request to OBP-API
+//!   1. `INITIATED` → submit the OPEN_CORRIDOR_PROMISE Transaction Request to OBP-API
 //!      (Interface B). Success → `SUBMITTED`. A terminal OBP rejection →
 //!      `EXCEPTION`. A transport failure leaves the row `INITIATED` to retry.
 //!   2. `SUBMITTED` → write the Cardano Promise *commitment* (Interface D).
@@ -119,7 +119,7 @@ impl Dispatcher {
                     info!(
                         transaction_request_id = %id,
                         obp_tr_id = ?accepted.obp_transaction_request_id,
-                        "OBP-API accepted OPEN_CORRIDOR transaction request"
+                        "OBP-API accepted OPEN_CORRIDOR_PROMISE transaction request"
                     );
                     self.store.mark_submitted(id).await?;
                 }
@@ -210,14 +210,14 @@ mod tests {
 
     fn accepting_obp() -> Router {
         Router::new().route(
-            "/obp/v7.0.0/banks/:bank/accounts/:acct/views/owner/transaction-request-types/OPEN_CORRIDOR/transaction-requests",
+            "/obp/v7.0.0/banks/:bank/accounts/:acct/views/owner/transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests",
             post(|| async { Json(serde_json::json!({ "transaction_request_id": "obp-tr-1" })) }),
         )
     }
 
     fn rejecting_obp() -> Router {
         Router::new().route(
-            "/obp/v7.0.0/banks/:bank/accounts/:acct/views/owner/transaction-request-types/OPEN_CORRIDOR/transaction-requests",
+            "/obp/v7.0.0/banks/:bank/accounts/:acct/views/owner/transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests",
             post(|| async {
                 (
                     axum::http::StatusCode::BAD_REQUEST,

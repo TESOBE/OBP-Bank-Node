@@ -19,14 +19,17 @@ it over `local-node`.
 ```
 
 OBP API and RabbitMQ credentials are provisioned by TESOBE at registration.
-The Cardano node is yours to operate — either co-located with the Bank Node
-or via a managed provider (Demeter.run, etc.).
+The blockchain component that writes the audit trail ships with the Bank Node
+installation package (a bundled cardano-node + Ogmios container) — it starts
+alongside the Bank Node and needs no separate setup or blockchain expertise.
+Banks that already use a managed provider (Demeter.run, etc.) can point the
+config at that instead.
 
 Four things on your side:
 
 1. **Call** one REST endpoint when a customer initiates a cross-border payment.
-2. **Receive** credit notifications via a webhook your CBS exposes.
-3. **Operate** a Cardano node (or use a managed provider like Demeter.run).
+2. **Receive** credit notifications via one of four delivery modes — your choice.
+3. **Safeguard** the signing keys generated at installation — they never leave your host.
 4. **Fill in** one YAML config file.
 
 ---
@@ -139,21 +142,17 @@ status.
 
 ---
 
-## 2. Inbound credits — `webhook_obp` (recommended)
+## 2. Inbound credits — what your CBS exposes
 
-You expose one HTTPS endpoint. The Bank Node POSTs each credit to it.
+Pick **one** delivery mode. The Bank Node delivers every incoming credit in
+that mode; you don't switch per-payment.
 
-```
-POST <your CBS URL>
-Authorization: Bearer <shared secret>
-Content-Type: application/json
-```
-
-Payload:
+The payload is the same in every mode:
 
 ```json
 {
   "transaction_request_id": "tr-abc-123",
+  "netting_snapshot_id":    "snap-…",
   "from": { "bank_id": "…", "bank_routing": { "scheme": "BIC", "address": "…" } },
   "to":   { "bank_id": "…", "account_id": "…",
             "account_routing": { "scheme": "IBAN", "address": "…" } },
@@ -162,16 +161,24 @@ Payload:
     "address": "12 Market Street, Nairobi, Kenya",
     "account_routing": { "scheme": "IBAN", "address": "KE12KCBL0000009876543210" }
   },
-  "value":         { "currency": "KES", "amount": "1500.00" },
-  "description":   "Invoice 4471",
-  "value_date":    "2026-05-09"
+  "value":              { "currency": "KES", "amount": "1500.00" },
+  "description":        "Invoice 4471",
+  "value_date":         "2026-05-09",
+  "promise_id":         "<cardano tx hash>",
+  "promise_blockchain": "Cardano"
 }
 ```
 
-The Bank Node also includes optional metadata fields (`netting_snapshot_id`,
-`promise_id`, `promise_blockchain`) for audit and reconciliation. Your CBS can
-ignore or persist them opaquely; see the full integration doc if you need
-them.
+### Mode 1 — `webhook_obp` (recommended)
+
+You expose one HTTPS endpoint. The Bank Node POSTs each credit to it.
+
+```
+POST <your CBS URL>
+Authorization: Bearer <shared secret>
+Content-Type: application/json
+<credit payload above>
+```
 
 Respond `200 OK`:
 
@@ -181,12 +188,58 @@ Respond `200 OK`:
 
 Anything else, or a timeout, triggers retry with backoff for 24 hours.
 
+### Mode 2 — `webhook_iso20022`
+
+Same as Mode 1 but the body is an ISO 20022 **camt.054** JSON envelope. Pick
+this if your CBS already speaks ISO 20022.
+
+### Mode 3 — `database`
+
+You expose a PostgreSQL staging table; the Bank Node `INSERT`s into it. Your
+CBS:
+
+1. Polls rows where `status = 'PENDING'`
+2. Posts the credit on its own books
+3. Updates the row to `status = 'PROCESSED'` with a non-null `cbs_reference`
+   and a `processed_at` timestamp
+
+Schema (auto-created by the Bank Node on first connection):
+
+```sql
+CREATE TABLE obp_credit_instructions (
+    transaction_request_id  VARCHAR PRIMARY KEY,
+    netting_snapshot_id     VARCHAR,
+    to_account_id           VARCHAR NOT NULL,
+    currency                CHAR(3) NOT NULL,
+    amount                  NUMERIC(18,5) NOT NULL,
+    description             VARCHAR,
+    value_date              DATE,
+    promise_id              VARCHAR,
+    promise_blockchain      VARCHAR,
+    status                  VARCHAR NOT NULL DEFAULT 'PENDING',
+    cbs_reference           VARCHAR,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    processed_at            TIMESTAMPTZ
+);
+```
+
+Zero CBS HTTP development. Good fit if your CBS already has a polling worker.
+
+### Mode 4 — `file`
+
+You expose two shared directories. The Bank Node writes
+`{transaction_request_id}.json` (or `.csv`) into the inbound directory. Your
+CBS picks it up, processes it, and writes an acknowledgement file into the
+acknowledgement directory.
+
+Works with any CBS — no DB or HTTP integration required.
+
 ---
 
 ## 3. Config you fill in (`obp-bank-node-config.yaml`)
 
-Three groups: identity (TESOBE provides at registration), CBS choice, local
-operations.
+Three groups: identity (TESOBE provides at registration), CBS choice (you pick
+one mode), local operations.
 
 ### TESOBE provides at registration
 
@@ -226,17 +279,31 @@ blockchain:
   type: "cardano"
   cardano:
     network:              "preprod"                  # TESOBE tells you: preprod (staging) or mainnet (production)
-    ogmios_url:           "ws://localhost:1337"      # Ogmios in front of your cardano-node
-    wallet_address_path:  "./secrets/cardano.addr"
+    ogmios_url:           "ws://localhost:1337"      # default — the bundled blockchain container; change only if using a managed provider
+    wallet_address_path:  "./secrets/cardano.addr"   # generated at installation
     wallet_vkey_path:     "./secrets/cardano.vkey"
     wallet_skey_path:     "./secrets/cardano.skey"   # never leaves your host
 
 cbs_delivery:
-  mode: "webhook_obp"
+  mode: "webhook_obp"        # webhook_obp | webhook_iso20022 | database | file
 
-  webhook:
+  webhook:                                 # modes 1 & 2
     url:             "https://cbs.bank.local/api/credit-notifications"
     timeout_seconds: 30
+
+  database:                                # mode 3
+    driver:   "postgresql"
+    host:     "cbs-db.bank.local"
+    port:     5432
+    name:     "cbs_staging"
+    username: "obp_writer"
+    password: "..."
+    table:    "obp_credit_instructions"
+
+  file:                                    # mode 4
+    drop_path:            "/shared/credit-notifications/inbound/"
+    acknowledgement_path: "/shared/credit-notifications/acknowledged/"
+    format:               "json"           # json | csv
 ```
 
 ### Local operations
@@ -259,3 +326,46 @@ dashboard:
 outbox:
   path: "./outbox/obp-bank-node.db"
 ```
+
+---
+
+## 4. Verifying the install
+
+Start the Bank Node, then:
+
+```bash
+curl -s http://local-node:8088/health | jq
+```
+
+`rabbitmq` should report `connected`. Send a test payment:
+
+```bash
+curl -X POST http://local-node:8088/obp-bank-node/v5.1.0/transaction-requests \
+  -H "Authorization: Bearer <local_secret>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "value": { "currency": "KES", "amount": "100.00" },
+    "description": "test",
+    "to": {
+      "other_bank_routing_scheme":     "BIC",
+      "other_bank_routing_address":    "KCBLKENXXXX",
+      "other_account_routing_scheme":  "IBAN",
+      "other_account_routing_address": "GB29NWBK60161331926819"
+    },
+    "originator": {
+      "name":    "Acme Coffee Ltd",
+      "address": "12 Market Street, Nairobi, Kenya",
+      "account_routing": { "scheme": "IBAN", "address": "KE12KCBL0000009876543210" }
+    }
+  }'
+```
+
+You should get a `202` with a `transaction_request_id`. Query it back:
+
+```bash
+curl -H "Authorization: Bearer <local_secret>" \
+  http://local-node:8088/obp-bank-node/v5.1.0/transaction-requests/<transaction_request_id>
+```
+
+That's the entire bank-side surface area: one outbound REST call, one inbound
+integration of your choosing, one YAML file.

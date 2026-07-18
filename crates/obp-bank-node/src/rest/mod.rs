@@ -4,7 +4,7 @@
 //! URLs are intentionally short: one Bank Node serves exactly one bank, so
 //! `bank_id`, `account_id`, and `view_id` are not on the URL — the Bank Node
 //! knows them from config (see [`BankNodeState`]). The request body for
-//! payment initiation still mirrors the OBP `OPEN_CORRIDOR` Transaction Request
+//! payment initiation still mirrors the OBP `OPEN_CORRIDOR_PROMISE` Transaction Request
 //! shape so banks already familiar with OBP can reuse their validators.
 
 use axum::{

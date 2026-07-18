@@ -2,7 +2,7 @@
 
 The OBP Bank Node connects a bank's Core Banking System to the Open
 Corridor interbank payment network (an OBP API instance hosted by TESOBE). See
-[`docs/OBP-Bank-Node-Spec.md`](docs/OBP-Bank-Node-Spec.md) for the full
+[`DOCS/OBP-Bank-Node-Spec.md`](DOCS/OBP-Bank-Node-Spec.md) for the full
 specification.
 
 ## TL;DR

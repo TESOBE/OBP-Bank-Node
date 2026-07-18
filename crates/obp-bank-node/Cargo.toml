@@ -16,6 +16,7 @@ obp-blockchain.workspace = true
 # core runtime
 tokio.workspace = true
 anyhow.workspace = true
+async-trait.workspace = true
 
 # observability
 tracing.workspace = true

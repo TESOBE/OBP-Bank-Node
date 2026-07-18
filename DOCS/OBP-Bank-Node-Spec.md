@@ -57,7 +57,7 @@ The OBP Bank Node-specific message types layered on top of that envelope are:
 | **C** — North inbound | OBP API → OBP Bank Node | AMQP (RabbitMQ) over TLS | Receive credit notifications, netting snapshots, settlement instructions, status updates |
 | **D** — Blockchain | OBP Bank Node ↔ Cardano | JSON-RPC (Ogmios) over WebSocket | Write Promise / Settlement Reference / Exception records, read chain state |
 
-See [`../INTERFACES.md`](../INTERFACES.md) for the canonical table with the
+See [`INTERFACES.md`](INTERFACES.md) for the canonical table with the
 additional `Action` (Bank Node POV), `Trigger`, and `What flows` columns.
 Per-interface detail follows in sections 3–6.
 
@@ -162,6 +162,8 @@ The OBP Bank Node accepts the following routing scheme combinations. It resolves
 The OBP Bank Node resolves all schemes to OBP API identifiers before submitting to the OBP API. If a routing address cannot be resolved, the OBP Bank Node returns `OBP-BANK-NODE-ROUTING-001` (see error codes below).
 
 The OBP Bank Node maintains an internal routing registry, populated from the OBP API at startup and refreshed periodically. When it first encounters a new routing address successfully resolved by the OBP API, it caches the mapping locally — so subsequent payments to the same beneficiary resolve instantly from the local cache.
+
+The registry is structurally a lookup table from routing scheme/address to (bank, home instance). In the current single-instance release every entry resolves to the local OBP API instance, and an unresolvable address is a routing error (`OBP-BANK-NODE-ROUTING-001`). The table shape is deliberate: a future multi-instance network adds entries whose home instance is a peer platform, without changing how resolution works (see `ARCHITECTURE.md`, "Multi-instance posture"). Note that `bank_id` is an opaque, instance-local identifier — network-meaningful addresses such as a BIC belong in the bank's `bank_routings` entries, never encoded into the `bank_id` itself.
 
 #### Why OPEN_CORRIDOR rather than COUNTERPARTY
 
@@ -547,6 +549,12 @@ The OBP Bank Node writes and reads the five Cardano record types defined in the 
 
 The OBP Bank Node uses the bank's configured Cardano wallet address and signing key (held in HSM or config) for on-chain operations.
 
+### Commitment Preimage Rule
+
+The Record 1 Promise commitment is `SHA-256(salt ‖ canonical_instruction)`; only the hash reaches the chain. The v1 preimage binds `transaction_request_id`, `originating_bank_id`, `originating_account_id`, and the original instruction payload. Because `originating_bank_id` is an instance-local OBP identifier, a v1 commitment can only be verified by a party that knows this instance's identifier space.
+
+Committed rule: any preimage revision (v2) MUST additionally bind network-scoped routing identifiers — a `bank_routing` scheme/address pair (e.g. `BIC` + address) for both the originating and beneficiary banks, and the originating platform's `api_instance_id` — so that any party in a multi-instance network can verify a revealed commitment without knowledge of any instance's local identifiers. A preimage change never invalidates prior commitments (each record carries its schema version), but v2 is a prerequisite for any multi-instance deployment.
+
 ---
 
 ## 7. Configuration
@@ -695,6 +703,7 @@ GET http://localhost:{OBP_BANK_NODE_PORT}/ready
 4. All outbound connections to the OBP API use TLS 1.3 minimum.
 5. RabbitMQ credentials are provisioned per-bank by the OBP API and should be stored in the bank's secrets management system, not in plaintext config files.
 6. The OBP Bank Node logs all Interface A1 requests and Interface A2 webhook calls with full request/response bodies (excluding the `OBP_BANK_NODE_LOCAL_SECRET`) for audit purposes.
+7. The bank's Cardano signing key doubles as the bank's network identity (see `ARCHITECTURE.md`, "Multi-instance posture"). Key rotation MUST preserve identity: a rotation is recorded as a succession record signed by the outgoing key, naming the incoming key. A rotated key's prior signatures and commitments remain valid for their period of use.
 
 ---
 

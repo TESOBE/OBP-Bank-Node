@@ -12,6 +12,8 @@
 
 pub mod consumer;
 pub mod router;
+#[cfg(test)]
+mod transport_tests;
 pub mod types;
 
 pub use router::Router;

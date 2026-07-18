@@ -6,8 +6,8 @@ commitment combines with the off-chain platform data to make that case.
 
 This is a design/evidence note, not a legal opinion. It records the intended
 evidentiary model so the Interface C and provisioning work are built to support
-it. See also `LEDGER_DESIGN.md` (the netting ledger) and `CERT_TODO.md` /
-`PROVISIONING_API.md` (key ↔ identity registration).
+it. See also `LEDGER_DESIGN.md` (the netting ledger) and `../WIP/CERT_TODO.md` /
+`../WIP/PROVISIONING_API.md` (key ↔ identity registration).
 
 ## The scenario
 
@@ -75,7 +75,7 @@ records into an objective, independently checkable fact.
 | A Promise is a **binding settlement obligation** | Scheme / membership framework agreement | Contract (off-system) |
 | Bank A **made these specific promises** | Cardano txs signed by A's key, committing to `Hᵢ` at `Tᵢ` | Public chain |
 | The promises had **these exact terms** | Cleartext instruction + salt → recompute `Hᵢ` | OBP-API DB (+ salt) |
-| Bank A's **key = Bank A** | Registration / onboarding records binding cert/wallet to A | OBP-API / CA (`CERT_TODO.md`) |
+| Bank A's **key = Bank A** | Registration / onboarding records binding cert/wallet to A | OBP-API / CA (`../WIP/CERT_TODO.md`) |
 | Bank B **performed** (paid the beneficiaries) | Bank B's CBS / payment records | **Bank B's own systems** |
 | The **net owed** = X | Netting snapshot (Record 2 + OBP ledger) | OBP-API (+ chain anchor) |
 | Bank A **did not settle** | Absence of Record 5 / settlement tx; ledger stuck at `NETTED` | Chain absence + OBP ledger |
@@ -108,7 +108,7 @@ drive straight through them.
 
 The entire non-repudiation argument rests on "this Cardano wallet key is Bank A's."
 That binding is **not intrinsic to the chain** — it needs the registration / CA
-records (`CERT_TODO.md` / `PROVISIONING_API.md`, not yet built). Until then,
+records (`../WIP/CERT_TODO.md` / `../WIP/PROVISIONING_API.md`, not yet built). Until then,
 "prove this key is ours" is open, and "our key was compromised" is a live defense.
 
 Mitigations: HSM-held signing keys; a signed onboarding agreement registering the

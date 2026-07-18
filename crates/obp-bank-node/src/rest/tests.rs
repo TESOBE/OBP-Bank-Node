@@ -101,11 +101,11 @@ async fn initiate_payment_returns_202_with_uuid_and_state_identity() {
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let v: serde_json::Value = serde_json::from_slice(&body_bytes(resp).await).unwrap();
     assert_eq!(v["status"], "INITIATED");
-    assert_eq!(v["type"], "OPEN_CORRIDOR");
+    assert_eq!(v["type"], "OPEN_CORRIDOR_PROMISE");
     // `from` comes from state (bank identity), not from the URL.
     assert_eq!(v["from"]["bank_id"], "test.bank.id");
     assert_eq!(v["from"]["account_id"], "test-account-id");
-    // Inline routing and originator are echoed back (snake_case, OPEN_CORRIDOR).
+    // Inline routing and originator are echoed back (snake_case, OPEN_CORRIDOR_PROMISE).
     assert_eq!(v["to"]["other_bank_routing_scheme"], "OBP");
     assert_eq!(v["originator"]["name"], "Acme Coffee Ltd");
     assert_eq!(v["originator"]["source"], "explicit");
@@ -116,7 +116,7 @@ async fn initiate_payment_returns_202_with_uuid_and_state_identity() {
     assert!(v["promise_id"].is_null());
 }
 
-/// A well-formed OPEN_CORRIDOR body, as a starting point for the negative tests.
+/// A well-formed OPEN_CORRIDOR_PROMISE body, as a starting point for the negative tests.
 fn valid_payload() -> serde_json::Value {
     serde_json::json!({
         "value": { "currency": "KES", "amount": "1500.00" },

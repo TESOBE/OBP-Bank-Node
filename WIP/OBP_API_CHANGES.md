@@ -1,7 +1,7 @@
 # OBP-API Changes for Open Corridor Netting
 
 What needs to change inside the `OpenBankProject/OBP-API` codebase to support the
-full double-entry ledger model from `LEDGER_DESIGN.md`. Companion document, not a
+full double-entry ledger model from `../DOCS/LEDGER_DESIGN.md`. Companion document, not a
 replacement.
 
 **Robustness rule applies throughout.** Bank Node / scripts / mocks can be simple;
@@ -166,7 +166,7 @@ serialisation code, only diverge at the persistence step.
 
 `obp-api/src/main/scala/code/api/v5_1_0/` (or whichever version package they target).
 
-Six new endpoints from `LEDGER_DESIGN.md` §"API surface":
+Six new endpoints from `../DOCS/LEDGER_DESIGN.md` §"API surface":
 
 | Endpoint | Role required |
 |---|---|

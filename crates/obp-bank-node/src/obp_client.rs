@@ -1,11 +1,11 @@
 //! Interface B — the client the Bank Node uses to call OBP-API.
 //!
-//! Submits the OPEN_CORRIDOR Transaction Request on the bank's settlement
+//! Submits the OPEN_CORRIDOR_PROMISE Transaction Request on the bank's settlement
 //! account:
 //!
 //! ```text
 //! POST {base_url}/obp/v7.0.0/banks/{bank_id}/accounts/{account_id}
-//!      /views/owner/transaction-request-types/OPEN_CORRIDOR/transaction-requests
+//!      /views/owner/transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests
 //! ```
 //!
 //! The request body is the A1.1 body verbatim — the south-side and OBP-API
@@ -202,7 +202,7 @@ impl ObpClient {
     fn transaction_requests_url(&self, bank_id: &str, account_id: &str) -> String {
         format!(
             "{base}/obp/{ver}/banks/{bank}/accounts/{acct}/views/owner\
-             /transaction-request-types/OPEN_CORRIDOR/transaction-requests",
+             /transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests",
             base = self.base_url,
             ver = OBP_API_VERSION,
             bank = bank_id,
@@ -210,7 +210,7 @@ impl ObpClient {
         )
     }
 
-    /// Submit the OPEN_CORRIDOR Transaction Request. `body_json` is the raw A1.1
+    /// Submit the OPEN_CORRIDOR_PROMISE Transaction Request. `body_json` is the raw A1.1
     /// request payload (the same JSON the south-side handler received).
     pub async fn submit_open_corridor(
         &self,
@@ -219,7 +219,7 @@ impl ObpClient {
         body_json: &str,
     ) -> Result<ObpTrAccepted, ObpClientError> {
         let url = self.transaction_requests_url(bank_id, account_id);
-        debug!(%url, "submitting OPEN_CORRIDOR transaction request to OBP-API");
+        debug!(%url, "submitting OPEN_CORRIDOR_PROMISE transaction request to OBP-API");
 
         let req = self
             .http
@@ -333,7 +333,7 @@ mod tests {
     #[tokio::test]
     async fn success_extracts_transaction_request_id() {
         let router = Router::new().route(
-            "/obp/v7.0.0/banks/:bank/accounts/:acct/views/owner/transaction-request-types/OPEN_CORRIDOR/transaction-requests",
+            "/obp/v7.0.0/banks/:bank/accounts/:acct/views/owner/transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests",
             post(|| async {
                 Json(serde_json::json!({ "transaction_request_id": "obp-tr-999", "status": "INITIATED" }))
             }),
@@ -351,7 +351,7 @@ mod tests {
     #[tokio::test]
     async fn client_error_is_terminal_rejection_with_obp_code() {
         let router = Router::new().route(
-            "/obp/v7.0.0/banks/:bank/accounts/:acct/views/owner/transaction-request-types/OPEN_CORRIDOR/transaction-requests",
+            "/obp/v7.0.0/banks/:bank/accounts/:acct/views/owner/transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests",
             post(|| async {
                 (
                     axum::http::StatusCode::BAD_REQUEST,
@@ -394,7 +394,7 @@ mod tests {
     #[tokio::test]
     async fn server_error_is_retryable_transport() {
         let router = Router::new().route(
-            "/obp/v7.0.0/banks/:bank/accounts/:acct/views/owner/transaction-request-types/OPEN_CORRIDOR/transaction-requests",
+            "/obp/v7.0.0/banks/:bank/accounts/:acct/views/owner/transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests",
             post(|| async { axum::http::StatusCode::INTERNAL_SERVER_ERROR }),
         );
         let base = spawn_stub(router).await;

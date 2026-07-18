@@ -14,8 +14,8 @@
   against synthetic UTxOs + wallet (no node).
 - **Notary writes** — `CardanoBackend::write_{promise,settlement,exception}` now
   build/sign/submit min-UTxO self-payments carrying the record. **Hash-only:**
-  only a commitment reaches the chain, never cleartext (Promise carries its
-  salted commitment; Settlement/Exception are SHA-256'd in `commit_record`).
+  only a commitment reaches the chain, never cleartext — all three record types
+  carry a salted commitment (shared scheme in `lib.rs`).
 - **ADA settlement** — `CardanoAdaSettlement::submit_ada_transfer` is wired to a
   real debtor→creditor value tx; `idempotency_key` folded into metadata.
 - **Per-wallet submission serialization** — `submit_lock` on `CardanoBackend`,
@@ -25,13 +25,37 @@
 
 **Remaining:**
 
-- **Live preprod integration** — run `notary_write --submit` against a synced
-  preprod node with a faucet-funded wallet; confirm the tx lands. (Offline build
-  is verified; on-chain acceptance is not yet.) Then a debtor→creditor transfer.
-- **Persistent Ogmios + chain-sync `confirm()`** — still the coarse
-  `utxos_at`-presence check; real depth + rollbacks pending (see below).
-- **Salt for Settlement/Exception commitments** — currently unsalted; plumb a
-  per-record salt like the Promise path before production.
+- ~~**Live preprod integration**~~ — **done (2026-07-17).** Node upgraded to
+  `cardano-node-ogmios:v7.0.0_11.0.1-preprod` (the old 10.5.1 image wedged at
+  a ~2026-05-22 preprod hard fork) and fully synced; wallet at
+  `secrets/cardano.{addr,vkey,skey}`, faucet-funded; Ogmios v7 works with the
+  v6-shaped parsers unchanged. On-chain evidence, all through production code
+  paths:
+  - Notary: `notary_write --submit` accepted (tx `63eacfe3…e7491642`,
+    confirmed), and `examples/confirm_watch.rs` drove
+    `write_promise` → follower logged inclusion (height 4943193) →
+    `confirm()` depth 1 → 4.
+  - Value leg: `examples/settle_live.rs` drove
+    `CardanoAdaSettlement::from_backend` → `settle()` — 354.20 KES sized at
+    the 3542 stub rate to exactly 10 ADA, transferred debtor → creditor
+    (tx `787e857c…a5112845`, fee 171221), follower-confirmed to depth 2,
+    creditor address (`secrets/creditor.addr`) holds the 10 ADA UTxO.
+- ~~**Persistent Ogmios + chain-sync `confirm()`**~~ — **done (2026-07-14),
+  offline-verified.** `cardano/follower.rs`: a background task holds a
+  persistent `OgmiosSession` (chain-sync's cursor is per-connection) running
+  `findIntersection` → `nextBlock`, tracking watched tx ids. Writers register
+  the tx id *before* submitting (no race with the inclusion block); both
+  `confirm()` impls report real depth (`tip − inclusion + 1`) and revert to
+  `Pending` on a rollback past the inclusion point. Reconnect re-intersects at
+  recent block points, or at the current tip for a fresh follower. Txs the
+  follower never saw (previous process) fall back to the old `utxos_at`
+  presence check as depth 1.
+- ~~**Salt for Settlement/Exception commitments**~~ — **done (2026-07-14).** All
+  three record types now share one salted scheme (`compute_commitment` /
+  `verify_commitment` in `lib.rs`; `SettlementRecord::commit_v1` /
+  `ExceptionRecord::commit_v1`). `write_settlement` / `write_exception` take a
+  `salt` parameter: the caller mints it per record and must persist it durably
+  (as the Promise path does via the outbox) before calling.
 - **Dust-floor + funding policy** — decisions (see table).
 
 **Decision made while wiring:** all three notary records are **hash-only**
@@ -165,7 +189,7 @@ connect-per-call to one multiplexed connection (already flagged in
 | Wire `CardanoAdaSettlement::submit_ada_transfer` | `cardano/settlement.rs` | replace the Phase-2 stub |
 | Wire `CardanoBackend::write_{promise,settlement,exception}` | `cardano/mod.rs` | metadata self-payments |
 | Per-wallet submission serialization | `cardano/` | async mutex or UTxO reservation |
-| Persistent Ogmios + chain-sync `confirm()` | `cardano/ogmios.rs` + both `confirm()` | real depth + rollbacks |
+| ~~Persistent Ogmios + chain-sync `confirm()`~~ | `cardano/follower.rs` + both `confirm()` | done 2026-07-14 (offline-verified) |
 | Preprod integration test | `examples/` + `tests/` | self-payment, then transfer |
 | Dust-floor + funding policy | docs / config | decisions, not just code |
 

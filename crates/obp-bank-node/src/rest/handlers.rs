@@ -4,11 +4,11 @@
 //! `CardanoBackend` write path land, these handlers will:
 //!   1. Persist the request to the outbox (durability before any external call)
 //!   2. Resolve `value.currency` to the bank's settlement account
-//!   3. Submit the OBP OPEN_CORRIDOR Transaction Request (inline routing)
+//!   3. Submit the OBP OPEN_CORRIDOR_PROMISE Transaction Request (inline routing)
 //!   4. Write the Cardano Promise record
 //!   5. Return 202 with the real transaction_request_id
 //!
-//! Synchronous request validation (steps 1–2 of the A1.1 table in `A1_A2.md`)
+//! Synchronous request validation (steps 1–2 of the A1.1 table in `DOCS/A1_A2.md`)
 //! is implemented: malformed body, zero/negative amount, and empty
 //! beneficiary-routing / originator fields are rejected before the 202.
 
@@ -39,7 +39,7 @@ fn error(status: StatusCode, error_code: &str, message: impl Into<String>) -> Re
         .into_response()
 }
 
-/// Validate an A1.1 request body. Mirrors the error table in `A1_A2.md`:
+/// Validate an A1.1 request body. Mirrors the error table in `DOCS/A1_A2.md`:
 ///   - `OBP-40008` — amount is zero, negative, or not a number,
 ///   - `OBP-10001` — a required `value` / `to` field is empty,
 ///   - `OBP-BANK-NODE-ORIGINATOR-001` — an `originator` field is empty.
@@ -176,7 +176,7 @@ pub async fn initiate_payment(
 
     let body = InitiatedResponse {
         transaction_request_id: id,
-        kind: "OPEN_CORRIDOR",
+        kind: "OPEN_CORRIDOR_PROMISE",
         from: FromAccount {
             bank_id: state.bank_id.clone(),
             account_id: state.account_id.clone(),

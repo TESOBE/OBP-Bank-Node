@@ -109,4 +109,4 @@ One credential to issue, rotate, revoke.
 | `POST /obp/v5.1.0/banks/{bank_id}/provision-bank-node` (cert mode) | OBP-API | Accepts CSR, signs against CA, creates vhost + maps permissions to CN, returns signed cert + chain + config bundle |
 | Renewal endpoint | OBP-API | `POST /provision-bank-node/renew` accepts a fresh CSR, returns new cert; old cert valid until it naturally expires |
 | Revocation | OBP-API + CA | Add cert serial to CRL; broker re-reads CRL on schedule |
-| Spec update | `docs/OBP-Bank-Node-Spec.md` §10 + §12 | Document the cert-based flow as the recommended auth model; mark password mode as legacy/dev-only |
+| Spec update | `../DOCS/OBP-Bank-Node-Spec.md` §10 + §12 | Document the cert-based flow as the recommended auth model; mark password mode as legacy/dev-only |

@@ -4,7 +4,7 @@ Source-of-truth for the OBP Bank Node's implementation choices. Decisions
 captured here are committed — re-open with reason, not on a whim.
 
 For *what* the node does and *why* it exists, see `TLDR.md` and
-`docs/OBP-Bank-Node-Spec.md`. This file is *how* it is built.
+`OBP-Bank-Node-Spec.md`. This file is *how* it is built.
 
 ## Terminology — what this is, and what it is not
 
@@ -254,6 +254,59 @@ A bank deploys via Docker Compose. Three services in the minimum stack:
 Plus, optionally, the bank's own Postgres if using the database delivery
 mode. Mithril bootstrap runs as a one-shot init step before `cardano-node`
 first starts.
+
+## Multi-instance posture
+
+One OBP-API instance, plus the Bank Nodes of its member banks, is a complete
+and self-contained deployment. An Open Corridor *network* may in future
+comprise several independently operated instances ("clusters") — for example
+one per platform operator, or one per central bank — exchanging payments
+across instance boundaries. **Instance ≠ network** is the committed
+terminology: the current release is single-instance; identifiers and durable
+artifacts are designed to be network-scoped so federation can be added
+without re-cutting them.
+
+No federation machinery is built now, and none should be built
+speculatively: no peer sync, no directory service, no inter-instance auth,
+no federation endpoints. What is committed now is the set of rules that stop
+instance-local assumptions leaking into things that outlive code —
+identifiers, hash preimages, and wire contracts:
+
+- **`bank_id` is opaque and instance-local.** It is never meaningful across
+  instances and is not required to be, or to embed, a BIC. BICs change
+  (mergers, rebrands), are not universal (non-SWIFT participants), and are
+  not one-per-bank (BIC8 vs BIC11, branch codes). The BIC — and any other
+  network-meaningful address — lives in the bank's `bank_routings` list
+  (scheme/address pairs), where a bank can hold several entries and rotate
+  them without changing its identifier. A BIC-derived `bank_id` is an
+  acceptable human-friendly convention; no logic may rely on it.
+- **Durable and cross-boundary records name banks by routing, not
+  `bank_id`.** Anything that persists (outbox rows, commitment preimages)
+  or crosses a trust boundary (Interface C payloads, on-chain records) must
+  carry a routing scheme/address pair for each bank it names, so a party
+  outside this instance can interpret it. See the commitment preimage rule
+  in `OBP-Bank-Node-Spec.md` §6.
+- **Counterparty resolution is a lookup that may miss.** The Node's routing
+  registry (spec §3.2) is a table mapping routing scheme/address →
+  (bank, home instance). Today every row resolves to the local instance and
+  a miss is a routing error. Federation later means adding rows whose home
+  instance is a peer, plus a forwarding path — not rewriting resolution.
+- **Records are stamped with their origin instance.** OBP-API's existing
+  `api_instance_id` identifies the instance. Durable records and
+  cross-boundary messages carry the originating `api_instance_id` so that,
+  in a multi-instance network, any record can be traced to the ledger it
+  came from.
+- **A bank's network identity is its signing key.** The Bank Node already
+  holds the bank's Cardano keys; across instances, a routing claim or
+  record counts only if signed by the bank's own key (with the hosting
+  instance attesting reachability). Key rotation must not change identity:
+  a rotation is a succession record signed by the outgoing key. Specified
+  before it is needed because retrofitting rotation onto key-as-identity is
+  painful.
+- **Wire contracts are versioned; durable IDs are UUIDs.** Interface
+  payloads carry an explicit contract version. No instance-local sequence
+  may appear in a durable or cross-boundary ID — sequences collide the day
+  a second instance exists.
 
 ## Open architecture decisions
 

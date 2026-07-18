@@ -6,7 +6,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Body of `POST .../transaction-request-types/OPEN_CORRIDOR/transaction-requests`.
+/// Body of `POST .../transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests`.
 ///
 /// Also `Serialize`: the handler re-serializes the validated request into the
 /// outbox as the canonical payload the dispatcher replays to OBP-API.
@@ -15,7 +15,7 @@ pub struct InitiateRequest {
     pub value: MoneyValue,
     pub description: String,
     pub to: BeneficiaryRouting,
-    /// FATF Travel Rule data on the upstream payer. Mandatory for OPEN_CORRIDOR.
+    /// FATF Travel Rule data on the upstream payer. Mandatory for OPEN_CORRIDOR_PROMISE.
     pub originator: Originator,
 }
 
@@ -53,7 +53,7 @@ pub struct AccountRouting {
 }
 
 /// HTTP 202 body returned from payment initiation. Mirrors the OBP
-/// OPEN_CORRIDOR Transaction Request response shape (see `A1_A2.md`).
+/// OPEN_CORRIDOR_PROMISE Transaction Request response shape (see `DOCS/A1_A2.md`).
 #[derive(Debug, Serialize)]
 pub struct InitiatedResponse {
     pub transaction_request_id: String,

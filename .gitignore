@@ -7,3 +7,9 @@
 # Local secrets / wallet keys
 /secrets/
 *.skey
+
+# Commercially sensitive docs — never track
+/DO_NOT_COMMIT/
+
+# Runtime state — SQLite outbox/evidence databases
+/outbox/

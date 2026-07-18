@@ -7,10 +7,13 @@
 mod cbs;
 mod dispatcher;
 mod evidence;
+mod finality;
+mod fx;
 mod interface_c;
 mod obp_client;
 mod outbox;
 mod rest;
+mod settlement_store;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -31,9 +34,11 @@ use obp_blockchain::BlockchainBackend;
 use crate::cbs::CbsClient;
 use crate::dispatcher::{Dispatcher, DispatcherConfig};
 use crate::evidence::EvidenceStore;
+use crate::finality::FinalityWatcher;
 use crate::obp_client::{ObpAuth, ObpClient};
 use crate::outbox::OutboxStore;
 use crate::rest::{build_router, BankNodeState};
+use crate::settlement_store::SettlementStore;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct Config {
@@ -73,20 +78,70 @@ impl Default for Config {
     }
 }
 
-/// Settlement (value-leg) configuration. The FX rate here is a PoC stub —
-/// production reads an off-chain price service, not config.
+/// Settlement (value-leg) configuration.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct SettlementConfig {
-    /// Stub settle-time rate: minor units of the book currency per 1 whole ADA
+    /// Which settle-time FX source to use. `coingecko` (default) queries the
+    /// live CoinGecko price; `stub` uses `ada_rate_minor_per_whole_ada`
+    /// (tests / offline development only).
+    #[serde(default)]
+    fx_source: FxSourceKind,
+    /// CoinGecko base URL — override for tests or a proxy.
+    #[serde(default = "default_fx_base_url")]
+    fx_base_url: String,
+    #[serde(default = "default_fx_timeout_secs")]
+    fx_timeout_secs: u64,
+    /// Stub-source rate: minor units of the book currency per 1 whole ADA
     /// (e.g. 3542 = 1 ADA ≈ 35.42 KES). `u64` because figment's value model
     /// cannot round-trip `u128`; widened at the `StubFxSource` boundary.
     ada_rate_minor_per_whole_ada: u64,
+    /// Confirmation depth at which a settlement transfer counts as FINAL.
+    /// Broadcast (`SUBMITTED`) is not settlement — the finality watcher
+    /// promotes rows at this depth. 15 blocks ≈ 5 minutes on Cardano.
+    #[serde(default = "default_finality_depth")]
+    finality_depth: u32,
+    /// Finality watcher poll interval, seconds.
+    #[serde(default = "default_finality_poll_secs")]
+    finality_poll_secs: u64,
+    /// Durable settlement idempotency/finality store (SQLite).
+    #[serde(default = "default_settlement_store_path")]
+    store_path: PathBuf,
+}
+
+fn default_finality_depth() -> u32 {
+    15
+}
+fn default_finality_poll_secs() -> u64 {
+    30
+}
+fn default_settlement_store_path() -> PathBuf {
+    PathBuf::from("./outbox/settlements.db")
+}
+fn default_fx_base_url() -> String {
+    "https://api.coingecko.com".to_string()
+}
+fn default_fx_timeout_secs() -> u64 {
+    10
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum FxSourceKind {
+    #[default]
+    Coingecko,
+    Stub,
 }
 
 impl Default for SettlementConfig {
     fn default() -> Self {
         SettlementConfig {
+            fx_source: FxSourceKind::default(),
+            fx_base_url: default_fx_base_url(),
+            fx_timeout_secs: default_fx_timeout_secs(),
             ada_rate_minor_per_whole_ada: 3542,
+            finality_depth: default_finality_depth(),
+            finality_poll_secs: default_finality_poll_secs(),
+            store_path: default_settlement_store_path(),
         }
     }
 }
@@ -302,6 +357,31 @@ async fn main() -> anyhow::Result<()> {
     );
     tokio::spawn(dispatcher.run());
 
+    // Settlement idempotency/finality: whenever a settlement rail exists, open
+    // the durable store and start the finality watcher — even with the
+    // Interface C consumer off, previously SUBMITTED settlements must still be
+    // promoted to FINAL (or flagged) as the chain advances.
+    let settlement_parts = match &settlement {
+        Some(backend) => {
+            let store =
+                SettlementStore::connect(&config.settlement.store_path).await.with_context(|| {
+                    format!(
+                        "failed to open settlement store at {}",
+                        config.settlement.store_path.display()
+                    )
+                })?;
+            let watcher = FinalityWatcher {
+                store: store.clone(),
+                backend: Arc::clone(backend),
+                finality_depth: config.settlement.finality_depth,
+                poll_interval: std::time::Duration::from_secs(config.settlement.finality_poll_secs),
+            };
+            tokio::spawn(watcher.run());
+            Some((Arc::clone(backend), store))
+        }
+        None => None,
+    };
+
     // Interface C — inbound from OBP-API over RabbitMQ. Off by default; when on,
     // it consumes credit notifications (capturing the salt as evidence) and
     // delivers credits to the bank's CBS.
@@ -315,11 +395,17 @@ async fn main() -> anyhow::Result<()> {
             config.cbs_delivery.webhook.timeout_seconds,
         )
         .context("failed to build CBS client")?;
+        let settlement_service =
+            settlement_parts.map(|(backend, store)| interface_c::router::SettlementService {
+                backend,
+                store,
+                finality_depth: config.settlement.finality_depth,
+            });
         let c_router = Arc::new(interface_c::Router::new(
             config.bank.bank_id.clone(),
             evidence,
             cbs,
-            settlement.clone(),
+            settlement_service,
         ));
         let consumer_cfg = interface_c::consumer::ConsumerConfig {
             uri: build_amqp_uri(&config.rabbitmq),
@@ -429,10 +515,26 @@ async fn build_backend(config: &Config) -> anyhow::Result<Backends> {
             let c = obp_blockchain::cardano::CardanoBackend::new(cardano_cfg)
                 .await
                 .context("failed to construct CardanoBackend")?;
-            // Settlement shares the backend's wallet/Ogmios/submit-lock. FX is a
-            // PoC stub rate; production reads an off-chain price service.
-            let fx: Arc<dyn FxSource> =
-                Arc::new(StubFxSource::new(config.settlement.ada_rate_minor_per_whole_ada.into()));
+            // Settlement shares the backend's wallet/Ogmios/submit-lock.
+            let fx: Arc<dyn FxSource> = match config.settlement.fx_source {
+                FxSourceKind::Coingecko => {
+                    info!(base_url = %config.settlement.fx_base_url, "FX source: CoinGecko");
+                    Arc::new(
+                        crate::fx::CoinGeckoFxSource::new(
+                            config.settlement.fx_base_url.clone(),
+                            config.settlement.fx_timeout_secs,
+                        )
+                        .context("failed to build CoinGecko FX source")?,
+                    )
+                }
+                FxSourceKind::Stub => {
+                    warn!(
+                        rate = config.settlement.ada_rate_minor_per_whole_ada,
+                        "FX source: STUB fixed rate — tests/offline development only"
+                    );
+                    Arc::new(StubFxSource::new(config.settlement.ada_rate_minor_per_whole_ada.into()))
+                }
+            };
             let settlement: Arc<dyn SettlementBackend> =
                 Arc::new(CardanoAdaSettlement::from_backend(&c, fx));
             let backend: Arc<dyn BlockchainBackend> = Arc::new(c);
