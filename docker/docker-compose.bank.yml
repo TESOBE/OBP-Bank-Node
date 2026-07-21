@@ -1,0 +1,74 @@
+# Bundled OBP Bank Node deployment: bank node + cardano-node + Ogmios.
+# Runs under Podman (podman compose) or Docker (docker compose).
+#
+# The network is chosen ONCE, by image tag:
+#
+#   CARDANO_NETWORK=mainnet podman compose -f docker/docker-compose.bank.yml up -d
+#
+# CARDANO_NETWORK (default: preprod) selects BOTH image tags, so the bank node
+# and the Cardano node can never be on different networks. The bank node image
+# has its network baked in (OBP_BN_BLOCKCHAIN__CARDANO__NETWORK) and refuses to
+# boot if the mounted YAML config names a different one — the bank's config
+# never contains a `network` field.
+#
+# Chain DB and outbox volumes are suffixed with the network: different chains
+# can't share a DB, and switching networks must never mix settlement state.
+#
+# Bank-provided files (mounted read-only, with SELinux relabel for
+# RHEL-family hosts — the Z flag is a no-op elsewhere):
+#   ../obp-bank-node-config.yaml  → /app/obp-bank-node-config.yaml
+#   ../secrets/cardano.skey       → /app/secrets/cardano.skey
+# The skey must be readable by the container user (uid 10001):
+#   chmod 400 secrets/cardano.skey
+#   podman unshare chown 10001 secrets/cardano.skey   # rootless podman
+#   chown 10001 secrets/cardano.skey                  # docker / rootful
+
+services:
+
+  obp-bank-node:
+    image: obp-bank-node:${CARDANO_NETWORK:-preprod}
+    ports:
+      - "8088:8088"   # REST (Interface A/B) + /health
+    environment:
+      # Inside the compose network, Ogmios is the sibling container, not
+      # localhost. Everything else comes from the image and the mounted YAML.
+      OBP_BN_BLOCKCHAIN__CARDANO__OGMIOS_URL: "ws://cardano-node-ogmios:1337"
+    volumes:
+      - ../obp-bank-node-config.yaml:/app/obp-bank-node-config.yaml:ro,Z
+      - ../secrets:/app/secrets:ro,Z
+      - bank-node-outbox:/app/outbox
+    depends_on:
+      cardano-node-ogmios:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8088/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # cardano-node + Ogmios in one container. Versions pre-matched by
+  # CardanoSolutions to known-good combinations.
+  cardano-node-ogmios:
+    # node 11.x required: preprod hard-forked past node 10.5 around 2026-05-22
+    # (a 10.5.1 node wedges silently at that slot with healthy peering).
+    # Fully qualified for podman hosts with short-name resolution enforced.
+    image: docker.io/cardanosolutions/cardano-node-ogmios:v7.0.0_11.0.1-${CARDANO_NETWORK:-preprod}
+    ports:
+      - "1337:1337"  # Ogmios JSON-RPC (host access for status/debugging)
+    volumes:
+      - cardano-db:/db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:1337/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+volumes:
+  cardano-db:
+    name: cardano-db-${CARDANO_NETWORK:-preprod}
+  bank-node-outbox:
+    name: bank-node-outbox-${CARDANO_NETWORK:-preprod}

@@ -27,7 +27,8 @@ services:
   cardano-node-ogmios:
     # node 11.x required: preprod hard-forked past node 10.5 around 2026-05-22
     # (a 10.5.1 node wedges silently at that slot with healthy peering).
-    image: cardanosolutions/cardano-node-ogmios:v7.0.0_11.0.1-preprod
+    # Fully qualified for podman hosts with short-name resolution enforced.
+    image: docker.io/cardanosolutions/cardano-node-ogmios:v7.0.0_11.0.1-preprod
     ports:
       - "1337:1337"  # Ogmios JSON-RPC
     volumes:
