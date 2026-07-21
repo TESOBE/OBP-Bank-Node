@@ -1,9 +1,57 @@
-# Local Cardano stack (`docker/`)
+# Docker (`docker/`)
 
-Runs a `cardano-node` + Ogmios container for OBP Bank Node development.
+Two things live here: the **per-network Bank Node images** and the **local
+Cardano stack** used for development.
 
-- `docker-compose.cardano.yml` — the compose definition
-- `cardano-bootstrap.sh` — convenience wrapper (`up`, `status`, `logs`, `down`, `nuke`)
+- `Dockerfile` — the OBP Bank Node image, built once per Cardano network
+- `build-images.sh` — builds `obp-bank-node:{preprod,preview,mainnet}`
+- `docker-compose.bank.yml` — bundled deployment: bank node + cardano-node/Ogmios
+- `docker-compose.cardano.yml` — dev-only Cardano stack (preprod, no bank node)
+- `cardano-bootstrap.sh` — convenience wrapper for the dev stack (`up`, `status`, `logs`, `down`, `nuke`)
+
+## Per-network Bank Node images
+
+The Cardano network is an **image property, not a config setting**. Each image
+bakes `OBP_BN_BLOCKCHAIN__CARDANO__NETWORK` at build time:
+
+```bash
+./docker/build-images.sh              # obp-bank-node:{preprod,preview,mainnet}
+./docker/build-images.sh mainnet      # just one
+```
+
+Each build also produces a version-pinned tag (`obp-bank-node:0.1.0-mainnet`).
+The `CARDANO_NETWORK` build arg has no default and rejects unknown values — an
+image that doesn't know its network fails at build time.
+
+A bank picks its network by pulling a tag; its YAML config never contains a
+`network` field. If the mounted config *does* name a different network, the
+node refuses to start (`load_config` fail-loud guard in `main.rs`) rather than
+silently overriding it.
+
+The image runs as non-root (uid 10001), expects the bank's config at
+`/app/obp-bank-node-config.yaml` and the Cardano signing key at
+`/app/secrets/cardano.skey`, writes the outbox DB to `/app/outbox`, and serves
+REST + `/health` on port 8088.
+
+## Bundled deployment (`docker-compose.bank.yml`)
+
+Runs the bank node next to its Cardano node, under Podman or Docker. One
+variable selects both image tags, so the pair can never disagree on network:
+
+```bash
+CARDANO_NETWORK=mainnet podman compose -f docker/docker-compose.bank.yml up -d
+```
+
+Defaults to preprod. Chain-DB and outbox volumes are suffixed with the network
+(`cardano-db-mainnet`, …) so switching networks never mixes state. The signing
+key is mounted read-only and must be readable by uid 10001 (rootless Podman:
+`podman unshare chown 10001 secrets/cardano.skey`). Bind mounts carry the `Z`
+SELinux relabel flag for RHEL-family hosts.
+
+## Local Cardano dev stack (`docker-compose.cardano.yml`)
+
+Runs only the `cardano-node` + Ogmios container, for developing the Bank Node
+natively (`cargo run`) against a local chain.
 
 Network: **preprod** testnet. See `../ARCHITECTURE.md` for why preprod and not preview, and why no Mithril fast-bootstrap.
 

@@ -1,7 +1,8 @@
 //! Cardano backend.
 //!
 //! - Talks to a local `cardano-node` via Ogmios (JSON-RPC over WebSocket).
-//! - Loads the Shelley payment key trio (.skey/.vkey/.addr) at construction.
+//! - Loads the Shelley payment signing key (.skey) at construction; the
+//!   verification key and enterprise address are derived from it.
 //! - `write_*` build, sign, and submit metadata-only self-payments carrying the
 //!   notary record's hash commitment (via the shared [`tx`] builder).
 //! - `confirm()` reads the [`follower`] chain-sync task for real confirmation
@@ -35,18 +36,45 @@ use self::follower::ChainFollower;
 use self::ogmios::OgmiosClient;
 use self::wallet::Wallet;
 
+/// Every field has a default matching the bundled installation package, so a
+/// bare `blockchain: { type: cardano }` config boots against the local stack.
+/// The verification key and wallet address are derived from the signing key,
+/// so the `.skey` file is the only wallet input.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CardanoConfig {
     /// `ws://host:port` of the Ogmios endpoint in front of cardano-node.
+    /// Default: the bundled container. Point at a managed provider to
+    /// override.
+    #[serde(default = "default_ogmios_url")]
     pub ogmios_url: String,
-    /// `preprod` / `preview` / `mainnet` — used for logging + sanity checks.
+    /// `preprod` (default) / `preview` / `mainnet`.
+    #[serde(default = "default_network")]
     pub network: String,
-    /// Path to the wallet address file (bech32, e.g. `addr_test1...`).
-    pub wallet_address_path: PathBuf,
-    /// Path to the verification key envelope (.vkey).
-    pub wallet_vkey_path: PathBuf,
     /// Path to the signing key envelope (.skey). Treat as a secret.
+    #[serde(default = "default_skey_path")]
     pub wallet_skey_path: PathBuf,
+}
+
+fn default_ogmios_url() -> String {
+    "ws://localhost:1337".into()
+}
+
+fn default_network() -> String {
+    "preprod".into()
+}
+
+fn default_skey_path() -> PathBuf {
+    "./secrets/cardano.skey".into()
+}
+
+impl Default for CardanoConfig {
+    fn default() -> Self {
+        CardanoConfig {
+            ogmios_url: default_ogmios_url(),
+            network: default_network(),
+            wallet_skey_path: default_skey_path(),
+        }
+    }
 }
 
 pub struct CardanoBackend {
@@ -79,12 +107,8 @@ impl CardanoBackend {
             "connected to Ogmios"
         );
 
-        let wallet = Wallet::load(
-            &config.wallet_skey_path,
-            &config.wallet_vkey_path,
-            &config.wallet_address_path,
-        )
-        .map_err(|e| BlockchainError::Internal(format!("wallet load failed: {e}")))?;
+        let wallet = Wallet::load(&config.wallet_skey_path, &config.network)
+            .map_err(|e| BlockchainError::Internal(format!("wallet load failed: {e}")))?;
         info!(address = %wallet.address, "wallet loaded");
 
         Ok(Self {

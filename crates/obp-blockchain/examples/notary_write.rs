@@ -6,8 +6,6 @@
 //!
 //! Usage:
 //!   WALLET_SKEY=/secrets/cardano.skey \
-//!   WALLET_VKEY=/secrets/cardano.vkey \
-//!   WALLET_ADDR=/secrets/cardano.addr \
 //!   cargo run -p obp-blockchain --example notary_write [-- URL [NETWORK]] [--submit]
 //!
 //! Defaults: URL = ws://localhost:1337, NETWORK = preprod.
@@ -29,9 +27,7 @@ async fn main() {
     let network = positional.get(1).map(|s| s.as_str()).unwrap_or("preprod");
 
     let skey = env_path("WALLET_SKEY");
-    let vkey = env_path("WALLET_VKEY");
-    let addr = env_path("WALLET_ADDR");
-    let wallet = Wallet::load(&skey, &vkey, &addr).unwrap_or_else(|e| {
+    let wallet = Wallet::load(&skey, network).unwrap_or_else(|e| {
         eprintln!("ERROR loading wallet: {e}");
         std::process::exit(1);
     });

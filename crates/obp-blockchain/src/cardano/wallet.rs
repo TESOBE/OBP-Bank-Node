@@ -1,16 +1,17 @@
-//! Cardano wallet loading: parse a `cardano-cli`-style key file trio.
+//! Cardano wallet loading: everything derives from the signing key.
 //!
-//! The `cardano-cli address key-gen` command produces three files:
-//!   `<name>.skey`  — JSON-wrapped CBOR of the 32-byte Ed25519 seed (private)
-//!   `<name>.vkey`  — JSON-wrapped CBOR of the 32-byte Ed25519 public key
-//!   `<name>.addr`  — bech32 Shelley address string
-//!
-//! This module loads the trio, derives the SigningKey from the seed, and
-//! optionally cross-checks against the .vkey for integrity.
+//! `cardano-cli address key-gen` produces a `.skey` file — JSON-wrapped CBOR
+//! of the 32-byte Ed25519 seed. That seed is the only secret and the only
+//! input: the verification key is derived from it, and the enterprise
+//! (payment-key-only, CIP-19 type 6) address is derived from the verification
+//! key plus the network tag. The `.vkey` / `.addr` files cardano-cli also
+//! emits are redundant and not read.
 
 use std::path::Path;
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
+use pallas_addresses::{Network, ShelleyAddress, ShelleyDelegationPart, ShelleyPaymentPart};
+use pallas_crypto::hash::Hasher;
 use serde::Deserialize;
 use thiserror::Error;
 use tracing::debug;
@@ -25,8 +26,10 @@ pub enum WalletError {
     },
     #[error("parsing {path}: {message}")]
     Parse { path: String, message: String },
-    #[error("integrity: signing key and verification key do not match")]
-    IntegrityMismatch,
+    #[error("unknown network '{0}' (expected mainnet, preprod, or preview)")]
+    UnknownNetwork(String),
+    #[error("address encoding failed: {0}")]
+    AddressEncoding(String),
 }
 
 pub type Result<T> = std::result::Result<T, WalletError>;
@@ -50,17 +53,11 @@ pub struct Wallet {
 }
 
 impl Wallet {
-    /// Load a wallet from the .skey, .vkey, and .addr file trio. The vkey is
-    /// used to validate that the skey we loaded actually produces the
-    /// expected public key — a cheap integrity check.
-    pub fn load(
-        skey_path: impl AsRef<Path>,
-        vkey_path: impl AsRef<Path>,
-        addr_path: impl AsRef<Path>,
-    ) -> Result<Self> {
+    /// Load a wallet from a single `.skey` file. The verification key is
+    /// derived from the seed and the enterprise address from the verification
+    /// key + network, so no `.vkey` / `.addr` files are needed.
+    pub fn load(skey_path: impl AsRef<Path>, network: &str) -> Result<Self> {
         let skey_bytes = load_key_envelope_payload(skey_path.as_ref(), Some("Signing"))?;
-        let vkey_bytes = load_key_envelope_payload(vkey_path.as_ref(), Some("Verification"))?;
-        let address = read_text(addr_path.as_ref())?;
 
         let seed: [u8; 32] = skey_bytes.as_slice().try_into().map_err(|_| {
             WalletError::Parse {
@@ -69,34 +66,30 @@ impl Wallet {
             }
         })?;
         let signing_key = SigningKey::from_bytes(&seed);
-        let derived_vk = signing_key.verifying_key();
-
-        let expected_vk_bytes: [u8; 32] = vkey_bytes.as_slice().try_into().map_err(|_| {
-            WalletError::Parse {
-                path: vkey_path.as_ref().display().to_string(),
-                message: format!("expected 32-byte public key, got {} bytes", vkey_bytes.len()),
-            }
-        })?;
-        if derived_vk.to_bytes() != expected_vk_bytes {
-            return Err(WalletError::IntegrityMismatch);
-        }
+        let verifying_key = signing_key.verifying_key();
+        let address = enterprise_address(verifying_key.as_bytes(), network)?;
 
         debug!(address = %address, "wallet loaded");
         Ok(Wallet {
             address,
             signing_key,
-            verifying_key: derived_vk,
+            verifying_key,
         })
     }
 }
 
-fn read_text(path: &Path) -> Result<String> {
-    std::fs::read_to_string(path)
-        .map(|s| s.trim().to_string())
-        .map_err(|source| WalletError::Io {
-            path: path.display().to_string(),
-            source,
-        })
+/// Derive the bech32 enterprise address (CIP-19 type 6: payment key hash, no
+/// staking part) for a payment verification key on the given network.
+pub fn enterprise_address(vkey_bytes: &[u8; 32], network: &str) -> Result<String> {
+    let net = match network {
+        "mainnet" => Network::Mainnet,
+        "preprod" | "preview" => Network::Testnet,
+        other => return Err(WalletError::UnknownNetwork(other.to_string())),
+    };
+    let key_hash = Hasher::<224>::hash(vkey_bytes);
+    ShelleyAddress::new(net, ShelleyPaymentPart::Key(key_hash), ShelleyDelegationPart::Null)
+        .to_bech32()
+        .map_err(|e| WalletError::AddressEncoding(e.to_string()))
 }
 
 fn load_key_envelope_payload(path: &Path, type_keyword: Option<&str>) -> Result<Vec<u8>> {
@@ -175,6 +168,14 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    /// CIP-19 test-vector payment verification key
+    /// (`addr_vk1w0l2sr2zgfm26ztc6nl9xy8ghsk5sh6ldwemlpmp9xylzy4dtf7st80zhd`).
+    const CIP19_VKEY: [u8; 32] = [
+        0x73, 0xfe, 0xa8, 0x0d, 0x42, 0x42, 0x76, 0xad, 0x09, 0x78, 0xd4, 0xfe, 0x53, 0x10, 0xe8,
+        0xbc, 0x2d, 0x48, 0x5f, 0x5f, 0x6b, 0xb3, 0xbf, 0x87, 0x61, 0x29, 0x89, 0xf1, 0x12, 0xad,
+        0x5a, 0x7d,
+    ];
+
     fn cbor_byte_string_hex(bytes: &[u8]) -> String {
         let mut out = Vec::with_capacity(bytes.len() + 2);
         let len = bytes.len();
@@ -220,48 +221,63 @@ mod tests {
         assert!(err.contains("major type 2"), "got: {err}");
     }
 
+    /// CIP-19 appendix test vectors for the type-6 (enterprise) address.
     #[test]
-    fn loads_and_validates_a_real_keypair() {
-        let dir = tempdir().unwrap();
-        let signing = SigningKey::from_bytes(&rand::random::<[u8; 32]>());
-        let verifying = signing.verifying_key();
-
-        let skey = dir.path().join("test.skey");
-        let vkey = dir.path().join("test.vkey");
-        let addr = dir.path().join("test.addr");
-        write_envelope(&skey, "PaymentSigningKeyShelley_ed25519", &signing.to_bytes());
-        write_envelope(
-            &vkey,
-            "PaymentVerificationKeyShelley_ed25519",
-            verifying.as_bytes(),
+    fn derives_cip19_enterprise_addresses() {
+        assert_eq!(
+            enterprise_address(&CIP19_VKEY, "mainnet").unwrap(),
+            "addr1vx2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzers66hrl8"
         );
-        fs::write(&addr, "addr_test1abcd\n").unwrap();
-
-        let w = Wallet::load(&skey, &vkey, &addr).expect("load ok");
-        assert_eq!(w.address, "addr_test1abcd");
-        assert_eq!(w.verifying_key.to_bytes(), verifying.to_bytes());
+        assert_eq!(
+            enterprise_address(&CIP19_VKEY, "preprod").unwrap(),
+            "addr_test1vz2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzerspjrlsz"
+        );
+        assert_eq!(
+            enterprise_address(&CIP19_VKEY, "preview").unwrap(),
+            "addr_test1vz2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzerspjrlsz"
+        );
     }
 
     #[test]
-    fn detects_skey_vkey_mismatch() {
+    fn rejects_unknown_network() {
+        assert!(matches!(
+            enterprise_address(&CIP19_VKEY, "testnet"),
+            Err(WalletError::UnknownNetwork(_))
+        ));
+    }
+
+    #[test]
+    fn loads_wallet_from_skey_alone() {
         let dir = tempdir().unwrap();
         let signing = SigningKey::from_bytes(&rand::random::<[u8; 32]>());
-        let other = SigningKey::from_bytes(&rand::random::<[u8; 32]>());
 
         let skey = dir.path().join("test.skey");
-        let vkey = dir.path().join("test.vkey");
-        let addr = dir.path().join("test.addr");
         write_envelope(&skey, "PaymentSigningKeyShelley_ed25519", &signing.to_bytes());
-        write_envelope(
-            &vkey,
-            "PaymentVerificationKeyShelley_ed25519",
-            other.verifying_key().as_bytes(),
+
+        let w = Wallet::load(&skey, "preprod").expect("load ok");
+        assert_eq!(w.verifying_key.to_bytes(), signing.verifying_key().to_bytes());
+        assert!(w.address.starts_with("addr_test1v"), "got: {}", w.address);
+        assert_eq!(
+            w.address,
+            enterprise_address(signing.verifying_key().as_bytes(), "preprod").unwrap()
         );
-        fs::write(&addr, "addr_test1abcd\n").unwrap();
+    }
+
+    #[test]
+    fn rejects_vkey_envelope_as_skey() {
+        let dir = tempdir().unwrap();
+        let signing = SigningKey::from_bytes(&rand::random::<[u8; 32]>());
+
+        let skey = dir.path().join("test.skey");
+        write_envelope(
+            &skey,
+            "PaymentVerificationKeyShelley_ed25519",
+            signing.verifying_key().as_bytes(),
+        );
 
         assert!(matches!(
-            Wallet::load(&skey, &vkey, &addr),
-            Err(WalletError::IntegrityMismatch)
+            Wallet::load(&skey, "preprod"),
+            Err(WalletError::Parse { .. })
         ));
     }
 }

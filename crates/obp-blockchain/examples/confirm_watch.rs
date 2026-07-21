@@ -10,7 +10,7 @@
 //! only.
 //!
 //! Usage:
-//!   WALLET_SKEY=... WALLET_VKEY=... WALLET_ADDR=... \
+//!   WALLET_SKEY=... \
 //!   cargo run -p obp-blockchain --example confirm_watch [-- URL [NETWORK]]
 //!
 //! Defaults: URL = ws://localhost:1337, NETWORK = preprod.
@@ -39,8 +39,6 @@ async fn main() {
     let config = CardanoConfig {
         ogmios_url: url.to_string(),
         network: network.to_string(),
-        wallet_address_path: env_path("WALLET_ADDR").into(),
-        wallet_vkey_path: env_path("WALLET_VKEY").into(),
         wallet_skey_path: env_path("WALLET_SKEY").into(),
     };
     let backend = CardanoBackend::new(config).await.unwrap_or_else(|e| {

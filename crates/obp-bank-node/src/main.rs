@@ -65,7 +65,7 @@ impl Default for Config {
             bank: BankConfig::default(),
             blockchain: BlockchainConfig {
                 kind: BlockchainKind::Mock,
-                cardano: None,
+                cardano: CardanoConfig::default(),
             },
             obp_api: ObpApiConfig::default(),
             outbox: OutboxConfig::default(),
@@ -300,8 +300,10 @@ impl Default for BankConfig {
 struct BlockchainConfig {
     #[serde(rename = "type")]
     kind: BlockchainKind,
+    /// Optional overrides; the defaults match the bundled Cardano container
+    /// and the keys generated at installation.
     #[serde(default)]
-    cardano: Option<CardanoConfig>,
+    cardano: CardanoConfig,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
@@ -454,13 +456,35 @@ fn load_config() -> anyhow::Result<Config> {
         .unwrap_or_else(|_| "./obp-bank-node-config.yaml".to_string());
 
     let mut fig = Figment::from(Serialized::defaults(Config::default()));
+    let mut yaml_cardano_network: Option<String> = None;
     if std::path::Path::new(&path).exists() {
         info!(config_path = %path, "loading YAML overrides");
+        yaml_cardano_network = Figment::from(Yaml::file(&path))
+            .extract_inner::<String>("blockchain.cardano.network")
+            .ok();
         fig = fig.merge(Yaml::file(&path));
     } else {
         warn!(config_path = %path, "config file not found, using defaults");
     }
     fig = fig.merge(Env::prefixed("OBP_BN_").split("__"));
+
+    // Per-network images bake OBP_BN_BLOCKCHAIN__CARDANO__NETWORK, which would
+    // silently override a conflicting YAML value. Fail loudly instead: the
+    // operator wrote a setting this build cannot honor.
+    if let (Ok(env_network), Some(yaml_network)) = (
+        std::env::var("OBP_BN_BLOCKCHAIN__CARDANO__NETWORK"),
+        yaml_cardano_network,
+    ) {
+        if env_network != yaml_network {
+            anyhow::bail!(
+                "this build is fixed to Cardano network '{env_network}' \
+                 (OBP_BN_BLOCKCHAIN__CARDANO__NETWORK), but {path} sets \
+                 `blockchain.cardano.network: \"{yaml_network}\"` — remove the \
+                 YAML setting or use the '{yaml_network}' image"
+            );
+        }
+    }
+
     fig.extract().context("failed to parse config")
 }
 
@@ -507,12 +531,7 @@ async fn build_backend(config: &Config) -> anyhow::Result<Backends> {
     match config.blockchain.kind {
         BlockchainKind::Mock => Ok((Arc::new(MockBackend::new()), None)),
         BlockchainKind::Cardano => {
-            let cardano_cfg = config
-                .blockchain
-                .cardano
-                .clone()
-                .context("blockchain.type=cardano requires a blockchain.cardano block")?;
-            let c = obp_blockchain::cardano::CardanoBackend::new(cardano_cfg)
+            let c = obp_blockchain::cardano::CardanoBackend::new(config.blockchain.cardano.clone())
                 .await
                 .context("failed to construct CardanoBackend")?;
             // Settlement shares the backend's wallet/Ogmios/submit-lock.
