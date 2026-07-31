@@ -17,6 +17,14 @@ pub struct InitiateRequest {
     pub to: BeneficiaryRouting,
     /// FATF Travel Rule data on the upstream payer. Mandatory for OPEN_CORRIDOR_PROMISE.
     pub originator: Originator,
+    /// OBP charge policy (`SHARED` / `SENDER` / `RECEIVER`). Part of the OBP
+    /// wire body; defaults to `SHARED` when the A1.1 caller omits it.
+    #[serde(default = "default_charge_policy")]
+    pub charge_policy: String,
+}
+
+fn default_charge_policy() -> String {
+    "SHARED".to_string()
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -26,12 +34,30 @@ pub struct MoneyValue {
 }
 
 /// Inline beneficiary routing — no pre-registered counterparty required.
+///
+/// Mirrors OBP-API's `PostSimpleCounterpartyJson400` field-for-field: the
+/// dispatcher replays this block verbatim on Interface B, and OBP-API's JSON
+/// extraction has no defaults, so every field must be present on the wire.
+/// Callers may omit the optional ones (serde fills empty strings).
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct BeneficiaryRouting {
+    /// Beneficiary display name — used by OBP-API for counterparty creation.
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
     pub other_bank_routing_scheme: String,
     pub other_bank_routing_address: String,
     pub other_account_routing_scheme: String,
     pub other_account_routing_address: String,
+    #[serde(default)]
+    pub other_account_secondary_routing_scheme: String,
+    #[serde(default)]
+    pub other_account_secondary_routing_address: String,
+    #[serde(default)]
+    pub other_branch_routing_scheme: String,
+    #[serde(default)]
+    pub other_branch_routing_address: String,
 }
 
 /// FATF Travel Rule (Recommendation 16) data on the actual payer upstream of

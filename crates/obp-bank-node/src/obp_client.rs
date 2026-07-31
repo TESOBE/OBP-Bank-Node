@@ -5,11 +5,19 @@
 //!
 //! ```text
 //! POST {base_url}/obp/v7.0.0/banks/{bank_id}/accounts/{account_id}
-//!      /views/owner/transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests
+//!      /owner/transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests
 //! ```
 //!
 //! The request body is the A1.1 body verbatim — the south-side and OBP-API
 //! shapes are identical, so the dispatcher replays the stored payload unchanged.
+//!
+//! Also reports the on-chain Promise evidence back to OBP-API (the §5.1
+//! salt-relay intake) once the commitment is written:
+//!
+//! ```text
+//! POST {base_url}/obp/v7.0.0/banks/{bank_id}/accounts/{account_id}
+//!      /transaction-requests/{obp_tr_id}/open-corridor/promise
+//! ```
 //!
 //! Errors are split into two classes the dispatcher acts on differently:
 //!   - [`ObpClientError::Transport`] — retryable. Unreachable, timeout, 5xx,
@@ -100,6 +108,20 @@ pub struct ObpClient {
 #[derive(Debug, Clone)]
 pub struct ObpTrAccepted {
     pub obp_transaction_request_id: Option<String>,
+}
+
+/// The report-back body — field names are the locked wire contract with
+/// OBP-API (`tx_hash`, not `cardano_tx_hash`; the chain is named by
+/// `blockchain`). All values are opaque strings to OBP-API: stored as
+/// Transaction Request attributes and relayed verbatim to the beneficiary
+/// bank inside `obp_credit_notification`.
+#[derive(Debug, serde::Serialize)]
+pub struct PromiseEvidence<'a> {
+    pub tx_hash: &'a str,
+    pub blockchain: &'a str,
+    pub commitment: &'a str,
+    pub salt: &'a str,
+    pub preimage: &'a str,
 }
 
 impl ObpClient {
@@ -201,7 +223,7 @@ impl ObpClient {
 
     fn transaction_requests_url(&self, bank_id: &str, account_id: &str) -> String {
         format!(
-            "{base}/obp/{ver}/banks/{bank}/accounts/{acct}/views/owner\
+            "{base}/obp/{ver}/banks/{bank}/accounts/{acct}/owner\
              /transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests",
             base = self.base_url,
             ver = OBP_API_VERSION,
@@ -245,32 +267,83 @@ impl ObpClient {
                 obp_transaction_request_id,
             });
         }
+        Err(classify_failure(status, &text))
+    }
 
-        let (error_code, message) = parse_obp_error(&text);
+    fn promise_report_url(&self, bank_id: &str, account_id: &str, obp_tr_id: &str) -> String {
+        format!(
+            "{base}/obp/{ver}/banks/{bank}/accounts/{acct}\
+             /transaction-requests/{tr}/open-corridor/promise",
+            base = self.base_url,
+            ver = OBP_API_VERSION,
+            bank = bank_id,
+            acct = account_id,
+            tr = obp_tr_id,
+        )
+    }
 
-        // Only a genuine *business* rejection is terminal: a 400/422 carrying an
-        // OBP-NNNNN code (e.g. an unroutable destination). That payment is bad
-        // and won't improve on retry → EXCEPTION.
-        let is_business_rejection = matches!(status.as_u16(), 400 | 422)
-            && error_code.starts_with("OBP-")
-            && error_code != "OBP-UNKNOWN";
-        if is_business_rejection {
-            return Err(ObpClientError::Rejected {
-                status: status.as_u16(),
-                error_code,
-                message,
-            });
+    /// Report the on-chain Promise evidence back to OBP-API. `obp_tr_id` is the
+    /// Transaction Request id OBP-API assigned at submit time (not the node's
+    /// own id). The endpoint is idempotent: re-posting identical evidence
+    /// succeeds; posting *different* evidence for a TR that already has some is
+    /// refused with OBP-40053, which surfaces here as a terminal
+    /// [`ObpClientError::Rejected`].
+    pub async fn report_promise(
+        &self,
+        bank_id: &str,
+        account_id: &str,
+        obp_tr_id: &str,
+        evidence: &PromiseEvidence<'_>,
+    ) -> Result<(), ObpClientError> {
+        let url = self.promise_report_url(bank_id, account_id, obp_tr_id);
+        debug!(%url, "reporting Promise evidence to OBP-API");
+
+        let req = self.http.post(&url).json(evidence);
+        let req = self.authorize(req).await?;
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ObpClientError::Transport(e.to_string()))?;
+
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| ObpClientError::Transport(format!("reading response body: {e}")))?;
+
+        if status.is_success() {
+            return Ok(());
         }
+        Err(classify_failure(status, &text))
+    }
+}
 
-        // Everything else is operational, not a verdict on the payment: 5xx,
-        // timeouts (408), rate limiting (429), bad credentials (401/403), a
-        // wrong/misconfigured endpoint (404/405), or a 4xx with no business
-        // code. Treat as retryable — failing a real payment because OBP-API was
-        // misconfigured or our credentials were stale would be wrong.
-        Err(ObpClientError::Transport(format!(
+/// Split a non-2xx OBP answer into the two classes the dispatcher acts on.
+///
+/// Only a genuine *business* rejection is terminal: a 400/422 carrying an
+/// OBP-NNNNN code (e.g. an unroutable destination, or conflicting promise
+/// evidence). Everything else is operational, not a verdict on the payment:
+/// 5xx, timeouts (408), rate limiting (429), bad credentials (401/403), a
+/// wrong/misconfigured endpoint (404/405), or a 4xx with no business code.
+/// Those are retryable — failing a real payment because OBP-API was
+/// misconfigured or our credentials were stale would be wrong.
+fn classify_failure(status: reqwest::StatusCode, body: &str) -> ObpClientError {
+    let (error_code, message) = parse_obp_error(body);
+    let is_business_rejection = matches!(status.as_u16(), 400 | 422)
+        && error_code.starts_with("OBP-")
+        && error_code != "OBP-UNKNOWN";
+    if is_business_rejection {
+        ObpClientError::Rejected {
+            status: status.as_u16(),
+            error_code,
+            message,
+        }
+    } else {
+        ObpClientError::Transport(format!(
             "OBP-API returned {status}: {}",
             truncate(&message, 500)
-        )))
+        ))
     }
 }
 
@@ -333,7 +406,7 @@ mod tests {
     #[tokio::test]
     async fn success_extracts_transaction_request_id() {
         let router = Router::new().route(
-            "/obp/v7.0.0/banks/:bank/accounts/:acct/views/owner/transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests",
+            "/obp/v7.0.0/banks/:bank/accounts/:acct/owner/transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests",
             post(|| async {
                 Json(serde_json::json!({ "transaction_request_id": "obp-tr-999", "status": "INITIATED" }))
             }),
@@ -351,7 +424,7 @@ mod tests {
     #[tokio::test]
     async fn client_error_is_terminal_rejection_with_obp_code() {
         let router = Router::new().route(
-            "/obp/v7.0.0/banks/:bank/accounts/:acct/views/owner/transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests",
+            "/obp/v7.0.0/banks/:bank/accounts/:acct/owner/transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests",
             post(|| async {
                 (
                     axum::http::StatusCode::BAD_REQUEST,
@@ -394,7 +467,7 @@ mod tests {
     #[tokio::test]
     async fn server_error_is_retryable_transport() {
         let router = Router::new().route(
-            "/obp/v7.0.0/banks/:bank/accounts/:acct/views/owner/transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests",
+            "/obp/v7.0.0/banks/:bank/accounts/:acct/owner/transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests",
             post(|| async { axum::http::StatusCode::INTERNAL_SERVER_ERROR }),
         );
         let base = spawn_stub(router).await;
@@ -405,6 +478,82 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.is_retryable(), "5xx must be retryable");
+    }
+
+    fn evidence() -> PromiseEvidence<'static> {
+        PromiseEvidence {
+            tx_hash: "63eacfe3dbc1",
+            blockchain: "cardano",
+            commitment: "9c56cc51b374",
+            salt: "5f4dcc3b5aa7",
+            preimage: r#"{"tx_request_id":"tr-1"}"#,
+        }
+    }
+
+    #[tokio::test]
+    async fn report_promise_posts_wire_body_to_obp_tr_path() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<serde_json::Value>(1);
+        let router = Router::new().route(
+            "/obp/v7.0.0/banks/:bank/accounts/:acct/transaction-requests/obp-tr-9/open-corridor/promise",
+            post(move |Json(body): Json<serde_json::Value>| async move {
+                tx.send(body).await.unwrap();
+                (axum::http::StatusCode::CREATED, Json(serde_json::json!({})))
+            }),
+        );
+        let base = spawn_stub(router).await;
+        let client = ObpClient::new(base, ObpAuth::None).unwrap();
+
+        client
+            .report_promise("ke.01.kcs", "acct-1", "obp-tr-9", &evidence())
+            .await
+            .unwrap();
+
+        let body = rx.recv().await.unwrap();
+        assert_eq!(body["tx_hash"], "63eacfe3dbc1");
+        assert_eq!(body["blockchain"], "cardano");
+        assert_eq!(body["commitment"], "9c56cc51b374");
+        assert_eq!(body["salt"], "5f4dcc3b5aa7");
+        assert_eq!(body["preimage"], r#"{"tx_request_id":"tr-1"}"#);
+    }
+
+    #[tokio::test]
+    async fn report_promise_evidence_conflict_is_terminal() {
+        let router = Router::new().route(
+            "/obp/v7.0.0/banks/:bank/accounts/:acct/transaction-requests/:tr/open-corridor/promise",
+            post(|| async {
+                (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "code": 400, "message": "OBP-40053: Open Corridor promise evidence is already attached to this Transaction Request with different values." })),
+                )
+            }),
+        );
+        let base = spawn_stub(router).await;
+        let client = ObpClient::new(base, ObpAuth::None).unwrap();
+
+        let err = client
+            .report_promise("ke.01.kcs", "acct-1", "obp-tr-9", &evidence())
+            .await
+            .unwrap_err();
+        assert!(!err.is_retryable(), "evidence conflict must be terminal");
+        match err {
+            ObpClientError::Rejected { error_code, .. } => assert_eq!(error_code, "OBP-40053"),
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn report_promise_missing_endpoint_is_retryable() {
+        // Running against an OBP-API without the report-back endpoint (or a
+        // misconfigured base URL) must retry, not fail the payment.
+        let router = Router::new(); // no matching route → 404
+        let base = spawn_stub(router).await;
+        let client = ObpClient::new(base, ObpAuth::None).unwrap();
+
+        let err = client
+            .report_promise("ke.01.kcs", "acct-1", "obp-tr-9", &evidence())
+            .await
+            .unwrap_err();
+        assert!(err.is_retryable(), "404 must be operational/retryable");
     }
 
     #[tokio::test]

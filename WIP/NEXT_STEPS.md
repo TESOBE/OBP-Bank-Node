@@ -3,6 +3,36 @@
 State of the project as of the pause point, so we can resume without re-litigating
 decisions.
 
+## 2026-07-31 — FULL ROUND TRIP ACHIEVED on localhost + Cardano preprod
+
+The end-to-end Open Corridor loop ran for real — two KES 500 payments from
+`rt.bank.a`, promises on-chain, settle-pair netting (KES 1000), credit
+notifications verified and CBS-posted at node B, and a 47.125-tADA
+settlement transfer FINAL at depth 2, confirmed back to OBP-API's outbox
+relay (row DELIVERED). Full evidence: `WIP/roundtrip/STATUS.md`.
+
+Defects fixed on the way (details in STATUS.md "Fixes applied"):
+node submit-URL had a spurious `/views/` segment (`obp_client.rs` +
+dispatcher/client test fixtures); OBP's
+`transactionrequestattribute.value` was varchar(255) → now `MappedText`
+in OBP-API source + live-DB ALTER (**jar rebuild pending** to bake the
+source fix); EUR↔KES FX rates and authuser email-validation are now part
+of `setup_obp.sh`.
+
+New follow-ups from the run:
+
+- **FX for corridor currencies**: CoinGecko no longer supports KES as a
+  vs_currency (ADA/KES returns `{}`). Node A ran on the fixed stub rate.
+  Need a fiat cross-rate (ADA/USD × USD/KES from a web2 FX source) or the
+  API3 path pulled forward.
+- **Settlement linkage on the node status API**:
+  `GET .../transaction-requests/{id}` has `settlement_id`/`settled_at`
+  fields but nothing populates them — the pair-level settlement instruction
+  is never joined back to the covered outbox rows.
+- **Rebuild the OBP-API jar** (and re-inject `open_corridor_enabled` is no
+  longer needed — the prop is in `default.props`; a plain rebuild picks up
+  both) at the next natural OBP-API stop.
+
 ## Where we are
 
 The Rust rewrite is early. What exists and builds today
@@ -270,20 +300,93 @@ The Rust rewrite is early. What exists and builds today
   workspace-wide; transport integration test re-run green against the local
   broker.
 
+**OBP-API server-side half — largely built (2026-07-28; developed on OBP-API
+branch `open-corridor-salt-relay`, since **merged into `develop`** — merge
+commit `d0f9f1768` — and the branch deleted, 2026-07-30. Work continues on
+`develop`.):**
+
+- **Hold-at-`PENDING` (netting doc §5)**: `OPEN_CORRIDOR_PROMISE` TRs land at
+  `PENDING` in both create branches (`getStatus` below threshold; the
+  answer-challenge flow sets `PENDING` instead of posting), the pending-TR
+  bulk-status scheduler skips `OPEN_CORRIDOR*` types, and the type's challenge
+  threshold defaults to effectively infinite (prop-overridable four-eyes seam).
+- **§5.1 report-back endpoint (the salt-relay intake)**:
+  `POST /obp/v7.0.0/banks/BANK_ID/accounts/ACCOUNT_ID/transaction-requests/TRANSACTION_REQUEST_ID/open-corridor/promise`
+  with body `{tx_hash, blockchain, commitment, salt, preimage}` — **note the
+  field is `tx_hash`, not `cardano_tx_hash`** (renamed 2026-07-28; the chain is
+  identified by `blockchain`). Role `CanAttachOpenCorridorPromise` (bank-level).
+  Evidence stored as TR attributes (`open_corridor_tx_hash/_blockchain/
+  _commitment/_salt/_preimage` + reported_by/reported_at audit), append-once,
+  idempotent redelivery, row-locked. Errors OBP-40051..53.
+- **§5.4 wire DTOs + MessageDocs**: flat lower_snake_case bodies matching this
+  repo's `interface_c/types.rs` exactly, in obp-commons
+  (`OpenCorridorInterfaceC.scala`); MessageDocs lock the format.
+- **§5.2 per-bank publish**: `OpenCorridorBankBroker` registry (+ v7 admin
+  endpoints, role `CanConfigureOpenCorridorBroker`; row carries the bank's
+  `settlement_address` — open decision resolved) and `OpenCorridorPublisher`
+  (publish-and-await-reply per bank vhost, self-contained from the global
+  rabbitmq props).
+- **§5.3 settle-pair + transactional outbox**:
+  `POST /obp/v7.0.0/open-corridor/settle` (role `CanSettleOpenCorridor`,
+  gated by `open_corridor_enabled`): nets the pair, TR B posts the net between
+  the banks' settlement accounts, covered promises get
+  `settled_by_transaction_ids` + `settled_by_transaction_request_id`
+  attributes and flip `COMPLETED`; messages enqueued to `OpenCorridorOutbox`
+  in the same DB transaction; `OpenCorridorOutboxRelay` publishes with
+  backoff, treats settlement `SUBMITTED`/`SETTLING` as redeliver-to-poll
+  until `FINAL`, and parks refutable business errors as STICKY. Zero-net
+  decision resolved: promises discharge, no Transaction/instruction, credit
+  notifications still sent.
+
+**Bank Node consequences (the new items this unblocks):**
+
+1. ~~**Build the promise report-back client**~~ — **done (2026-07-30)**, see
+   the dated block below.
+2. The node's Interface C consumer + settlement store already match the
+   OBP-API relay semantics (redelivery-as-polling, idempotency_key) — no
+   changes needed there.
+
+**Promise report-back client — built (2026-07-30):**
+
+- **Outbox**: new terminal-success status `REPORTED` after `PROMISE_WRITTEN`
+  (which is no longer terminal — `claim_due` now also returns
+  `PROMISE_WRITTEN` rows). New column `obp_transaction_request_id`, recorded
+  by `mark_submitted` — OBP-API's TR id was previously only logged, but the
+  report-back endpoint is addressed by it. Guarded `ALTER TABLE` migration
+  for pre-existing databases.
+- **`obp_client.rs`**: `report_promise(bank_id, account_id, obp_tr_id,
+  &PromiseEvidence)` POSTs `{tx_hash, blockchain, commitment, salt,
+  preimage}` (the locked §5.1 wire names) to
+  `/obp/v7.0.0/banks/../accounts/../transaction-requests/{obp_tr_id}/open-corridor/promise`.
+  Error split shared with the TR submit via `classify_failure`: 400/422 with
+  an OBP-NNNNN code (e.g. OBP-40053 evidence conflict) is terminal →
+  `EXCEPTION`; 404/5xx/timeouts are retryable. Idempotent re-post of
+  identical evidence succeeds server-side, so redelivery is safe.
+- **Dispatcher step 3**: after the chain write, report the evidence and mark
+  `REPORTED`. The preimage sent is byte-for-byte the canonical JSON the
+  commitment was computed over (`canonical_preimage`, shared with
+  `build_commitment`), so the beneficiary's `SHA-256(salt ‖ preimage)` check
+  holds — asserted in tests via `PromiseRecord::verify_v1` on the captured
+  wire body. A `PROMISE_WRITTEN` row missing the OBP TR id or tx hash can
+  never report and goes to `EXCEPTION` for manual reconciliation (affects
+  legacy rows written before the column existed).
+- 120 workspace tests pass (was 103). **Ops prerequisite:** the node's M2M
+  service user needs `CanAttachOpenCorridorPromise` at its bank, or every
+  report parks rows at `PROMISE_WRITTEN` (403 is retryable).
+
 **Still not built yet in Rust:**
 
 - **Other A2 delivery modes** — webhook-ISO20022 / database / file-drop (only
   `webhook_obp` is wired); plus the A2 retry schedule.
-- **The OBP-API half** — recording the promise (status/salt/`cardano_tx_hash`)
-  and the server-side RabbitMQ publish of `credit_notification`(+salt) /
-  `settlement_instruction`. This is the PoC's critical path and lives in the
-  OBP-API Scala codebase, not here.
 
 So the binary now boots and runs the *outbound* path end-to-end (REST `202` →
-outbox → OBP-API submit → Cardano Promise commitment) and has the *inbound*
-Interface C consumer ready to receive credit notifications, capture the salt as
-evidence, and deliver credits to the CBS. The remaining gap to a full round-trip
-is the OBP-API server-side publishing + the settlement-trigger wiring.
+outbox → OBP-API submit → Cardano Promise commitment → evidence report-back to
+OBP-API) and has the *inbound* Interface C consumer ready to receive credit
+notifications, capture the salt as evidence, and deliver credits to the CBS.
+The OBP-API server-side half (hold-at-PENDING, salt-relay intake, per-bank
+publish, settle-pair + outbox relay) is merged into OBP-API `develop` — the
+remaining gap to a live round-trip is deployment/config (broker registration,
+roles) and end-to-end testing across the two systems.
 
 ## The design docs in this repo
 
@@ -386,16 +489,9 @@ OBP-API:** stay on Bank-Node-only work. Salt gap, chain-sync `confirm()`, and
 the live-preprod run are done (see the 2026-07-15/16 block above for the
 on-chain evidence). Next, in rough order:
 
-1. **Promise report-back client** (new item, identified 2026-07-18 while
-   reconciling the OBP-API netting docs): the dispatcher stops at
-   `PROMISE_WRITTEN` and never reports the promise back to OBP-API. Add an
-   outbox step that POSTs
-   `{cardano_tx_hash, blockchain, commitment, salt, preimage}` to the
-   OBP-API report-back endpoint (publish plan §5.1, OBP-API repo) after the
-   chain write — OBP-API needs it to relay the salt in
-   `obp_credit_notification`. Blocked on that endpoint existing (owned by
-   the OBP-API session); the endpoint's shape is agreed in the plan, so the
-   client can be built behind config once the path is fixed.
+1. ~~**Promise report-back client**~~ — **done (2026-07-30)**, see the dated
+   block above: dispatcher step 3 reports the evidence to the §5.1 endpoint
+   (now merged into OBP-API `develop`) and advances the row to `REPORTED`.
 2. ~~**Real FX source**~~ — **done (2026-07-18), interim web2 source.**
    `crates/obp-bank-node/src/fx.rs`: `CoinGeckoFxSource` (free public API,
    quotes ADA directly in KES; live-verified — real rate ≈ 21.2 KES/ADA,
@@ -446,14 +542,14 @@ In rough order of how big a commitment each is:
 - Pick the CA backend (Vault PKI vs step-ca) so `PROVISIONING_API.md` §3
   can be implemented against a concrete target.
 
-**Critical path to a full round-trip (the one true blocker):**
-- **OBP-API server-side half** (Scala, not this repo) — record the promise
-  (status / salt / `cardano_tx_hash`) and publish `credit_notification`(+salt)
-  and `settlement_instruction` to RabbitMQ. Until this exists, the inbound
-  Interface C consumer has nothing to receive. Start at `OBP_API_CHANGES.md`.
-- **Settlement-trigger wiring** — the `settlement_instruction` handler maps the
-  instruction and calls `CardanoAdaSettlement::settle`, but the *trigger* (what
-  decides a netting cycle is closed and emits the instruction) is still pending.
+**Critical path to a full round-trip — DONE (2026-07-31, see the dated
+block at the top):**
+- ~~OBP-API server-side half~~ — built and exercised: promise report-back,
+  outbox relay publishing `credit_notification`(+salt) and
+  `settlement_instruction`, redelivery-until-FINAL all verified live.
+- ~~Settlement-trigger wiring~~ — the admin settle-pair endpoint is the
+  trigger; exercised end-to-end (netting → instruction → ADA transfer →
+  FINAL → DELIVERED).
 
 **Medium / incremental Bank Node work:**
 - ~~Integration test of the inbound transport~~ — **done (2026-07-18)**, see

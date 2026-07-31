@@ -1,0 +1,57 @@
+# Round-trip test — Bank Node A (debtor, rt.bank.a, Cardano preprod).
+# Start from the repo root:
+#   source WIP/roundtrip/env.sh
+#   OBP_BANK_NODE_CONFIG=WIP/roundtrip/node-a.yaml \
+#   OBP_BN_OBP_API__DIRECT_LOGIN_TOKEN="$RT_NODE_A_TOKEN" cargo run -p obp-bank-node
+
+server:
+  bind: "0.0.0.0:8088"
+
+bank:
+  bank_id: "rt.bank.a"
+  account_id: "settlement-a"
+
+obp_api:
+  base_url: "http://localhost:8080"
+  # direct_login_token comes from the environment (env.sh, written by setup_obp.sh)
+
+blockchain:
+  type: "cardano"
+  cardano:
+    ogmios_url: "ws://localhost:1337"
+    network: "preprod"
+    wallet_skey_path: "./secrets/cardano.skey"
+
+outbox:
+  path: "./WIP/roundtrip/data/node-a/outbox.db"
+
+evidence:
+  path: "./WIP/roundtrip/data/node-a/evidence.db"
+
+rabbitmq:
+  enabled: true
+  host: "localhost"
+  port: 5672
+  username: "bank_a_node"
+  password: "rtpass-a"
+  virtual_host: "/bank.rt.bank.a"
+  request_queue: "obp_rpc_queue"
+
+cbs_delivery:
+  mode: "webhook_obp"
+  webhook:
+    url: "http://localhost:9009/credit-notifications"
+    timeout_seconds: 10
+
+settlement:
+  # CoinGecko dropped KES from supported vs_currencies (checked 2026-07-31)
+  # — ADA/KES returns {} — so the fixed stub rate is used until a fiat
+  # cross-rate (or API3) is wired in.
+  fx_source: "stub"
+  # Fast finality for the test run (2 blocks ≈ 40 s on preprod).
+  finality_depth: 2
+  finality_poll_secs: 10
+  store_path: "./WIP/roundtrip/data/node-a/settlements.db"
+  ada_rate_minor_per_whole_ada: 2122
+
+local_secret: "rt-local-secret"

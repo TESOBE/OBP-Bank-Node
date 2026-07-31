@@ -11,5 +11,14 @@
 # Commercially sensitive docs — never track
 /DO_NOT_COMMIT/
 
-# Runtime state — SQLite outbox/evidence databases
+# Runtime state — SQLite outbox/evidence/settlement databases. Never track:
+# outbox.db holds the off-chain commitment salts and full A1.1 payloads,
+# evidence.db holds salt+preimage+originator PII (Travel Rule data).
 /outbox/
+*.db
+*.db-wal
+*.db-shm
+
+# Round-trip test runtime output (CBS receipts) and minted DirectLogin tokens
+WIP/roundtrip/data/
+WIP/roundtrip/env.sh

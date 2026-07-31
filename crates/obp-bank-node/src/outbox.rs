@@ -8,14 +8,16 @@
 //! Lifecycle of a row (the `status` column):
 //!
 //! ```text
-//!   INITIATED ──submit OBP TR──▶ SUBMITTED ──write Promise──▶ PROMISE_WRITTEN
-//!       │                            │
-//!       └────────── OBP hard-reject ─┴──────────────────────▶ EXCEPTION
+//!   INITIATED ─submit OBP TR─▶ SUBMITTED ─write Promise─▶ PROMISE_WRITTEN ─report evidence─▶ REPORTED
+//!       │                          │                            │
+//!       └───────── OBP hard-reject ┴────────────────────────────┴─────────▶ EXCEPTION
 //! ```
 //!
 //! Transport failures (OBP / chain unreachable) leave the row at its current
 //! status; the dispatcher retries it after a backoff window. Hard rejects move
-//! it to `EXCEPTION`, a terminal state.
+//! it to `EXCEPTION`, a terminal state. `REPORTED` — the Promise evidence
+//! (tx hash + commit–reveal triplet) delivered to OBP-API's report-back
+//! endpoint — is the terminal success state.
 //!
 //! Timestamps are stored as RFC3339 UTC strings. In UTC the lexical ordering of
 //! RFC3339 matches chronological ordering, so the backoff cutoff in
@@ -33,6 +35,7 @@ pub mod status {
     pub const INITIATED: &str = "INITIATED";
     pub const SUBMITTED: &str = "SUBMITTED";
     pub const PROMISE_WRITTEN: &str = "PROMISE_WRITTEN";
+    pub const REPORTED: &str = "REPORTED";
     pub const EXCEPTION: &str = "EXCEPTION";
 }
 
@@ -68,6 +71,10 @@ pub struct OutboxRecord {
     pub attempt_count: i64,
     /// RFC3339 UTC; `None` until the dispatcher first touches the row.
     pub last_attempted_at: Option<String>,
+    /// The Transaction Request id OBP-API assigned at submit time. Addresses
+    /// the promise report-back endpoint; `None` until `SUBMITTED` (or forever,
+    /// if OBP-API's create response carried no id — such a row cannot report).
+    pub obp_transaction_request_id: Option<String>,
     pub promise_tx_id: Option<String>,
     pub promise_blockchain: Option<String>,
     pub exception_reason: Option<String>,
@@ -142,6 +149,7 @@ impl OutboxStore {
                 commitment_salt        TEXT NOT NULL,
                 attempt_count          INTEGER NOT NULL DEFAULT 0,
                 last_attempted_at      TEXT,
+                obp_transaction_request_id TEXT,
                 promise_tx_id          TEXT,
                 promise_blockchain     TEXT,
                 exception_reason       TEXT,
@@ -152,6 +160,19 @@ impl OutboxStore {
         )
         .execute(pool)
         .await?;
+
+        // Migration for databases created before the report-back step existed.
+        // SQLite has no `ADD COLUMN IF NOT EXISTS`; a duplicate-column error
+        // means the column is already there, which is fine.
+        if let Err(e) =
+            sqlx::query("ALTER TABLE outbox ADD COLUMN obp_transaction_request_id TEXT")
+                .execute(pool)
+                .await
+        {
+            if !e.to_string().contains("duplicate column name") {
+                return Err(e.into());
+            }
+        }
 
         // Backoff scans filter by status then by last_attempted_at.
         sqlx::query(
@@ -206,9 +227,10 @@ impl OutboxStore {
         Ok(recs)
     }
 
-    /// Rows that still need work: status `INITIATED` or `SUBMITTED`, and either
-    /// never attempted or last attempted before `cutoff` (RFC3339 UTC). Oldest
-    /// first, capped at `limit`. The dispatcher branches on each row's status.
+    /// Rows that still need work: status `INITIATED`, `SUBMITTED`, or
+    /// `PROMISE_WRITTEN`, and either never attempted or last attempted before
+    /// `cutoff` (RFC3339 UTC). Oldest first, capped at `limit`. The dispatcher
+    /// branches on each row's status.
     pub async fn claim_due(
         &self,
         cutoff: DateTime<Utc>,
@@ -217,12 +239,13 @@ impl OutboxStore {
         let cutoff = rfc3339(cutoff);
         let recs = sqlx::query_as::<_, OutboxRecord>(
             "SELECT * FROM outbox \
-             WHERE status IN (?, ?) \
+             WHERE status IN (?, ?, ?) \
                AND (last_attempted_at IS NULL OR last_attempted_at < ?) \
              ORDER BY created_at ASC LIMIT ?",
         )
         .bind(status::INITIATED)
         .bind(status::SUBMITTED)
+        .bind(status::PROMISE_WRITTEN)
         .bind(&cutoff)
         .bind(limit)
         .fetch_all(&self.pool)
@@ -247,8 +270,30 @@ impl OutboxStore {
         Ok(())
     }
 
-    pub async fn mark_submitted(&self, id: &str) -> Result<(), OutboxError> {
-        self.set_status(id, status::SUBMITTED).await
+    /// Move a row to `SUBMITTED`, recording the Transaction Request id OBP-API
+    /// assigned — the report-back endpoint is addressed by that id.
+    pub async fn mark_submitted(
+        &self,
+        id: &str,
+        obp_transaction_request_id: Option<&str>,
+    ) -> Result<(), OutboxError> {
+        let now = rfc3339(Utc::now());
+        sqlx::query(
+            "UPDATE outbox SET status = ?, obp_transaction_request_id = ?, updated_at = ? \
+             WHERE transaction_request_id = ?",
+        )
+        .bind(status::SUBMITTED)
+        .bind(obp_transaction_request_id)
+        .bind(&now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Terminal success: the Promise evidence has been reported to OBP-API.
+    pub async fn mark_reported(&self, id: &str) -> Result<(), OutboxError> {
+        self.set_status(id, status::REPORTED).await
     }
 
     pub async fn mark_promise_written(
@@ -349,18 +394,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lifecycle_initiated_submitted_promise_written() {
+    async fn lifecycle_initiated_submitted_promise_written_reported() {
         let store = OutboxStore::connect_in_memory().await.unwrap();
         store.insert(entry("tr-2", "{}")).await.unwrap();
 
-        store.mark_submitted("tr-2").await.unwrap();
-        assert_eq!(store.get("tr-2").await.unwrap().unwrap().status, status::SUBMITTED);
+        store.mark_submitted("tr-2", Some("obp-tr-42")).await.unwrap();
+        let rec = store.get("tr-2").await.unwrap().unwrap();
+        assert_eq!(rec.status, status::SUBMITTED);
+        assert_eq!(rec.obp_transaction_request_id.as_deref(), Some("obp-tr-42"));
 
         store.mark_promise_written("tr-2", "txhash-abc", "cardano").await.unwrap();
         let rec = store.get("tr-2").await.unwrap().unwrap();
         assert_eq!(rec.status, status::PROMISE_WRITTEN);
         assert_eq!(rec.promise_tx_id.as_deref(), Some("txhash-abc"));
         assert_eq!(rec.promise_blockchain.as_deref(), Some("cardano"));
+
+        store.mark_reported("tr-2").await.unwrap();
+        let rec = store.get("tr-2").await.unwrap().unwrap();
+        assert_eq!(rec.status, status::REPORTED);
+        assert_eq!(rec.obp_transaction_request_id.as_deref(), Some("obp-tr-42"));
+    }
+
+    #[tokio::test]
+    async fn mark_submitted_without_obp_id_leaves_column_null() {
+        let store = OutboxStore::connect_in_memory().await.unwrap();
+        store.insert(entry("tr-noid", "{}")).await.unwrap();
+        store.mark_submitted("tr-noid", None).await.unwrap();
+        let rec = store.get("tr-noid").await.unwrap().unwrap();
+        assert_eq!(rec.status, status::SUBMITTED);
+        assert!(rec.obp_transaction_request_id.is_none());
     }
 
     #[tokio::test]
@@ -392,14 +454,60 @@ mod tests {
     async fn claim_due_returns_unattempted_and_skips_terminal() {
         let store = OutboxStore::connect_in_memory().await.unwrap();
         store.insert(entry("due-1", "{}")).await.unwrap();
+        store.insert(entry("unreported-1", "{}")).await.unwrap();
+        store.mark_promise_written("unreported-1", "tx", "cardano").await.unwrap();
         store.insert(entry("done-1", "{}")).await.unwrap();
         store.mark_promise_written("done-1", "tx", "cardano").await.unwrap();
+        store.mark_reported("done-1").await.unwrap();
+        store.insert(entry("failed-1", "{}")).await.unwrap();
+        store.mark_exception("failed-1", "nope").await.unwrap();
 
-        // A far-future cutoff makes every non-terminal row "due".
+        // A far-future cutoff makes every non-terminal row "due". A
+        // PROMISE_WRITTEN row still owes the report-back, so it is due;
+        // REPORTED and EXCEPTION are terminal.
         let cutoff = Utc::now() + chrono::Duration::hours(1);
         let due = store.claim_due(cutoff, 10).await.unwrap();
         let ids: Vec<_> = due.iter().map(|r| r.transaction_request_id.as_str()).collect();
-        assert_eq!(ids, vec!["due-1"], "only the non-terminal row is due");
+        assert_eq!(ids, vec!["due-1", "unreported-1"], "non-terminal rows only");
+    }
+
+    #[tokio::test]
+    async fn schema_migration_adds_obp_tr_id_to_old_databases() {
+        // A database created before the report-back step lacks the
+        // obp_transaction_request_id column; init_schema must add it.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"
+            CREATE TABLE outbox (
+                transaction_request_id TEXT PRIMARY KEY,
+                status                 TEXT NOT NULL,
+                bank_id                TEXT NOT NULL,
+                account_id             TEXT NOT NULL,
+                request_payload        TEXT NOT NULL,
+                commitment_salt        TEXT NOT NULL,
+                attempt_count          INTEGER NOT NULL DEFAULT 0,
+                last_attempted_at      TEXT,
+                promise_tx_id          TEXT,
+                promise_blockchain     TEXT,
+                exception_reason       TEXT,
+                created_at             TEXT NOT NULL,
+                updated_at             TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        OutboxStore::init_schema(&pool).await.unwrap();
+        let store = OutboxStore { pool };
+        store.insert(entry("tr-old", "{}")).await.unwrap();
+        let rec = store.get("tr-old").await.unwrap().unwrap();
+        assert!(rec.obp_transaction_request_id.is_none());
     }
 
     #[tokio::test]

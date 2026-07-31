@@ -1,0 +1,43 @@
+# Round-trip test — Bank Node B (creditor, rt.bank.b, mock chain — the
+# beneficiary side needs no chain access: commitment verification is pure
+# hashing and the ADA lands at B's address from A's transfer).
+# Start from the repo root:
+#   source WIP/roundtrip/env.sh
+#   OBP_BANK_NODE_CONFIG=WIP/roundtrip/node-b.yaml \
+#   OBP_BN_OBP_API__DIRECT_LOGIN_TOKEN="$RT_NODE_B_TOKEN" cargo run -p obp-bank-node
+
+server:
+  bind: "0.0.0.0:8089"
+
+bank:
+  bank_id: "rt.bank.b"
+  account_id: "settlement-b"
+
+obp_api:
+  base_url: "http://localhost:8080"
+
+blockchain:
+  type: "mock"
+
+outbox:
+  path: "./WIP/roundtrip/data/node-b/outbox.db"
+
+evidence:
+  path: "./WIP/roundtrip/data/node-b/evidence.db"
+
+rabbitmq:
+  enabled: true
+  host: "localhost"
+  port: 5672
+  username: "bank_b_node"
+  password: "rtpass-b"
+  virtual_host: "/bank.rt.bank.b"
+  request_queue: "obp_rpc_queue"
+
+cbs_delivery:
+  mode: "webhook_obp"
+  webhook:
+    url: "http://localhost:9009/credit-notifications"
+    timeout_seconds: 10
+
+local_secret: "rt-local-secret"
