@@ -3,6 +3,197 @@
 State of the project as of the pause point, so we can resume without re-litigating
 decisions.
 
+## 2026-08-07 (later) — resume checklist executed; `/app` UI crate built
+
+- **Checklist step 1 done**: `Http4s700RoutesTest` re-run post-rename —
+  **137/137**. (A first run failed 1 test, `putBankSupportedRoutingScheme`
+  404-scenario got 400 — an endpoint yesterday's commit never touched; an
+  immediate re-run passed. Mechanism: that 404 relies on
+  `RoutingScheme.find` returning `Empty`; a transient hiccup against the
+  persistent Postgres test DB yields a `Failure` box, which
+  `unboxFullOrFail`/`ErrorResponseConverter` degrade to 400. Known flake
+  now, not a regression.)
+- **Checklist step 2 done**: `obp-api.jar` rebuilt (JDK 17,
+  2026-08-07 16:32) — v7.0.0 classes contain `other_bank_id`, zero
+  `counterparty_bank_id`.
+- **Checklist step 3**: OBP-API side committed by Simon (`7154d070`
+  "OC related"); the Bank Node working tree remains for Simon to review.
+- **Checklist step 4 done — `obp-bank-node-app` built** (see
+  `APP.md` §Shape for the full description): new workspace crate with
+  whitelisted JSON proxy + embedded single-page UI covering the five
+  storyline steps; per-node `bearer_token` auth seam. Node-side
+  addition: `TransactionRequestStatus` gained `value` / `other_bank_id`
+  / `description` (projected from the stored A1.1 payload) so the
+  position view can net without consulting OBP-API. **148 workspace
+  tests pass** (was 138). Smoke-tested live against a mock-mode node
+  through the proxy (initiate → list). Not yet exercised against the
+  full roundtrip stack — that's the natural next step, plus the
+  bring-up/health-check script `APP.md` §Honest-demo-caveats asks for.
+
+## 2026-08-07 — settle endpoint reshaped to a resource; TR-attribute migration; demo-app spec
+
+**All OBP-API changes below are UNCOMMITTED working-tree edits in
+`~/Documents/workspace_2024/OBP-API-Simon/OBP-API` (on `develop`, HEAD
+`1201ac795`), together with the earlier `MappedText` fix in
+`TransactionRequestAttribute.scala`. Http4s700RoutesTest passed 137/137 on
+2026-08-07 — but that was BEFORE the `other_bank_id` rename (block 5 below);
+the post-rename re-run was cut off by shutdown. See the resume checklist at
+the end of this block for the exact next actions.**
+
+**Build environment finding:** OBP-API must be built with **JDK 17**.
+The system default (21) crashes scalac (Scala 2.12: "object java.lang.Object
+in compiler mirror not found"); JDK 11 fails on the pom's `-release 17`.
+Simon's own builds already use 17.
+
+**1. DB migration for `transactionrequestattribute.value` (varchar(255) → text).**
+Schemifier never alters existing columns, so the earlier hand-`ALTER` on the
+live sandbox DB needed a real migration. New
+`code/api/util/migration/MigrationOfTransactionRequestAttributeValueType.scala`
+(`ALTER ... TYPE text`, SQL Server `VARCHAR(MAX)`; modeled on
+`MigrationOfConsumer`'s `aud` migration), registered in `Migration.scala`
+(`alterTransactionRequestAttributeValueType`, `runOnce`-tracked, called after
+`alterCounterpartyLimitFieldType`). No-op on the already-altered sandbox DB
+and on fresh DBs (schemifier creates text from `MappedText`); fixes any other
+pre-existing DB at boot with `migration_scripts.enabled=true`.
+
+**2. Settle endpoint reworked to a settlement resource (decided with Simon;
+rationale: the old POST /open-corridor/settle name oversold — it nets and
+*initiates*; value moves later on the rail).**
+
+- `POST /obp/v7.0.0/banks/BANK_ID/open-corridor/settlements`, body
+  `{other_bank_id, currency}` (was flat `/open-corridor/settle` with
+  `{bank_id_a, bank_id_b, currency}`; the body field was briefly
+  `counterparty_bank_id`, renamed 2026-08-07 with Simon — OBP's idiom for
+  the far side is `other_*`, and "counterparty" wrongly suggests a real
+  OBP Counterparty entity). URL bank = one side of the pair.
+  Endpoint val renamed `createOpenCorridorSettlement` (was
+  `settleOpenCorridorPair`); doc states explicitly that 201 ≠ value moved.
+- **`CanSettleOpenCorridor` is now bank-scoped** (`requiresBankId = true` in
+  `ApiRole.scala`) and checked by the middleware at the URL's BANK_ID — a
+  bank/node can only settle corridors it is party to. Either side may
+  trigger; debtor/creditor fall out of the net's sign (`net_amount` stays
+  absolute — direction is carried by the debtor/creditor fields; Simon's
+  initiator/other naming idea was discussed and dropped as it needs a signed
+  amount + convention and clashes with the Interface C wire contract).
+- **New `GET /obp/v7.0.0/banks/BANK_ID/open-corridor/settlements/SETTLEMENT_ID`**
+  (404 `OBP-40058 OpenCorridorSettlementNotFound` for unknown ids AND for
+  banks that are not a party — existence not disclosed). Separates
+  `ledger_status` (TR B, COMPLETED at settle time) from `settlement_status`,
+  read off the settlement-instruction outbox row's recorded node reply:
+  `NET_ZERO` / `INSTRUCTED` (no reply yet) / node-reported `SETTLING` /
+  `SUBMITTED` (+ `settlement_depth`) / `FINAL` (row DELIVERED) / `ERROR`
+  (row STICKY). Also lists all outbox messages with delivery state.
+  Implementation: `OpenCorridorSettlement.getSettlementStatus` (+ covered
+  promises via `settled_by_transaction_request_id` attribute query).
+- Files touched: `ApiRole.scala`, `ErrorMessages.scala` (OBP-40058),
+  `JSONFactory7.0.0.scala` (`PostOpenCorridorSettlementJsonV700`,
+  `OpenCorridorSettlementStatusJsonV700`,
+  `OpenCorridorSettlementMessageJsonV700`), `Http4s700.scala` (both routes +
+  ResourceDocs), `OpenCorridorSettlement.scala`,
+  `Http4s700RoutesTest.scala` (bank-scoped grants, new paths, new scenario
+  "role is bank-scoped" 403, GET assertions: INSTRUCTED + creditor-side read
+  + unknown-id 404 + NET_ZERO).
+
+**3. Bank Node repo consequences (this repo):**
+
+- `WIP/roundtrip/run_roundtrip.sh` — settle step now POSTs
+  `banks/rt.bank.a/open-corridor/settlements` with
+  `{other_bank_id, currency}`.
+- `WIP/roundtrip/setup_obp.sh` — `CanSettleOpenCorridor` granted per-bank
+  (both banks), no longer system-level.
+- `WIP/OPEN_CORRIDOR_INTERFACE_C_PUBLISH_PLAN.md` §5.3 updated (resource
+  shape noted as superseding the flat shape).
+- **`WIP/APP.md` (new)** — spec for the `/app` demo/manual-test UI decided
+  with Simon: lives in this repo, one axum crate (`obp-bank-node-app`),
+  talks ONLY to Bank Node APIs (node A + node B; position view = each
+  node's own outbound legs joined by the app). Requires four node API
+  additions: settlement-store + evidence-store read endpoints, the
+  settlement-linkage fix, and a node settle-request endpoint that calls the
+  new OBP-API settlements resource over Interface B (node's M2M user needs
+  the bank-scoped `CanSettleOpenCorridor` at its bank).
+
+**4. Node API additions for `/app` — built (2026-08-07, later the same day).**
+All four `WIP/APP.md` items, in `crates/obp-bank-node` (138 workspace tests
+pass, was 120):
+
+- **Settlement read API**: `GET .../settlements` +
+  `GET .../settlements/{key}` (key = `idempotency_key` OR `settlement_id`;
+  `SettlementStore::find/list`). Settlement + evidence stores now open
+  unconditionally in `main` (reads work in mock mode / consumer off);
+  finality watcher spawn still requires a rail.
+- **Evidence read API**: `GET .../evidence[/{transaction_request_id}]`,
+  incl. the new CBS delivery result — `cbs_status`/`cbs_reference`/
+  `cbs_recorded_at` columns (guarded ALTER), recorded by the credit handler
+  on DELIVERED and FAILED.
+- **Settlement linkage**: outbox `settlement_id`/`settled_at` columns
+  (guarded ALTER); `mark_settled(covered_obp_tr_ids, settlement_id)` stamps
+  by matching `obp_transaction_request_id` (idempotent — keeps first
+  `settled_at`; empty list no-op). Stamped from the settle trigger and from
+  the corridor proxy (covers the non-triggering node).
+  `GET .../transaction-requests/{id}` surfaces both.
+- **Settle trigger**: `POST /obp-bank-node/v5.1.0/settlements`
+  `{other_bank_id, currency}` → `ObpClient::create_settlement`
+  (POST to OBP's bank-scoped settlements resource) + linkage stamp; 201
+  relays OBP's body + `covered_outbox_rows_stamped`. Corridor view:
+  `GET .../settlements/{id}/corridor` → `ObpClient::get_settlement`
+  proxy. New `classify_interactive_failure`: any 4xx with an OBP code
+  passes through verbatim (403/404 included — the caller is an app, not
+  the dispatcher); transport → 502 `OBP-BANK-NODE-INTERFACE-B-001`.
+- `setup_obp.sh`: node service users now get bank-scoped
+  `CanSettleOpenCorridor` at their own bank (both sides may trigger).
+- Next for `/app`: the `obp-bank-node-app` axum crate itself (static UI +
+  JSON proxy over the two nodes) per `WIP/APP.md` §Shape.
+
+**5. Field rename `counterparty_bank_id` → `other_bank_id` (2026-08-07,
+last thing before shutdown — one verification still outstanding, see the
+checklist).** Decided with Simon: OBP's idiom for the far side is `other_*`
+(`other_bank_routing_scheme`, …), and "counterparty" wrongly suggests a real
+OBP Counterparty entity, which this is not. Renamed everywhere — both repos
+were uncommitted, so no wire compatibility concern:
+
+- **OBP-API**: `PostOpenCorridorSettlementJsonV700.other_bank_id`
+  (`JSONFactory7.0.0.scala`), endpoint validation + error text ("the other
+  bank must differ from BANK_ID") + ResourceDoc example and prose
+  (`Http4s700.scala`), test file incl. its `otherBankId` helper
+  (`Http4s700RoutesTest.scala`). Zero `counterparty` left in those files.
+- **Bank Node**: `SettleRequest.other_bank_id` (`rest/types.rs`),
+  `ObpClient::create_settlement` param + wire body, handler validation
+  messages + log fields, REST tests, `run_roundtrip.sh` settle body.
+  Deliberately untouched: commit–reveal "shared with the counterparty"
+  prose in `obp-blockchain` (plain English, predates this) and the
+  `types.rs` comment about OBP-API counterparty creation (a real OBP
+  Counterparty reference).
+- Rust workspace re-verified after the rename: **138 tests pass**.
+
+**Resume checklist (in order):**
+
+1. ~~Run the Http4s700RoutesTest suite~~ — done for the pre-rename tree
+   (137/137, after adding the missing `OpenCorridorSettlementNotFound`
+   import). **BUT: a re-run to verify the `other_bank_id` rename on the
+   Scala side was still in flight when the machine shut down — treat it as
+   NOT verified. First action on resume:**
+
+   ```bash
+   cd ~/Documents/workspace_2024/OBP-API-Simon/OBP-API
+   JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 \
+     mvn -pl obp-api test -DwildcardSuites=code.api.v7_0_0.Http4s700RoutesTest
+   ```
+
+   The rename was mechanical (sed over DTO/endpoint/test, grep-verified
+   zero leftovers), so surprises are unlikely — but run it.
+2. **Rebuild the OBP-API jar — the current `obp-api/target/obp-api.jar`
+   (built 2026-08-07 14:35) is STALE: it predates the rename and still
+   speaks `counterparty_bank_id`.** After step 1 is green:
+   `JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 mvn clean package -DskipTests`.
+   (That build otherwise did its job — MappedText fix + `open_corridor_enabled`
+   prop are baked; the `jar uf` hack and live-DB-only ALTER are obsolete.)
+3. Simon reviews + commits the OBP-API working tree (migration + MappedText
+   + settle rework + test-import fix + rename) and the Bank Node edits
+   (node API additions, rename, WIP docs, scripts).
+4. Then the `/app` work per `WIP/APP.md` — node API additions **done**
+   (block 4 above); the `obp-bank-node-app` crate (static UI + JSON proxy
+   over node A/B) is what remains.
+
 ## 2026-07-31 — FULL ROUND TRIP ACHIEVED on localhost + Cardano preprod
 
 The end-to-end Open Corridor loop ran for real — two KES 500 payments from

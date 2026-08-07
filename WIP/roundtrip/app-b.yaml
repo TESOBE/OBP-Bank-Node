@@ -1,0 +1,15 @@
+# Bank Node App fronting node B (rt.bank.b). Home node first — it is the
+# default in the UI's send/settle selectors; node A is listed too so the
+# bilateral position view can join both outbound legs. A production
+# deployment would list only the bank's own node.
+# Start from the repo root:
+#   OBP_BANK_NODE_APP_CONFIG=WIP/roundtrip/app-b.yaml cargo run -p obp-bank-node-app
+
+server:
+  bind: "0.0.0.0:8092"
+
+nodes:
+  - name: "node-b"
+    base_url: "http://localhost:8089"
+  - name: "node-a"
+    base_url: "http://localhost:8088"

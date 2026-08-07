@@ -109,6 +109,13 @@ pub struct FromAccount {
 pub struct TransactionRequestStatus {
     pub transaction_request_id: String,
     pub status: String,
+    /// Requested amount, projected from the stored A1.1 payload. `None` only
+    /// for rows whose payload no longer parses.
+    pub value: Option<MoneyValue>,
+    /// The beneficiary bank (`to.other_bank_routing_address`) — the far side
+    /// of this outbound leg's corridor.
+    pub other_bank_id: Option<String>,
+    pub description: Option<String>,
     pub promise_id: Option<String>,
     pub promise_blockchain: Option<String>,
     pub netting_snapshot_id: Option<String>,
@@ -117,6 +124,66 @@ pub struct TransactionRequestStatus {
     pub settlement_system: Option<String>,
     pub created_at: DateTime<Utc>,
     pub settled_at: Option<DateTime<Utc>>,
+}
+
+/// Body of `POST .../settlements` — ask this node to trigger bilateral Open
+/// Corridor settlement between its own bank and `other_bank_id`, by
+/// calling OBP-API's settlement resource over Interface B.
+#[derive(Debug, Deserialize)]
+pub struct SettleRequest {
+    pub other_bank_id: String,
+    pub currency: String,
+}
+
+/// One row of the node's local (rail-side) settlement store, as returned by
+/// `GET .../settlements[/{key}]`. This is the debtor node's own record of the
+/// value leg; the corridor-wide ledger view lives behind
+/// `GET .../settlements/{key}/corridor`.
+#[derive(Debug, Serialize)]
+pub struct SettlementView {
+    pub idempotency_key: String,
+    pub settlement_id: Option<String>,
+    pub snapshot_id: Option<String>,
+    pub currency: String,
+    /// Net owed in minor units (string — may exceed u64).
+    pub net_amount_minor: String,
+    pub creditor_address: String,
+    /// `SETTLING` / `SUBMITTED` / `FINAL` / `ERROR`.
+    pub status: String,
+    pub tx_id: Option<String>,
+    pub blockchain: Option<String>,
+    pub asset: Option<String>,
+    pub asset_amount: Option<String>,
+    /// Last confirmation depth observed by the finality watcher.
+    pub depth: i64,
+    /// Depth at which this node promotes a settlement to `FINAL`.
+    pub finality_depth: u32,
+    pub error_reason: Option<String>,
+    pub retryable: bool,
+    pub created_at: String,
+    pub updated_at: String,
+    pub finalized_at: Option<String>,
+}
+
+/// One row of the beneficiary-side evidence store, as returned by
+/// `GET .../evidence[/{transaction_request_id}]`: the commit–reveal triplet,
+/// whether it verified at receive time, and the A2 CBS delivery outcome.
+#[derive(Debug, Serialize)]
+pub struct EvidenceView {
+    pub transaction_request_id: String,
+    pub promise_commitment: String,
+    pub promise_salt: String,
+    pub promise_preimage: String,
+    pub promise_id: Option<String>,
+    pub promise_blockchain: Option<String>,
+    pub verified: bool,
+    pub currency: Option<String>,
+    pub amount: Option<String>,
+    pub originator_name: Option<String>,
+    pub cbs_status: Option<String>,
+    pub cbs_reference: Option<String>,
+    pub cbs_recorded_at: Option<String>,
+    pub received_at: String,
 }
 
 #[derive(Debug, Serialize)]

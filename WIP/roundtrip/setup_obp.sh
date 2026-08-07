@@ -47,7 +47,6 @@ grant() { # grant <user_id> <bank_id-or-empty> <role>
 
 echo "== granting admin roles"
 grant "$SA_ID" ""        CanCreateBank
-grant "$SA_ID" ""        CanSettleOpenCorridor
 grant "$SA_ID" ""        CanCreateUser
 
 echo "== creating banks"
@@ -57,6 +56,9 @@ for B in "$BANK_A" "$BANK_B"; do
     | grep -qE '"id"|OBP-34000|already exists' && echo "  bank $B ok" || echo "  bank $B — check"
   grant "$SA_ID" "$B" CanCreateAccount
   grant "$SA_ID" "$B" CanConfigureOpenCorridorBroker
+  # Bank-scoped since 2026-08-07: the settle POST is addressed to a bank's URL
+  # and the role must be held at that bank.
+  grant "$SA_ID" "$B" CanSettleOpenCorridor
 done
 
 echo "== creating node service users"
@@ -78,6 +80,14 @@ echo "  $NODE_A_USER=$UA_ID  $NODE_B_USER=$UB_ID"
 
 echo "== granting node A the report-back role"
 grant "$UA_ID" "$BANK_A" CanAttachOpenCorridorPromise
+
+echo "== granting the node service users the settle role at their own bank"
+# The node settle-request endpoint (POST /obp-bank-node/v5.1.0/settlements)
+# calls OBP-API's settlement resource as the node's own M2M user; the
+# bank-scoped CanSettleOpenCorridor must be held at the node's bank. Either
+# side of a corridor may trigger, so both nodes get it.
+grant "$UA_ID" "$BANK_A" CanSettleOpenCorridor
+grant "$UB_ID" "$BANK_B" CanSettleOpenCorridor
 
 echo "== creating accounts (KES, zero initial balance)"
 acct() { # acct BANK ACCOUNT OWNER LABEL

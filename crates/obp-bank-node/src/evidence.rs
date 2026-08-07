@@ -41,6 +41,12 @@ pub struct EvidenceRecord {
     /// The full credit-notification JSON, kept verbatim for audit.
     pub raw_message: String,
     pub received_at: String,
+    /// Outcome of the A2 delivery to the bank's CBS: `DELIVERED` / `FAILED`;
+    /// `None` while no delivery attempt has been recorded.
+    pub cbs_status: Option<String>,
+    /// The CBS's own reference for the posted credit, when it returned one.
+    pub cbs_reference: Option<String>,
+    pub cbs_recorded_at: Option<String>,
 }
 
 /// Fields to record a newly-received credit notification.
@@ -107,12 +113,29 @@ impl EvidenceStore {
                 amount                 TEXT,
                 originator_name        TEXT,
                 raw_message            TEXT NOT NULL,
-                received_at            TEXT NOT NULL
+                received_at            TEXT NOT NULL,
+                cbs_status             TEXT,
+                cbs_reference          TEXT,
+                cbs_recorded_at        TEXT
             )
             "#,
         )
         .execute(pool)
         .await?;
+
+        // Migration for databases created before the CBS-result columns
+        // existed. SQLite has no `ADD COLUMN IF NOT EXISTS`; a duplicate-column
+        // error means the column is already there, which is fine.
+        for col in ["cbs_status TEXT", "cbs_reference TEXT", "cbs_recorded_at TEXT"] {
+            if let Err(e) = sqlx::query(&format!("ALTER TABLE evidence ADD COLUMN {col}"))
+                .execute(pool)
+                .await
+            {
+                if !e.to_string().contains("duplicate column name") {
+                    return Err(e.into());
+                }
+            }
+        }
         Ok(())
     }
 
@@ -157,9 +180,29 @@ impl EvidenceStore {
         Ok(())
     }
 
-    // `get`/`list` back the beneficiary status/dashboard views (and tests);
-    // not yet called from the binary's hot path.
-    #[allow(dead_code)]
+    /// Record the outcome of the A2 CBS delivery for this credit notification.
+    /// A no-op when no evidence row exists for the id (the row is always
+    /// upserted before delivery is attempted, so that indicates a bug).
+    pub async fn record_cbs_result(
+        &self,
+        transaction_request_id: &str,
+        status: &str,
+        cbs_reference: Option<&str>,
+    ) -> Result<(), OutboxError> {
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        sqlx::query(
+            "UPDATE evidence SET cbs_status = ?, cbs_reference = ?, cbs_recorded_at = ? \
+             WHERE transaction_request_id = ?",
+        )
+        .bind(status)
+        .bind(cbs_reference)
+        .bind(&now)
+        .bind(transaction_request_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn get(&self, id: &str) -> Result<Option<EvidenceRecord>, OutboxError> {
         let rec = sqlx::query_as::<_, EvidenceRecord>(
             "SELECT * FROM evidence WHERE transaction_request_id = ?",
@@ -170,7 +213,6 @@ impl EvidenceStore {
         Ok(rec)
     }
 
-    #[allow(dead_code)]
     pub async fn list(&self, limit: i64) -> Result<Vec<EvidenceRecord>, OutboxError> {
         let recs = sqlx::query_as::<_, EvidenceRecord>(
             "SELECT * FROM evidence ORDER BY received_at DESC LIMIT ?",
@@ -229,5 +271,68 @@ mod tests {
     async fn get_missing_returns_none() {
         let store = EvidenceStore::connect_in_memory().await.unwrap();
         assert!(store.get("nope").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn cbs_result_recorded_after_upsert() {
+        let store = EvidenceStore::connect_in_memory().await.unwrap();
+        store.upsert(sample("tr-cbs", true)).await.unwrap();
+        let rec = store.get("tr-cbs").await.unwrap().unwrap();
+        assert!(rec.cbs_status.is_none(), "no delivery attempted yet");
+
+        store.record_cbs_result("tr-cbs", "DELIVERED", Some("CBS-REF-9")).await.unwrap();
+        let rec = store.get("tr-cbs").await.unwrap().unwrap();
+        assert_eq!(rec.cbs_status.as_deref(), Some("DELIVERED"));
+        assert_eq!(rec.cbs_reference.as_deref(), Some("CBS-REF-9"));
+        assert!(rec.cbs_recorded_at.is_some());
+
+        // A failed delivery overwrites (latest attempt wins), reference absent.
+        store.record_cbs_result("tr-cbs", "FAILED", None).await.unwrap();
+        let rec = store.get("tr-cbs").await.unwrap().unwrap();
+        assert_eq!(rec.cbs_status.as_deref(), Some("FAILED"));
+        assert!(rec.cbs_reference.is_none());
+    }
+
+    #[tokio::test]
+    async fn schema_migration_adds_cbs_columns_to_old_databases() {
+        // A database created before the CBS-result columns must be upgraded
+        // in place by init_schema.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"
+            CREATE TABLE evidence (
+                transaction_request_id TEXT PRIMARY KEY,
+                promise_commitment     TEXT NOT NULL,
+                promise_salt           TEXT NOT NULL,
+                promise_preimage       TEXT NOT NULL,
+                promise_id             TEXT,
+                promise_blockchain     TEXT,
+                verified               INTEGER NOT NULL,
+                currency               TEXT,
+                amount                 TEXT,
+                originator_name        TEXT,
+                raw_message            TEXT NOT NULL,
+                received_at            TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        EvidenceStore::init_schema(&pool).await.unwrap();
+        let store = EvidenceStore { pool };
+        store.upsert(sample("tr-old", true)).await.unwrap();
+        let rec = store.get("tr-old").await.unwrap().unwrap();
+        assert!(rec.cbs_status.is_none());
+        store.record_cbs_result("tr-old", "DELIVERED", Some("R1")).await.unwrap();
+        assert_eq!(
+            store.get("tr-old").await.unwrap().unwrap().cbs_status.as_deref(),
+            Some("DELIVERED")
+        );
     }
 }

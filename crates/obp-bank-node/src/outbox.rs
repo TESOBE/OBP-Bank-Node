@@ -78,6 +78,12 @@ pub struct OutboxRecord {
     pub promise_tx_id: Option<String>,
     pub promise_blockchain: Option<String>,
     pub exception_reason: Option<String>,
+    /// The Open Corridor settlement that covered (netted) this promise, stamped
+    /// when the settle result / corridor status names this row's OBP TR id in
+    /// `covered_transaction_request_ids`. `None` while unsettled.
+    pub settlement_id: Option<String>,
+    /// RFC3339 UTC; set together with `settlement_id`.
+    pub settled_at: Option<String>,
     /// RFC3339 UTC.
     pub created_at: String,
     /// RFC3339 UTC.
@@ -153,6 +159,8 @@ impl OutboxStore {
                 promise_tx_id          TEXT,
                 promise_blockchain     TEXT,
                 exception_reason       TEXT,
+                settlement_id          TEXT,
+                settled_at             TEXT,
                 created_at             TEXT NOT NULL,
                 updated_at             TEXT NOT NULL
             )
@@ -161,16 +169,22 @@ impl OutboxStore {
         .execute(pool)
         .await?;
 
-        // Migration for databases created before the report-back step existed.
-        // SQLite has no `ADD COLUMN IF NOT EXISTS`; a duplicate-column error
-        // means the column is already there, which is fine.
-        if let Err(e) =
-            sqlx::query("ALTER TABLE outbox ADD COLUMN obp_transaction_request_id TEXT")
+        // Migrations for databases created before later columns existed
+        // (report-back step; settlement linkage). SQLite has no
+        // `ADD COLUMN IF NOT EXISTS`; a duplicate-column error means the
+        // column is already there, which is fine.
+        for col in [
+            "obp_transaction_request_id TEXT",
+            "settlement_id TEXT",
+            "settled_at TEXT",
+        ] {
+            if let Err(e) = sqlx::query(&format!("ALTER TABLE outbox ADD COLUMN {col}"))
                 .execute(pool)
                 .await
-        {
-            if !e.to_string().contains("duplicate column name") {
-                return Err(e.into());
+            {
+                if !e.to_string().contains("duplicate column name") {
+                    return Err(e.into());
+                }
             }
         }
 
@@ -315,6 +329,33 @@ impl OutboxStore {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Stamp the settlement linkage onto every row whose **OBP** Transaction
+    /// Request id appears in `covered_obp_tr_ids` (the settle result's
+    /// `covered_transaction_request_ids`). Rows already stamped keep their
+    /// original `settled_at` — re-stamping from a redelivered/polled result is
+    /// idempotent. Returns how many rows were newly stamped. Ids belonging to
+    /// the other bank's promises simply match nothing here.
+    pub async fn mark_settled(
+        &self,
+        covered_obp_tr_ids: &[String],
+        settlement_id: &str,
+    ) -> Result<u64, OutboxError> {
+        if covered_obp_tr_ids.is_empty() {
+            return Ok(0);
+        }
+        let now = rfc3339(Utc::now());
+        let placeholders = vec!["?"; covered_obp_tr_ids.len()].join(", ");
+        let sql = format!(
+            "UPDATE outbox SET settlement_id = ?, settled_at = ?, updated_at = ? \
+             WHERE settlement_id IS NULL AND obp_transaction_request_id IN ({placeholders})"
+        );
+        let mut query = sqlx::query(&sql).bind(settlement_id).bind(&now).bind(&now);
+        for id in covered_obp_tr_ids {
+            query = query.bind(id);
+        }
+        Ok(query.execute(&self.pool).await?.rows_affected())
     }
 
     pub async fn mark_exception(&self, id: &str, reason: &str) -> Result<(), OutboxError> {
@@ -472,6 +513,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mark_settled_stamps_only_covered_unstamped_rows() {
+        let store = OutboxStore::connect_in_memory().await.unwrap();
+        for (id, obp_id) in [("tr-a", "obp-1"), ("tr-b", "obp-2"), ("tr-c", "obp-3")] {
+            store.insert(entry(id, "{}")).await.unwrap();
+            store.mark_submitted(id, Some(obp_id)).await.unwrap();
+        }
+
+        // The covered list carries OBP TR ids — including the other bank's,
+        // which match no local row and are silently skipped.
+        let covered = vec!["obp-1".to_string(), "obp-3".to_string(), "obp-theirs".to_string()];
+        let stamped = store.mark_settled(&covered, "settle-1").await.unwrap();
+        assert_eq!(stamped, 2);
+
+        let a = store.get("tr-a").await.unwrap().unwrap();
+        assert_eq!(a.settlement_id.as_deref(), Some("settle-1"));
+        let settled_at_first = a.settled_at.clone().expect("settled_at set");
+        assert!(store.get("tr-b").await.unwrap().unwrap().settlement_id.is_none());
+
+        // Re-stamping (redelivered result / poll) is idempotent: no new rows,
+        // original settled_at preserved.
+        let again = store.mark_settled(&covered, "settle-1").await.unwrap();
+        assert_eq!(again, 0);
+        assert_eq!(store.get("tr-a").await.unwrap().unwrap().settled_at, Some(settled_at_first));
+
+        // Empty list is a no-op (and must not produce `IN ()` SQL).
+        assert_eq!(store.mark_settled(&[], "settle-2").await.unwrap(), 0);
+    }
+
+    #[tokio::test]
     async fn schema_migration_adds_obp_tr_id_to_old_databases() {
         // A database created before the report-back step lacks the
         // obp_transaction_request_id column; init_schema must add it.
@@ -508,6 +578,11 @@ mod tests {
         store.insert(entry("tr-old", "{}")).await.unwrap();
         let rec = store.get("tr-old").await.unwrap().unwrap();
         assert!(rec.obp_transaction_request_id.is_none());
+        // The settlement-linkage columns were added by the same migration.
+        assert!(rec.settlement_id.is_none());
+        assert!(rec.settled_at.is_none());
+        store.mark_submitted("tr-old", Some("obp-old")).await.unwrap();
+        assert_eq!(store.mark_settled(&["obp-old".into()], "s-1").await.unwrap(), 1);
     }
 
     #[tokio::test]

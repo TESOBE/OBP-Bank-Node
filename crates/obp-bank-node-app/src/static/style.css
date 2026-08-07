@@ -1,0 +1,163 @@
+/* OBP Bank Node App — plain, technical demo styling. */
+
+:root {
+  --bg: #f7f7f5;
+  --panel: #ffffff;
+  --ink: #1d2229;
+  --dim: #6a7280;
+  --line: #e2e4e8;
+  --accent: #0b5fff;
+  --ok: #157f3d;
+  --warn: #9a6700;
+  --err: #b3261e;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 1.5rem;
+  padding: 1rem 2rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+h1 { font-size: 1.2rem; margin: 0; }
+h2 { font-size: 1.05rem; margin: 0 0 .25rem; }
+h3 { font-size: .9rem; margin: 1rem 0 .35rem; color: var(--dim); }
+
+main { max-width: 1100px; margin: 0 auto; padding: 1rem 2rem 3rem; }
+
+section {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1rem 1.25rem 1.25rem;
+  margin-top: 1.25rem;
+}
+
+.step {
+  display: inline-block;
+  width: 1.5rem; height: 1.5rem;
+  line-height: 1.5rem;
+  text-align: center;
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--panel);
+  font-size: .8rem;
+  margin-right: .4rem;
+}
+
+.hint { color: var(--dim); font-size: .85rem; margin: .25rem 0 .75rem; }
+
+code { background: #eef0f3; padding: 0 .25em; border-radius: 3px; font-size: .85em; }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: .6rem .9rem;
+  margin-bottom: .75rem;
+}
+
+label { display: flex; flex-direction: column; font-size: .8rem; color: var(--dim); gap: .2rem; }
+
+input, select {
+  font: inherit;
+  padding: .35rem .5rem;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--ink);
+}
+
+button {
+  font: inherit;
+  padding: .4rem 1rem;
+  border: 0;
+  border-radius: 5px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+button:hover { filter: brightness(1.1); }
+button.small { padding: .1rem .5rem; font-size: .75rem; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .82rem;
+}
+th, td {
+  text-align: left;
+  padding: .3rem .5rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+th { color: var(--dim); font-weight: 600; white-space: nowrap; }
+td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.mono { font-family: ui-monospace, monospace; font-size: .78rem; }
+.net { font-weight: 600; }
+.dim { color: var(--dim); font-size: .9em; }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.empty { color: var(--dim); font-size: .85rem; font-style: italic; }
+
+.result {
+  margin-top: .75rem;
+  padding: .6rem .8rem;
+  border-radius: 6px;
+  font-family: ui-monospace, monospace;
+  font-size: .78rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 20rem;
+  overflow: auto;
+}
+.result-ok { background: #eef7f0; border: 1px solid #cfe8d6; }
+.result-err { background: #fdf0ef; border: 1px solid #f1d0cd; }
+
+/* status chips */
+.chip {
+  display: inline-block;
+  padding: 0 .5em;
+  border-radius: 999px;
+  font-size: .72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  background: #eef0f3;
+  color: var(--dim);
+}
+.chip-initiated { background: #eef0f3; color: var(--dim); }
+.chip-submitted, .chip-settling { background: #fff4e0; color: var(--warn); }
+.chip-promise-written, .chip-delivered { background: #e7effc; color: var(--accent); }
+.chip-reported, .chip-final, .chip-verified { background: #eef7f0; color: var(--ok); }
+.chip-exception, .chip-error, .chip-failed { background: #fdf0ef; color: var(--err); }
+
+/* header node health */
+.node-health { display: flex; gap: .5rem; }
+.node-chip {
+  padding: .1rem .6rem;
+  border-radius: 999px;
+  font-size: .78rem;
+  border: 1px solid var(--line);
+}
+.node-chip.up { border-color: #cfe8d6; background: #eef7f0; color: var(--ok); }
+.node-chip.down { border-color: #f1d0cd; background: #fdf0ef; color: var(--err); }
+
+footer {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 2rem 2rem;
+  color: var(--dim);
+  font-size: .78rem;
+}

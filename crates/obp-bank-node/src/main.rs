@@ -352,34 +352,41 @@ async fn main() -> anyhow::Result<()> {
     // The dispatcher owns the backend and drains the outbox asynchronously.
     let dispatcher = Dispatcher::new(
         outbox.clone(),
-        obp,
+        Arc::clone(&obp),
         backend,
         blockchain_label,
         DispatcherConfig::default(),
     );
     tokio::spawn(dispatcher.run());
 
-    // Settlement idempotency/finality: whenever a settlement rail exists, open
-    // the durable store and start the finality watcher — even with the
-    // Interface C consumer off, previously SUBMITTED settlements must still be
-    // promoted to FINAL (or flagged) as the chain advances.
+    // The settlement and evidence stores are opened unconditionally — the
+    // south-side read API serves them even when no settlement rail or
+    // Interface C consumer is running (e.g. mock mode, consumer off).
+    let settlement_store =
+        SettlementStore::connect(&config.settlement.store_path).await.with_context(|| {
+            format!(
+                "failed to open settlement store at {}",
+                config.settlement.store_path.display()
+            )
+        })?;
+    let evidence = EvidenceStore::connect(&config.evidence.path).await.with_context(|| {
+        format!("failed to open evidence store at {}", config.evidence.path.display())
+    })?;
+
+    // Settlement finality: whenever a settlement rail exists, start the
+    // finality watcher — even with the Interface C consumer off, previously
+    // SUBMITTED settlements must still be promoted to FINAL (or flagged) as
+    // the chain advances.
     let settlement_parts = match &settlement {
         Some(backend) => {
-            let store =
-                SettlementStore::connect(&config.settlement.store_path).await.with_context(|| {
-                    format!(
-                        "failed to open settlement store at {}",
-                        config.settlement.store_path.display()
-                    )
-                })?;
             let watcher = FinalityWatcher {
-                store: store.clone(),
+                store: settlement_store.clone(),
                 backend: Arc::clone(backend),
                 finality_depth: config.settlement.finality_depth,
                 poll_interval: std::time::Duration::from_secs(config.settlement.finality_poll_secs),
             };
             tokio::spawn(watcher.run());
-            Some((Arc::clone(backend), store))
+            Some((Arc::clone(backend), settlement_store.clone()))
         }
         None => None,
     };
@@ -388,9 +395,6 @@ async fn main() -> anyhow::Result<()> {
     // it consumes credit notifications (capturing the salt as evidence) and
     // delivers credits to the bank's CBS.
     if config.rabbitmq.enabled {
-        let evidence = EvidenceStore::connect(&config.evidence.path).await.with_context(|| {
-            format!("failed to open evidence store at {}", config.evidence.path.display())
-        })?;
         let cbs = CbsClient::new(
             config.cbs_delivery.webhook.url.clone(),
             config.local_secret.clone(),
@@ -405,7 +409,7 @@ async fn main() -> anyhow::Result<()> {
             });
         let c_router = Arc::new(interface_c::Router::new(
             config.bank.bank_id.clone(),
-            evidence,
+            evidence.clone(),
             cbs,
             settlement_service,
         ));
@@ -431,9 +435,13 @@ async fn main() -> anyhow::Result<()> {
 
     let state = BankNodeState {
         outbox,
+        settlements: settlement_store,
+        evidence,
+        obp,
         blockchain_label,
         bank_id: config.bank.bank_id.clone(),
         account_id: config.bank.account_id.clone(),
+        finality_depth: config.settlement.finality_depth,
     };
     let app = build_router(state);
 

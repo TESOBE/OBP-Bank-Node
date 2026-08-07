@@ -64,11 +64,11 @@ PROMISE_TX=$(sq "$DIR/data/node-a/outbox.db" \
 echo "Promise on-chain tx: $PROMISE_TX"
 echo "  https://preprod.cardanoscan.io/transaction/$PROMISE_TX"
 
-echo "=== 3. Settle the pair (admin)"
-SETTLE=$(curl -s -X POST "$OBP/obp/v7.0.0/open-corridor/settle" \
+echo "=== 3. Settle the pair (admin, from bank A's side)"
+SETTLE=$(curl -s -X POST "$OBP/obp/v7.0.0/banks/rt.bank.a/open-corridor/settlements" \
   -H "Authorization: DirectLogin token=\"$RT_ADMIN_TOKEN\"" \
   -H 'Content-Type: application/json' \
-  -d '{"bank_id_a":"rt.bank.a","bank_id_b":"rt.bank.b","currency":"KES"}')
+  -d '{"other_bank_id":"rt.bank.b","currency":"KES"}')
 echo "$SETTLE" | python3 -m json.tool 2>/dev/null || echo "$SETTLE"
 SETTLEMENT_ID=$(echo "$SETTLE" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("settlement_id",""))')
 [ -n "$SETTLEMENT_ID" ] || { echo "FAILED — settle returned no settlement_id"; exit 1; }

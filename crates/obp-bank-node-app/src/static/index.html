@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OBP Bank Node — Open Corridor</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>OBP Bank Node — Open Corridor</h1>
+    <div id="node-health" class="node-health"></div>
+  </header>
+
+  <main>
+    <section id="send">
+      <h2><span class="step">1</span> Send</h2>
+      <p class="hint">POST an <code>OPEN_CORRIDOR</code> A1.1 request to a node's south-side API.</p>
+      <form id="send-form">
+        <div class="grid">
+          <label>Sending node
+            <select name="node" id="send-node"></select>
+          </label>
+          <label>Amount
+            <input name="amount" value="500.00" required>
+          </label>
+          <label>Currency
+            <input name="currency" value="KES" required>
+          </label>
+          <label>Description
+            <input name="description" value="Demo payment">
+          </label>
+          <label>Beneficiary bank (OBP bank id)
+            <input name="other_bank" value="rt.bank.b" required>
+          </label>
+          <label>Beneficiary account (OBP account id)
+            <input name="other_account" value="settlement-b" required>
+          </label>
+          <label>Originator name
+            <input name="originator_name" value="Alice Sender" required>
+          </label>
+          <label>Originator address
+            <input name="originator_address" value="1 Sender Street, Nairobi" required>
+          </label>
+          <label>Originator account (IBAN)
+            <input name="originator_account" value="KE93 0000 1234 5678 9012 34" required>
+          </label>
+        </div>
+        <button type="submit">Send payment</button>
+        <pre id="send-result" class="result" hidden></pre>
+      </form>
+    </section>
+
+    <section id="promise">
+      <h2><span class="step">2</span> Promise</h2>
+      <p class="hint">Each node's outbox: <code>INITIATED → SUBMITTED → PROMISE_WRITTEN → REPORTED</code>.
+        The on-chain promise is a salted SHA-256 commitment — hash only; cleartext and salt stay with the banks.</p>
+      <div id="tr-tables"></div>
+    </section>
+
+    <section id="position">
+      <h2><span class="step">3</span> Position</h2>
+      <p class="hint">Bilateral view assembled by this app from each node's own unsettled outbound legs
+        (<code>SUBMITTED</code>/<code>PROMISE_WRITTEN</code>/<code>REPORTED</code>, not yet covered by a settlement).
+        OBP-API is not consulted.</p>
+      <div id="position-view"></div>
+    </section>
+
+    <section id="settle">
+      <h2><span class="step">4</span> Settle</h2>
+      <p class="hint">Ask a node to trigger bilateral settlement: it calls OBP-API's settlement resource over
+        Interface B; the net moves later on the rail (<code>SETTLING → SUBMITTED → FINAL</code>).</p>
+      <form id="settle-form">
+        <div class="grid">
+          <label>Triggering node
+            <select name="node" id="settle-node"></select>
+          </label>
+          <label>Other bank id
+            <input name="other_bank_id" value="rt.bank.b" required>
+          </label>
+          <label>Currency
+            <input name="currency" value="KES" required>
+          </label>
+        </div>
+        <button type="submit">Trigger settlement</button>
+        <pre id="settle-result" class="result" hidden></pre>
+      </form>
+      <div id="settlement-tables"></div>
+      <pre id="corridor-view" class="result" hidden></pre>
+    </section>
+
+    <section id="credit">
+      <h2><span class="step">5</span> Credit</h2>
+      <p class="hint">Beneficiary-side evidence: the commit–reveal triplet, whether
+        <code>SHA-256(salt ‖ preimage)</code> matched the on-chain commitment, and the CBS delivery result.</p>
+      <div id="evidence-tables"></div>
+    </section>
+  </main>
+
+  <footer>
+    <p>Read-and-trigger only; outside the money path. Every state shown is read from a node endpoint.</p>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -7,12 +7,17 @@
 //! payment initiation still mirrors the OBP `OPEN_CORRIDOR_PROMISE` Transaction Request
 //! shape so banks already familiar with OBP can reuse their validators.
 
+use std::sync::Arc;
+
 use axum::{
     routing::{get, post},
     Router,
 };
 
+use crate::evidence::EvidenceStore;
+use crate::obp_client::ObpClient;
 use crate::outbox::OutboxStore;
+use crate::settlement_store::SettlementStore;
 
 pub mod handlers;
 pub mod types;
@@ -20,15 +25,24 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
-/// Shared state for the south-side handlers. The handlers only persist to the
-/// outbox and read it back; the external work (OBP-API, chain) is the
-/// dispatcher's job, so the blockchain backend lives there, not here.
+/// Shared state for the south-side handlers. Payment initiation only persists
+/// to the outbox (the external work is the dispatcher's job), and the store
+/// endpoints are read-only projections. The one deliberate exception is the
+/// settle trigger, which calls OBP-API synchronously through `obp` — the
+/// caller needs OBP's netting answer, and the value leg still runs
+/// asynchronously (Interface C instruction → settlement backend).
 #[derive(Clone)]
 pub struct BankNodeState {
     pub outbox: OutboxStore,
+    pub settlements: SettlementStore,
+    pub evidence: EvidenceStore,
+    pub obp: Arc<ObpClient>,
     pub blockchain_label: &'static str,
     pub bank_id: String,
     pub account_id: String,
+    /// Depth at which this node's finality watcher promotes settlements to
+    /// FINAL — surfaced on the settlement read endpoints.
+    pub finality_depth: u32,
 }
 
 pub fn build_router(state: BankNodeState) -> Router {
@@ -42,6 +56,20 @@ pub fn build_router(state: BankNodeState) -> Router {
         .route(
             "/obp-bank-node/v5.1.0/transaction-requests/:transaction_request_id",
             get(get_transaction_request),
+        )
+        .route(
+            "/obp-bank-node/v5.1.0/settlements",
+            post(request_settlement).get(list_settlements),
+        )
+        .route("/obp-bank-node/v5.1.0/settlements/:key", get(get_settlement))
+        .route(
+            "/obp-bank-node/v5.1.0/settlements/:key/corridor",
+            get(get_corridor_settlement),
+        )
+        .route("/obp-bank-node/v5.1.0/evidence", get(list_evidence))
+        .route(
+            "/obp-bank-node/v5.1.0/evidence/:transaction_request_id",
+            get(get_evidence),
         )
         .route("/obp-bank-node/v5.1.0/health", get(root_health))
         .route("/health", get(root_health))

@@ -270,6 +270,72 @@ impl ObpClient {
         Err(classify_failure(status, &text))
     }
 
+    fn settlements_url(&self, bank_id: &str) -> String {
+        format!(
+            "{base}/obp/{ver}/banks/{bank}/open-corridor/settlements",
+            base = self.base_url,
+            ver = OBP_API_VERSION,
+            bank = bank_id,
+        )
+    }
+
+    /// Trigger bilateral Open Corridor settlement via OBP-API's settlement
+    /// resource (`POST /banks/BANK_ID/open-corridor/settlements`). `bank_id` is
+    /// this node's own bank — `CanSettleOpenCorridor` is bank-scoped and
+    /// checked there. A 201 means the settlement resource was created (ledger
+    /// netting done), NOT that value has moved on the rail.
+    pub async fn create_settlement(
+        &self,
+        bank_id: &str,
+        other_bank_id: &str,
+        currency: &str,
+    ) -> Result<ObpSettlementResponse, ObpClientError> {
+        let url = self.settlements_url(bank_id);
+        debug!(%url, %other_bank_id, %currency, "creating Open Corridor settlement at OBP-API");
+        let body = serde_json::json!({
+            "other_bank_id": other_bank_id,
+            "currency": currency,
+        });
+        let req = self.http.post(&url).json(&body);
+        let req = self.authorize(req).await?;
+        let resp = req.send().await.map_err(|e| ObpClientError::Transport(e.to_string()))?;
+
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| ObpClientError::Transport(format!("reading response body: {e}")))?;
+        if status.is_success() {
+            return parse_settlement_response(&text);
+        }
+        Err(classify_interactive_failure(status, &text))
+    }
+
+    /// Read one settlement from OBP-API (`GET .../open-corridor/settlements/{id}`):
+    /// ledger status, rail status (from the node's recorded replies), covered
+    /// promises, and the outbox message states.
+    pub async fn get_settlement(
+        &self,
+        bank_id: &str,
+        settlement_id: &str,
+    ) -> Result<ObpSettlementResponse, ObpClientError> {
+        let url = format!("{}/{}", self.settlements_url(bank_id), settlement_id);
+        debug!(%url, "reading Open Corridor settlement from OBP-API");
+        let req = self.http.get(&url);
+        let req = self.authorize(req).await?;
+        let resp = req.send().await.map_err(|e| ObpClientError::Transport(e.to_string()))?;
+
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| ObpClientError::Transport(format!("reading response body: {e}")))?;
+        if status.is_success() {
+            return parse_settlement_response(&text);
+        }
+        Err(classify_interactive_failure(status, &text))
+    }
+
     fn promise_report_url(&self, bank_id: &str, account_id: &str, obp_tr_id: &str) -> String {
         format!(
             "{base}/obp/{ver}/banks/{bank}/accounts/{acct}\
@@ -316,6 +382,61 @@ impl ObpClient {
             return Ok(());
         }
         Err(classify_failure(status, &text))
+    }
+}
+
+/// OBP-API's settlement resource, as the node consumes it: the fields the node
+/// acts on (linkage stamping) parsed out, the full body kept for passthrough
+/// to the south-side caller.
+#[derive(Debug, Clone)]
+pub struct ObpSettlementResponse {
+    pub settlement_id: Option<String>,
+    /// OBP TR ids of the covered promises — both directions of the pair; the
+    /// node stamps whichever of them match its own outbox rows.
+    pub covered_transaction_request_ids: Vec<String>,
+    /// The verbatim response body.
+    pub raw: serde_json::Value,
+}
+
+fn parse_settlement_response(body: &str) -> Result<ObpSettlementResponse, ObpClientError> {
+    let raw: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| ObpClientError::Transport(format!("parsing settlement response: {e}")))?;
+    let settlement_id = raw
+        .get("settlement_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    let covered_transaction_request_ids = raw
+        .get("covered_transaction_request_ids")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default();
+    Ok(ObpSettlementResponse {
+        settlement_id,
+        covered_transaction_request_ids,
+        raw,
+    })
+}
+
+/// Classification for the *interactive* settlement calls (the south-side
+/// settle trigger and corridor-status proxy). Unlike [`classify_failure`],
+/// any 4xx carrying an OBP business code — including 403 missing-role and
+/// 404 settlement-not-found — is passed through to the caller as a
+/// [`ObpClientError::Rejected`] with its original status: the caller is an
+/// operator/app that needs to see the real answer, not a dispatcher that must
+/// avoid failing a payment on a misconfig.
+fn classify_interactive_failure(status: reqwest::StatusCode, body: &str) -> ObpClientError {
+    let (error_code, message) = parse_obp_error(body);
+    if status.is_client_error() && error_code.starts_with("OBP-") && error_code != "OBP-UNKNOWN" {
+        ObpClientError::Rejected {
+            status: status.as_u16(),
+            error_code,
+            message,
+        }
+    } else {
+        ObpClientError::Transport(format!(
+            "OBP-API returned {status}: {}",
+            truncate(&message, 500)
+        ))
     }
 }
 
@@ -554,6 +675,88 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.is_retryable(), "404 must be operational/retryable");
+    }
+
+    #[tokio::test]
+    async fn create_settlement_posts_body_and_parses_covered_ids() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<serde_json::Value>(1);
+        let router = Router::new().route(
+            "/obp/v7.0.0/banks/rt.bank.a/open-corridor/settlements",
+            post(move |Json(body): Json<serde_json::Value>| async move {
+                tx.send(body).await.unwrap();
+                (
+                    axum::http::StatusCode::CREATED,
+                    Json(serde_json::json!({
+                        "settlement_id": "settle-77",
+                        "debtor_bank_id": "rt.bank.a",
+                        "creditor_bank_id": "rt.bank.b",
+                        "currency": "KES",
+                        "net_amount": "1000.00",
+                        "covered_transaction_request_ids": ["obp-tr-1", "obp-tr-2"],
+                    })),
+                )
+            }),
+        );
+        let base = spawn_stub(router).await;
+        let client = ObpClient::new(base, ObpAuth::None).unwrap();
+
+        let result = client.create_settlement("rt.bank.a", "rt.bank.b", "KES").await.unwrap();
+        assert_eq!(result.settlement_id.as_deref(), Some("settle-77"));
+        assert_eq!(result.covered_transaction_request_ids, vec!["obp-tr-1", "obp-tr-2"]);
+        assert_eq!(result.raw["net_amount"], "1000.00");
+
+        let sent = rx.recv().await.unwrap();
+        assert_eq!(sent["other_bank_id"], "rt.bank.b");
+        assert_eq!(sent["currency"], "KES");
+    }
+
+    #[tokio::test]
+    async fn create_settlement_missing_role_passes_403_through() {
+        let router = Router::new().route(
+            "/obp/v7.0.0/banks/:bank/open-corridor/settlements",
+            post(|| async {
+                (
+                    axum::http::StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({ "code": 403, "message": "OBP-20006: User is missing one or more roles: CanSettleOpenCorridor" })),
+                )
+            }),
+        );
+        let base = spawn_stub(router).await;
+        let client = ObpClient::new(base, ObpAuth::None).unwrap();
+
+        let err = client.create_settlement("rt.bank.a", "rt.bank.b", "KES").await.unwrap_err();
+        match err {
+            ObpClientError::Rejected { status, error_code, .. } => {
+                assert_eq!(status, 403, "interactive calls pass the real status through");
+                assert_eq!(error_code, "OBP-20006");
+            }
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_settlement_not_found_passes_404_through() {
+        use axum::routing::get;
+        let router = Router::new().route(
+            "/obp/v7.0.0/banks/:bank/open-corridor/settlements/:id",
+            get(|| async {
+                (
+                    axum::http::StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({ "code": 404, "message": "OBP-40058: No Open Corridor settlement with this SETTLEMENT_ID exists for this bank." })),
+                )
+            }),
+        );
+        let base = spawn_stub(router).await;
+        let client = ObpClient::new(base, ObpAuth::None).unwrap();
+
+        let err = client.get_settlement("rt.bank.a", "nope").await.unwrap_err();
+        match err {
+            ObpClientError::Rejected { status, error_code, .. } => {
+                assert_eq!(status, 404);
+                assert_eq!(error_code, "OBP-40058");
+            }
+            other => panic!("expected Rejected, got {other:?}"),
+        }
     }
 
     #[tokio::test]

@@ -149,18 +149,38 @@ impl Router {
             "credit_notification: evidence stored; delivering to CBS"
         );
 
-        // Deliver the credit to the bank's CBS (Interface A2).
+        // Deliver the credit to the bank's CBS (Interface A2), and record the
+        // outcome on the evidence row — the delivery result is part of the
+        // bank's audit trail (and read back over the south-side evidence API).
+        // A failed *recording* is logged but does not fail the reply: the
+        // delivery itself already happened (or failed) independently.
         match self.cbs.deliver_credit(&raw).await {
-            Ok(ack) => ReplyEnvelope::ok(
-                correlation_id,
-                serde_json::json!({
-                    "transaction_request_id": cn.transaction_request_id,
-                    "verified": verified,
-                    "cbs_reference": ack.cbs_reference,
-                }),
-            ),
+            Ok(ack) => {
+                if let Err(e) = self
+                    .evidence
+                    .record_cbs_result(&cn.transaction_request_id, "DELIVERED", ack.cbs_reference.as_deref())
+                    .await
+                {
+                    warn!(error = %e, "credit_notification: failed to record CBS result");
+                }
+                ReplyEnvelope::ok(
+                    correlation_id,
+                    serde_json::json!({
+                        "transaction_request_id": cn.transaction_request_id,
+                        "verified": verified,
+                        "cbs_reference": ack.cbs_reference,
+                    }),
+                )
+            }
             Err(e) => {
                 warn!(error = %e, "credit_notification: CBS delivery failed");
+                if let Err(se) = self
+                    .evidence
+                    .record_cbs_result(&cn.transaction_request_id, "FAILED", None)
+                    .await
+                {
+                    warn!(error = %se, "credit_notification: failed to record CBS result");
+                }
                 ReplyEnvelope::error(correlation_id, error_code::CBS_DELIVERY_FAILED, e.to_string())
             }
         }
@@ -577,10 +597,12 @@ mod tests {
         assert_eq!(reply.data["cbs_reference"], "CBS-1");
         assert_eq!(counter.load(Ordering::SeqCst), 1, "CBS delivered once");
 
-        // Evidence persisted and marked verified.
+        // Evidence persisted, marked verified, CBS outcome recorded.
         let rec = r.evidence.get(&id).await.unwrap().unwrap();
         assert!(rec.verified);
         assert_eq!(rec.promise_id.as_deref(), Some("cardano-tx-abc"));
+        assert_eq!(rec.cbs_status.as_deref(), Some("DELIVERED"));
+        assert_eq!(rec.cbs_reference.as_deref(), Some("CBS-1"));
     }
 
     #[tokio::test]
@@ -634,9 +656,13 @@ mod tests {
     #[tokio::test]
     async fn cbs_down_returns_delivery_failed() {
         let r = router_with_cbs("http://127.0.0.1:1/credit").await;
-        let (body, _) = credit_with_valid_commitment();
+        let (body, id) = credit_with_valid_commitment();
         let reply = r.handle(message_id::CREDIT_NOTIFICATION, "corr-6", body.as_bytes()).await;
         assert_eq!(reply.status.error_code, error_code::CBS_DELIVERY_FAILED);
+        // The failed delivery attempt is recorded on the evidence row.
+        let rec = r.evidence.get(&id).await.unwrap().unwrap();
+        assert_eq!(rec.cbs_status.as_deref(), Some("FAILED"));
+        assert!(rec.cbs_reference.is_none());
     }
 
     #[tokio::test]

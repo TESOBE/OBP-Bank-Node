@@ -344,12 +344,26 @@ parts:
 - Map the bank's reply envelope (§4.2): success on `errorCode == ""`, otherwise
   surface the `errorCode` to the caller / mark the TR `EXCEPTION`.
 
-### 5.3 The trigger: the admin settle-pair endpoint (revised 2026-07-18)
+### 5.3 The trigger: the settle-pair endpoint (revised 2026-07-18)
 
-> **BUILT (2026-07-28, branch `open-corridor-salt-relay`).**
-> `POST /obp/v7.0.0/open-corridor/settle` `{bank_id_a, bank_id_b, currency}`,
-> system role `CanSettleOpenCorridor`, gated by `open_corridor_enabled`
-> (OBP-40057). `OpenCorridorSettlement.settlePair`: row-locks each candidate
+> **RESHAPED 2026-08-07 to a settlement resource.**
+> `POST /obp/v7.0.0/banks/BANK_ID/open-corridor/settlements`
+> `{other_bank_id, currency}` — the URL bank is one side of the pair;
+> `CanSettleOpenCorridor` is now **bank-scoped** and checked at BANK_ID, so a
+> bank (or its node's M2M user) can only settle corridors it is party to.
+> Either side may trigger; debtor/creditor fall out of the net's sign. New
+> read side: `GET .../settlements/SETTLEMENT_ID` (404 OBP-40058 for
+> non-parties) returns `ledger_status` (TR B, COMPLETED at settle time)
+> separately from `settlement_status` — the rail state read off the
+> settlement-instruction outbox row's last node reply:
+> NET_ZERO / INSTRUCTED / SETTLING / SUBMITTED (+`settlement_depth`) /
+> FINAL (row DELIVERED) / ERROR (row STICKY) — plus the per-message outbox
+> delivery states.
+>
+> **BUILT (2026-07-28, branch `open-corridor-salt-relay`; original flat shape
+> `POST /open-corridor/settle` `{bank_id_a, bank_id_b, currency}` with a
+> system role — superseded by the resource shape above).**
+> `OpenCorridorSettlement.settlePair`: row-locks each candidate
 > promise (re-read under lock, so a concurrent double-trigger cannot settle the
 > same promises twice; no-pending re-trigger is a no-op), nets both directions,
 > mints + executes TR B between the pair's settlement accounts
@@ -374,9 +388,10 @@ The trigger is the settle-pair endpoint from `OPEN_CORRIDOR_SIMPLE_NETTING.md`
 degenerates to exactly the old behaviour, so nothing is lost and real netting
 (N pending promises → one net settlement) is gained:
 
-- `POST /obp/v7.0.0/open-corridor/settle` (shape to taste, e.g. body
-  `{ bank_id_a, bank_id_b, currency }`), gated by a **system role** (new
-  ApiRole, e.g. `CanSettleOpenCorridor`).
+- `POST /obp/v7.0.0/banks/BANK_ID/open-corridor/settlements` (body
+  `{ other_bank_id, currency }`), gated by the **bank-scoped**
+  `CanSettleOpenCorridor` role at BANK_ID (was a system role + flat
+  `/open-corridor/settle` shape until 2026-08-07).
 - It, atomically:
   1. queries the `PENDING` `OPEN_CORRIDOR_PROMISE` TRs for the pair+currency,
      both directions; computes `net = SUM(A→B) − SUM(B→A)`; debtor = the side

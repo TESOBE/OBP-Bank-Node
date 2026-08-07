@@ -24,7 +24,10 @@ use uuid::Uuid;
 
 use super::types::*;
 use super::BankNodeState;
+use crate::evidence::EvidenceRecord;
+use crate::obp_client::ObpClientError;
 use crate::outbox::{NewEntry, OutboxRecord};
+use crate::settlement_store::SettlementRow;
 
 /// Build an OBP-style error response: an HTTP status plus an [`ErrorBody`]
 /// carrying the OBP error code and a human-readable message.
@@ -236,20 +239,33 @@ pub async fn list_transaction_requests(State(state): State<BankNodeState>) -> Re
     }
 }
 
-/// Project an outbox row onto the south-side status shape. Netting and
-/// settlement fields stay null until those flows (Interface C) land.
+/// Project an outbox row onto the south-side status shape. Netting fields stay
+/// null until the snapshot flow lands; the settlement linkage is stamped onto
+/// the row by the settle flows (see `OutboxStore::mark_settled`).
 fn status_from_record(rec: OutboxRecord) -> TransactionRequestStatus {
+    let parsed: Option<InitiateRequest> = serde_json::from_str(&rec.request_payload).ok();
+    let (value, other_bank_id, description) = match parsed {
+        Some(req) => (
+            Some(req.value),
+            Some(req.to.other_bank_routing_address),
+            Some(req.description),
+        ),
+        None => (None, None, None),
+    };
     TransactionRequestStatus {
         transaction_request_id: rec.transaction_request_id,
         status: rec.status,
+        value,
+        other_bank_id,
+        description,
         promise_id: rec.promise_tx_id,
         promise_blockchain: rec.promise_blockchain,
         netting_snapshot_id: None,
         netting_blockchain: None,
-        settlement_id: None,
+        settlement_id: rec.settlement_id,
         settlement_system: None,
         created_at: parse_rfc3339(&rec.created_at),
-        settled_at: None,
+        settled_at: rec.settled_at.as_deref().map(parse_rfc3339),
     }
 }
 
@@ -259,6 +275,257 @@ fn parse_rfc3339(s: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(s)
         .map(|d| d.with_timezone(&Utc))
         .unwrap_or_else(|_| Utc::now())
+}
+
+/// Map an Interface B failure onto a south-side error response. An OBP
+/// business rejection passes through with its original status and OBP code
+/// (the caller needs the real answer — e.g. a 403 missing role or a 404
+/// unknown settlement); a transport failure is this node's 502.
+fn obp_error(e: ObpClientError) -> Response {
+    match e {
+        ObpClientError::Rejected {
+            status,
+            error_code,
+            message,
+        } => error(
+            StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_REQUEST),
+            &error_code,
+            message,
+        ),
+        ObpClientError::Transport(message) => error(
+            StatusCode::BAD_GATEWAY,
+            "OBP-BANK-NODE-INTERFACE-B-001",
+            format!("OBP-API unreachable or gave no authoritative answer: {message}"),
+        ),
+    }
+}
+
+/// Project a settlement-store row onto the read-API shape.
+fn settlement_view(row: SettlementRow, finality_depth: u32) -> SettlementView {
+    SettlementView {
+        idempotency_key: row.idempotency_key,
+        settlement_id: row.settlement_id,
+        snapshot_id: row.snapshot_id,
+        currency: row.currency,
+        net_amount_minor: row.net_amount_minor,
+        creditor_address: row.creditor_address,
+        status: row.status,
+        tx_id: row.tx_id,
+        blockchain: row.blockchain,
+        asset: row.asset,
+        asset_amount: row.asset_amount,
+        depth: row.last_depth,
+        finality_depth,
+        error_reason: row.error_reason,
+        retryable: row.retryable,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        finalized_at: row.finalized_at,
+    }
+}
+
+fn evidence_view(rec: EvidenceRecord) -> EvidenceView {
+    EvidenceView {
+        transaction_request_id: rec.transaction_request_id,
+        promise_commitment: rec.promise_commitment,
+        promise_salt: rec.promise_salt,
+        promise_preimage: rec.promise_preimage,
+        promise_id: rec.promise_id,
+        promise_blockchain: rec.promise_blockchain,
+        verified: rec.verified,
+        currency: rec.currency,
+        amount: rec.amount,
+        originator_name: rec.originator_name,
+        cbs_status: rec.cbs_status,
+        cbs_reference: rec.cbs_reference,
+        cbs_recorded_at: rec.cbs_recorded_at,
+        received_at: rec.received_at,
+    }
+}
+
+pub async fn list_settlements(State(state): State<BankNodeState>) -> Response {
+    match state.settlements.list(LIST_LIMIT).await {
+        Ok(rows) => {
+            let body: Vec<_> = rows
+                .into_iter()
+                .map(|r| settlement_view(r, state.finality_depth))
+                .collect();
+            Json(body).into_response()
+        }
+        Err(e) => {
+            error!(bank_id = %state.bank_id, error = %e, "settlement store list failed");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "OBP-BANK-NODE-PLATFORM-001",
+                "failed to list settlements",
+            )
+        }
+    }
+}
+
+pub async fn get_settlement(
+    State(state): State<BankNodeState>,
+    Path(key): Path<String>,
+) -> Response {
+    match state.settlements.find(&key).await {
+        Ok(Some(row)) => Json(settlement_view(row, state.finality_depth)).into_response(),
+        Ok(None) => error(
+            StatusCode::NOT_FOUND,
+            "OBP-BANK-NODE-NOT-FOUND-001",
+            format!("no settlement with idempotency_key or settlement_id {key}"),
+        ),
+        Err(e) => {
+            error!(%key, error = %e, "settlement store read failed");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "OBP-BANK-NODE-PLATFORM-001",
+                "failed to read settlement",
+            )
+        }
+    }
+}
+
+/// `POST .../settlements` — trigger bilateral settlement for this node's own
+/// corridor by calling OBP-API's settlement resource over Interface B. The
+/// 201 relays OBP-API's answer (ledger netting done, value moves later on the
+/// rail) plus how many local outbox rows the covered-promise list stamped.
+pub async fn request_settlement(
+    State(state): State<BankNodeState>,
+    body: Result<Json<SettleRequest>, JsonRejection>,
+) -> Response {
+    let Json(req) = match body {
+        Ok(json) => json,
+        Err(rejection) => {
+            warn!(error = %rejection, "request_settlement rejected malformed body");
+            return error(StatusCode::BAD_REQUEST, "OBP-10001", rejection.body_text());
+        }
+    };
+    if req.other_bank_id.trim().is_empty() || req.currency.trim().is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "OBP-10001",
+            "other_bank_id and currency are required",
+        );
+    }
+    if req.other_bank_id == state.bank_id {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "OBP-10001",
+            "other_bank_id must differ from this node's own bank",
+        );
+    }
+
+    let result = match state
+        .obp
+        .create_settlement(&state.bank_id, &req.other_bank_id, &req.currency)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(bank_id = %state.bank_id, other_bank_id = %req.other_bank_id, error = %e, "settle trigger failed at OBP-API");
+            return obp_error(e);
+        }
+    };
+
+    // Stamp the settlement linkage onto the covered local rows. A stamping
+    // failure must not fail the request — the settlement already exists at
+    // OBP-API; the linkage can be re-stamped from the corridor status poll.
+    let stamped = match result.settlement_id.as_deref() {
+        Some(sid) => match state
+            .outbox
+            .mark_settled(&result.covered_transaction_request_ids, sid)
+            .await
+        {
+            Ok(n) => n,
+            Err(e) => {
+                error!(settlement_id = %sid, error = %e, "failed to stamp settlement linkage onto outbox rows");
+                0
+            }
+        },
+        None => 0,
+    };
+
+    info!(
+        bank_id = %state.bank_id,
+        other_bank_id = %req.other_bank_id,
+        currency = %req.currency,
+        settlement_id = ?result.settlement_id,
+        covered = result.covered_transaction_request_ids.len(),
+        stamped,
+        "settlement created at OBP-API"
+    );
+
+    let mut body = result.raw;
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert("covered_outbox_rows_stamped".into(), stamped.into());
+    }
+    (StatusCode::CREATED, Json(body)).into_response()
+}
+
+/// `GET .../settlements/{key}/corridor` — the corridor-wide view: proxy of
+/// OBP-API's settlement resource (ledger status + rail status + covered
+/// promises + message delivery states). Also re-stamps the settlement linkage
+/// onto local outbox rows, which is how a node that did NOT trigger the
+/// settlement picks the linkage up.
+pub async fn get_corridor_settlement(
+    State(state): State<BankNodeState>,
+    Path(key): Path<String>,
+) -> Response {
+    let result = match state.obp.get_settlement(&state.bank_id, &key).await {
+        Ok(r) => r,
+        Err(e) => return obp_error(e),
+    };
+
+    if let Some(sid) = result.settlement_id.as_deref() {
+        if let Err(e) = state
+            .outbox
+            .mark_settled(&result.covered_transaction_request_ids, sid)
+            .await
+        {
+            error!(settlement_id = %sid, error = %e, "failed to stamp settlement linkage onto outbox rows");
+        }
+    }
+
+    Json(result.raw).into_response()
+}
+
+pub async fn list_evidence(State(state): State<BankNodeState>) -> Response {
+    match state.evidence.list(LIST_LIMIT).await {
+        Ok(recs) => {
+            let body: Vec<_> = recs.into_iter().map(evidence_view).collect();
+            Json(body).into_response()
+        }
+        Err(e) => {
+            error!(bank_id = %state.bank_id, error = %e, "evidence store list failed");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "OBP-BANK-NODE-PLATFORM-001",
+                "failed to list evidence",
+            )
+        }
+    }
+}
+
+pub async fn get_evidence(
+    State(state): State<BankNodeState>,
+    Path(transaction_request_id): Path<String>,
+) -> Response {
+    match state.evidence.get(&transaction_request_id).await {
+        Ok(Some(rec)) => Json(evidence_view(rec)).into_response(),
+        Ok(None) => error(
+            StatusCode::NOT_FOUND,
+            "OBP-BANK-NODE-NOT-FOUND-001",
+            format!("no evidence for transaction request {transaction_request_id}"),
+        ),
+        Err(e) => {
+            error!(%transaction_request_id, error = %e, "evidence store read failed");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "OBP-BANK-NODE-PLATFORM-001",
+                "failed to read evidence",
+            )
+        }
+    }
 }
 
 pub async fn root_health(State(state): State<BankNodeState>) -> Response {

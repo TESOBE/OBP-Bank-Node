@@ -281,6 +281,31 @@ impl SettlementStore {
         .await?)
     }
 
+    /// Look a settlement up by `idempotency_key` **or** `settlement_id` —
+    /// the south-side read API accepts either (they are often the same value;
+    /// when they differ, the key wins on a collision because it is the PK).
+    pub async fn find(&self, key: &str) -> Result<Option<SettlementRow>, OutboxError> {
+        Ok(sqlx::query_as::<_, SettlementRow>(
+            "SELECT * FROM settlements WHERE idempotency_key = ? OR settlement_id = ? \
+             ORDER BY (idempotency_key = ?) DESC LIMIT 1",
+        )
+        .bind(key)
+        .bind(key)
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    /// Most-recent-first listing for the south-side read API.
+    pub async fn list(&self, limit: i64) -> Result<Vec<SettlementRow>, OutboxError> {
+        Ok(sqlx::query_as::<_, SettlementRow>(
+            "SELECT * FROM settlements ORDER BY created_at DESC LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     /// The finality watcher's worklist: submitted, not yet final.
     pub async fn list_submitted(&self, limit: i64) -> Result<Vec<SettlementRow>, OutboxError> {
         Ok(sqlx::query_as::<_, SettlementRow>(
@@ -367,6 +392,27 @@ mod tests {
         s.reclaim_for_retry("k1").await.unwrap();
         let row = s.get("k1").await.unwrap().unwrap();
         assert_eq!(row.status, status::ERROR, "ambiguous error must stick");
+    }
+
+    #[tokio::test]
+    async fn find_matches_idempotency_key_or_settlement_id() {
+        let s = SettlementStore::connect_in_memory().await.unwrap();
+        s.claim(claim_fields("key-1")).await.unwrap(); // settlement_id = "settle-1"
+
+        assert_eq!(s.find("key-1").await.unwrap().unwrap().idempotency_key, "key-1");
+        assert_eq!(s.find("settle-1").await.unwrap().unwrap().idempotency_key, "key-1");
+        assert!(s.find("nope").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn list_is_most_recent_first_and_capped() {
+        let s = SettlementStore::connect_in_memory().await.unwrap();
+        for k in ["a", "b", "c"] {
+            s.claim(claim_fields(k)).await.unwrap();
+        }
+        let all = s.list(10).await.unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(s.list(2).await.unwrap().len(), 2);
     }
 
     #[tokio::test]

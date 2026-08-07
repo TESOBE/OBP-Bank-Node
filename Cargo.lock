@@ -1777,6 +1777,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "obp-bank-node-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "figment",
+ "http-body-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "obp-blockchain"
 version = "0.1.0"
 dependencies = [
