@@ -32,11 +32,17 @@ pub struct AppState {
     nodes: Arc<HashMap<String, NodeConfig>>,
     /// Insertion order of the configured nodes, for a stable `/api/nodes` list.
     node_order: Arc<Vec<String>>,
+    /// Per-instance form prefill (config `ui_defaults`), keyed by form-field
+    /// name and served verbatim at `/api/ui-defaults`.
+    ui_defaults: Arc<HashMap<String, String>>,
     http: reqwest::Client,
 }
 
 impl AppState {
-    pub fn new(nodes: Vec<NodeConfig>) -> anyhow::Result<Self> {
+    pub fn new(
+        nodes: Vec<NodeConfig>,
+        ui_defaults: HashMap<String, String>,
+    ) -> anyhow::Result<Self> {
         let node_order: Vec<String> = nodes.iter().map(|n| n.name.clone()).collect();
         let map: HashMap<String, NodeConfig> =
             nodes.into_iter().map(|n| (n.name.clone(), n)).collect();
@@ -49,6 +55,7 @@ impl AppState {
         Ok(AppState {
             nodes: Arc::new(map),
             node_order: Arc::new(node_order),
+            ui_defaults: Arc::new(ui_defaults),
             http,
         })
     }
@@ -60,6 +67,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/app.js", get(app_js))
         .route("/style.css", get(style_css))
         .route("/api/nodes", get(list_nodes))
+        .route("/api/ui-defaults", get(ui_defaults))
         .route("/api/nodes/:node/*path", get(proxy_get).post(proxy_post))
         .with_state(state)
 }
@@ -86,6 +94,12 @@ async fn list_nodes(State(state): State<AppState>) -> Response {
         .map(|name| serde_json::json!({ "name": name }))
         .collect();
     Json(body).into_response()
+}
+
+/// `GET /api/ui-defaults` — the instance's form-prefill map, verbatim from
+/// config. The UI applies each entry to the matching input by field name.
+async fn ui_defaults(State(state): State<AppState>) -> Response {
+    Json(state.ui_defaults.as_ref().clone()).into_response()
 }
 
 /// South-side paths the proxy will forward. Everything else is refused, so a

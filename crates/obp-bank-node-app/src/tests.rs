@@ -58,7 +58,7 @@ fn stub_node() -> Router {
 }
 
 fn app_with(nodes: Vec<NodeConfig>) -> Router {
-    build_router(AppState::new(nodes).unwrap())
+    build_router(AppState::new(nodes, Default::default()).unwrap())
 }
 
 fn node(name: &str, base_url: &str) -> NodeConfig {
@@ -110,11 +110,38 @@ async fn api_nodes_lists_configured_nodes_in_order() {
 
 #[tokio::test]
 async fn duplicate_node_names_are_refused() {
-    assert!(AppState::new(vec![
-        node("same", "http://127.0.0.1:1"),
-        node("same", "http://127.0.0.1:2"),
-    ])
+    assert!(AppState::new(
+        vec![
+            node("same", "http://127.0.0.1:1"),
+            node("same", "http://127.0.0.1:2"),
+        ],
+        Default::default()
+    )
     .is_err());
+}
+
+#[tokio::test]
+async fn ui_defaults_are_served_verbatim() {
+    let defaults = std::collections::HashMap::from([
+        ("other_bank".to_string(), "rt.bank.b".to_string()),
+        ("other_bank_id".to_string(), "rt.bank.b".to_string()),
+    ]);
+    let app =
+        build_router(AppState::new(vec![node("node-a", "http://127.0.0.1:1")], defaults).unwrap());
+    let resp = app.oneshot(get_req("/api/ui-defaults")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+    assert_eq!(v["other_bank"], "rt.bank.b");
+    assert_eq!(v["other_bank_id"], "rt.bank.b");
+}
+
+#[tokio::test]
+async fn ui_defaults_default_to_an_empty_object() {
+    let app = app_with(vec![node("node-a", "http://127.0.0.1:1")]);
+    let resp = app.oneshot(get_req("/api/ui-defaults")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+    assert_eq!(v, serde_json::json!({}));
 }
 
 #[tokio::test]

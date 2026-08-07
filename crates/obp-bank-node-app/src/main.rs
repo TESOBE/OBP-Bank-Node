@@ -26,6 +26,13 @@ pub struct Config {
     /// The Bank Nodes this app fronts. Names appear in the UI and on the
     /// proxy URL (`/api/nodes/{name}/...`).
     pub nodes: Vec<NodeConfig>,
+    /// Per-instance form prefill, keyed by form-field name (e.g.
+    /// `other_bank: rt.bank.b`, `other_bank_id: rt.bank.b`). Served verbatim
+    /// at `GET /api/ui-defaults`; the UI applies each entry to the matching
+    /// Send/Settle input at load. Purely cosmetic — validation still happens
+    /// at the node.
+    #[serde(default)]
+    pub ui_defaults: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +70,7 @@ impl Default for Config {
                     bearer_token: None,
                 },
             ],
+            ui_defaults: std::collections::HashMap::new(),
         }
     }
 }
@@ -96,7 +104,10 @@ async fn main() -> anyhow::Result<()> {
         "OBP Bank Node App starting"
     );
 
-    let app = proxy::build_router(proxy::AppState::new(config.nodes.clone())?);
+    let app = proxy::build_router(proxy::AppState::new(
+        config.nodes.clone(),
+        config.ui_defaults.clone(),
+    )?);
 
     let addr: std::net::SocketAddr = config
         .server

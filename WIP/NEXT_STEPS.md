@@ -3,6 +3,59 @@
 State of the project as of the pause point, so we can resume without re-litigating
 decisions.
 
+## 2026-08-07 (shutdown) — UI polish; where things stand
+
+Final additions after the evening block below, all verified before shutdown:
+
+- **`ui_defaults`** — optional app-config map (form prefill keyed by form
+  field name), served at `GET /api/ui-defaults`, applied by the UI at load.
+  `dev/app-a.yaml` prefills bank B as beneficiary and vice versa — each UI
+  instance now points at the *other* bank out of the box, incl. the Settle
+  form's `other_bank_id`.
+- **Scheme·address pairs grouped** (Simon: they only make sense together):
+  beneficiary bank / beneficiary account / originator account routing each
+  render as one visual unit (narrow scheme box + wide address box, own
+  row). Originator scheme is now an editable field (was hardcoded `IBAN`
+  in the JS).
+- **App launcher hints**: `start_app_a/b.sh` print the demo beneficiary
+  (bank + account + scheme) before starting — out-of-band knowledge, as a
+  real sender would have it. Decided with Simon: the app must NOT
+  enumerate the other bank's accounts (bank-client boundary). The
+  structural future mechanism for recipient help is OBP-API's
+  payee-lookup (confirmation-of-payee,
+  `POST /banks/../accounts/../VIEW_ID/payees/lookup`) proxied through the
+  node — verification of a known address, never enumeration. Not built.
+- **159 workspace tests pass** (node 104 + app 12 + blockchain 43).
+
+**State of the trees:** OBP-API committed by Simon (`7154d070`, jar
+rebuilt post-rename). This repo (Bank Node): ALL of today's work is
+uncommitted working-tree edits + the new `crates/obp-bank-node-app` and
+`dev/` (renamed from `WIP/roundtrip/`) — for Simon to review.
+`commands/_helpers/open_dev_env` (outside this repo) also modified: four
+new terminals (nodes A/B + UIs A/B) calling `./dev/start_*.sh`.
+
+**Resume checklist:**
+
+1. `open_dev_env` (or the `dev/start_*.sh` scripts individually) brings
+   the stack up. Nodes need: OBP-API :8080, RabbitMQ vhosts, Ogmios :1337
+   (node A), `cbs_stub.py` :9009 (node B), fresh `dev/env.sh` tokens.
+2. **Re-run `dev/setup_obp.sh` BEFORE sending payments** — it now
+   registers the `OBP`/`IBAN`/`BIC` routing schemes (needs the rebuilt
+   OBP-API jar running). Caution: with OBP-API up but the schemes not yet
+   registered, the node's registry loads the TZ.* seeds and validation
+   goes live — demo payments (scheme `OBP`) would then be rejected with
+   `OBP-BANK-NODE-ROUTING-002` until setup runs (+ up to one 300 s
+   refresh, or restart the node). Fail-open only applies while OBP-API is
+   unreachable entirely.
+3. **Exercise the full round trip through the UIs** (:8091 / :8092) —
+   the UI has only been smoke-tested against a mock node, never against
+   the live stack. This is the main untested surface.
+4. Then, in whatever order makes sense: the one-command bring-up +
+   health-check script (`APP.md` caveat), payee-lookup proxy (above),
+   routing-scheme category enforcement (needs OBP-API-side decision),
+   and the standing items — KES FX (API3), key custody, A2 delivery
+   modes, per-vhost TLS.
+
 ## 2026-08-07 (evening) — dev env restructure; routing-scheme validation
 
 - **`WIP/roundtrip/` → `dev/`** (repo root; Simon: past experimentation).

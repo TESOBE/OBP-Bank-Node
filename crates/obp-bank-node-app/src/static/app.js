@@ -229,7 +229,10 @@ function sendPayload(form) {
     originator: {
       name: f.get("originator_name"),
       address: f.get("originator_address"),
-      account_routing: { scheme: "IBAN", address: f.get("originator_account") },
+      account_routing: {
+        scheme: f.get("originator_account_scheme"),
+        address: f.get("originator_account"),
+      },
     },
     charge_policy: "SHARED",
   };
@@ -270,6 +273,19 @@ function fillNodeSelects() {
   }
 }
 
+// Apply the instance's configured prefill (/api/ui-defaults) to any Send or
+// Settle input whose name matches a key. Config wins over the HTML defaults.
+async function applyUiDefaults() {
+  const r = await getJson("/api/ui-defaults");
+  if (!r.ok || typeof r.body !== "object" || r.body === null) return;
+  for (const [name, value] of Object.entries(r.body)) {
+    for (const form of [$("#send-form"), $("#settle-form")]) {
+      const field = form.elements.namedItem(name);
+      if (field && field.tagName === "INPUT") field.value = value;
+    }
+  }
+}
+
 async function refresh() {
   await fetchTrs();
   renderTrTables();
@@ -281,6 +297,7 @@ async function boot() {
   const r = await getJson("/api/nodes");
   NODES = r.ok && Array.isArray(r.body) ? r.body : [];
   fillNodeSelects();
+  await applyUiDefaults();
   $("#send-form").addEventListener("submit", onSend);
   $("#settle-form").addEventListener("submit", onSettle);
   document.addEventListener("click", (e) => {

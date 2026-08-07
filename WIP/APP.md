@@ -88,7 +88,14 @@ overridable via `OBP_BANK_NODE_APP_CONFIG` — mirrors the node's
 `OBP_BN_APP_SERVER__BIND=0.0.0.0:8091` — note this machine's nginx
 already occupies the default 8090). Defaults: bind `0.0.0.0:8090`, nodes
 `node-a`→:8088, `node-b`→:8089. Run: `cargo run -p obp-bank-node-app`.
-Dev-env wiring (2026-08-07, same day): `dev/` gained
+Later the same day: config gained an optional `ui_defaults` map (form
+prefill keyed by field name, served at `GET /api/ui-defaults`; set per
+instance in `dev/app-a/b.yaml` so each UI prefills its own demo
+beneficiary — out-of-band knowledge, the app never enumerates the other
+bank's accounts), the Send form takes the full end-recipient routing
+(beneficiary name + bank/account/originator scheme·address pairs, each
+pair grouped as one visual unit), and the app launchers print the demo
+beneficiary hint. Dev-env wiring (2026-08-07, same day): `dev/` gained
 `app-a.yaml`/`app-b.yaml` (per-node UI instances on :8091/:8092, each
 **locked to its own node** — the bank-client view, see the revised
 storyline step 3) plus `start_node_a.sh` / `start_node_b.sh` /

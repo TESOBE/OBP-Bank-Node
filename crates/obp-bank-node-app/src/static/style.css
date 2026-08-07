@@ -69,6 +69,13 @@ code { background: #eef0f3; padding: 0 .25em; border-radius: 3px; font-size: .85
 
 label { display: flex; flex-direction: column; font-size: .8rem; color: var(--dim); gap: .2rem; }
 
+/* A routing scheme + address pair — one visual unit on its own row: the
+   narrow scheme box qualifies the wide address box next to it. */
+label.pair { grid-column: 1 / -1; }
+.pair-inputs { display: flex; gap: .4rem; }
+.pair-inputs .scheme { flex: 0 0 7rem; }
+.pair-inputs input:not(.scheme) { flex: 1; }
+
 input, select {
   font: inherit;
   padding: .35rem .5rem;

@@ -10,3 +10,12 @@ server:
 nodes:
   - name: "node-b"
     base_url: "http://localhost:8089"
+
+# Form prefill for this instance, keyed by form-field name (Send + Settle).
+# Out-of-band knowledge of the demo topology — the app never enumerates the
+# other bank's accounts.
+ui_defaults:
+  beneficiary_name: "Beneficiary at rt.bank.a"
+  other_bank: "rt.bank.a"
+  other_account: "settlement-a"
+  other_bank_id: "rt.bank.a"

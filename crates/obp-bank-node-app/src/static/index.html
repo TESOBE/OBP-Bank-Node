@@ -33,17 +33,17 @@
           <label>Beneficiary name
             <input name="beneficiary_name" value="Beneficiary at rt.bank.b" required>
           </label>
-          <label>Beneficiary bank routing scheme
-            <input name="other_bank_scheme" value="OBP" required>
+          <label class="pair">Beneficiary bank routing (scheme · address)
+            <span class="pair-inputs">
+              <input name="other_bank_scheme" value="OBP" class="scheme" required>
+              <input name="other_bank" value="rt.bank.b" required>
+            </span>
           </label>
-          <label>Beneficiary bank routing address
-            <input name="other_bank" value="rt.bank.b" required>
-          </label>
-          <label>Beneficiary account routing scheme
-            <input name="other_account_scheme" value="OBP" required>
-          </label>
-          <label>Beneficiary account routing address
-            <input name="other_account" value="settlement-b" required>
+          <label class="pair">Beneficiary account routing (scheme · address)
+            <span class="pair-inputs">
+              <input name="other_account_scheme" value="OBP" class="scheme" required>
+              <input name="other_account" value="settlement-b" required>
+            </span>
           </label>
           <label>Originator name
             <input name="originator_name" value="Alice Sender" required>
@@ -51,8 +51,11 @@
           <label>Originator address
             <input name="originator_address" value="1 Sender Street, Nairobi" required>
           </label>
-          <label>Originator account (IBAN)
-            <input name="originator_account" value="KE93 0000 1234 5678 9012 34" required>
+          <label class="pair">Originator account routing (scheme · address)
+            <span class="pair-inputs">
+              <input name="originator_account_scheme" value="IBAN" class="scheme" required>
+              <input name="originator_account" value="KE93 0000 1234 5678 9012 34" required>
+            </span>
           </label>
         </div>
         <button type="submit">Send payment</button>
