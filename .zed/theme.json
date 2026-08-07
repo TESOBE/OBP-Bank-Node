@@ -1,0 +1,28 @@
+{
+  "name": "OBP-Bank-Node-Emerald",
+  "author": "Portal/Opey Development Setup",
+  "themes": [
+    {
+      "name": "OBP-Bank-Node-Emerald",
+      "appearance": "dark",
+      "style": {
+        "background": "#1e1e1e",
+        "foreground": "#d4d4d4",
+        "cursor": "#10B981",
+        "selection": "#10B98133",
+        "selected_line_background": "#10B98111",
+        "line_number": "#858585",
+        "active_line_number": "#10B981",
+        "find_highlight": "#10B981",
+        "border": "#10B98166",
+        "panel_background": "#252526",
+        "panel_focused_border": "#10B981",
+        "tab_bar_background": "#2d2d30",
+        "tab_active_background": "#10B98188",
+        "status_bar_background": "#10B98166",
+        "title_bar_background": "#10B98144",
+        "toolbar_background": "#37373d"
+      }
+    }
+  ]
+}

@@ -32,6 +32,9 @@ axum.workspace = true
 tower-http.workspace = true
 reqwest.workspace = true
 
+# routing-scheme address validation
+regex.workspace = true
+
 # AMQP / RabbitMQ (Interface C)
 lapin.workspace = true
 tokio-executor-trait.workspace = true

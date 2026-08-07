@@ -5,10 +5,10 @@
 # env.sh (setup_obp.sh writes the DirectLogin tokens).
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO="$(cd "$DIR/../.." && pwd)"
+REPO="$(cd "$DIR/.." && pwd)"
 
 source "$DIR/env.sh"
 cd "$REPO"
-exec env OBP_BANK_NODE_CONFIG=WIP/roundtrip/node-a.yaml \
+exec env OBP_BANK_NODE_CONFIG=dev/node-a.yaml \
     OBP_BN_OBP_API__DIRECT_LOGIN_TOKEN="$RT_NODE_A_TOKEN" \
     cargo run -p obp-bank-node

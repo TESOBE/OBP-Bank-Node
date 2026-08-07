@@ -79,7 +79,9 @@ impl EvidenceStore {
                 })?;
             }
         }
-        let options = SqliteConnectOptions::new().filename(path).create_if_missing(true);
+        let options = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true);
         let pool = SqlitePoolOptions::new()
             .max_connections(4)
             .connect_with(options)
@@ -126,7 +128,11 @@ impl EvidenceStore {
         // Migration for databases created before the CBS-result columns
         // existed. SQLite has no `ADD COLUMN IF NOT EXISTS`; a duplicate-column
         // error means the column is already there, which is fine.
-        for col in ["cbs_status TEXT", "cbs_reference TEXT", "cbs_recorded_at TEXT"] {
+        for col in [
+            "cbs_status TEXT",
+            "cbs_reference TEXT",
+            "cbs_recorded_at TEXT",
+        ] {
             if let Err(e) = sqlx::query(&format!("ALTER TABLE evidence ADD COLUMN {col}"))
                 .execute(pool)
                 .await
@@ -280,14 +286,20 @@ mod tests {
         let rec = store.get("tr-cbs").await.unwrap().unwrap();
         assert!(rec.cbs_status.is_none(), "no delivery attempted yet");
 
-        store.record_cbs_result("tr-cbs", "DELIVERED", Some("CBS-REF-9")).await.unwrap();
+        store
+            .record_cbs_result("tr-cbs", "DELIVERED", Some("CBS-REF-9"))
+            .await
+            .unwrap();
         let rec = store.get("tr-cbs").await.unwrap().unwrap();
         assert_eq!(rec.cbs_status.as_deref(), Some("DELIVERED"));
         assert_eq!(rec.cbs_reference.as_deref(), Some("CBS-REF-9"));
         assert!(rec.cbs_recorded_at.is_some());
 
         // A failed delivery overwrites (latest attempt wins), reference absent.
-        store.record_cbs_result("tr-cbs", "FAILED", None).await.unwrap();
+        store
+            .record_cbs_result("tr-cbs", "FAILED", None)
+            .await
+            .unwrap();
         let rec = store.get("tr-cbs").await.unwrap().unwrap();
         assert_eq!(rec.cbs_status.as_deref(), Some("FAILED"));
         assert!(rec.cbs_reference.is_none());
@@ -329,9 +341,18 @@ mod tests {
         store.upsert(sample("tr-old", true)).await.unwrap();
         let rec = store.get("tr-old").await.unwrap().unwrap();
         assert!(rec.cbs_status.is_none());
-        store.record_cbs_result("tr-old", "DELIVERED", Some("R1")).await.unwrap();
+        store
+            .record_cbs_result("tr-old", "DELIVERED", Some("R1"))
+            .await
+            .unwrap();
         assert_eq!(
-            store.get("tr-old").await.unwrap().unwrap().cbs_status.as_deref(),
+            store
+                .get("tr-old")
+                .await
+                .unwrap()
+                .unwrap()
+                .cbs_status
+                .as_deref(),
             Some("DELIVERED")
         );
     }

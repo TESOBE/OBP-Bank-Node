@@ -42,7 +42,11 @@ pub struct CbsClient {
 }
 
 impl CbsClient {
-    pub fn new(url: impl Into<String>, bearer: Option<String>, timeout_secs: u64) -> Result<Self, CbsError> {
+    pub fn new(
+        url: impl Into<String>,
+        bearer: Option<String>,
+        timeout_secs: u64,
+    ) -> Result<Self, CbsError> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_secs.max(1)))
             .build()
@@ -67,7 +71,10 @@ impl CbsClient {
             req = req.header("Authorization", format!("Bearer {secret}"));
         }
 
-        let resp = req.send().await.map_err(|e| CbsError::Transport(e.to_string()))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| CbsError::Transport(e.to_string()))?;
         let status = resp.status();
         let text = resp
             .text()
@@ -115,12 +122,17 @@ mod tests {
     async fn accepted_credit_returns_cbs_reference() {
         let router = Router::new().route(
             "/credit",
-            post(|| async { Json(serde_json::json!({ "status": "ACCEPTED", "cbs_reference": "CBS-TXN-1" })) }),
+            post(|| async {
+                Json(serde_json::json!({ "status": "ACCEPTED", "cbs_reference": "CBS-TXN-1" }))
+            }),
         );
         let base = spawn(router).await;
         let client = CbsClient::new(format!("{base}/credit"), Some("secret".into()), 5).unwrap();
 
-        let ack = client.deliver_credit(r#"{"value":{"amount":"10"}}"#).await.unwrap();
+        let ack = client
+            .deliver_credit(r#"{"value":{"amount":"10"}}"#)
+            .await
+            .unwrap();
         assert_eq!(ack.status.as_deref(), Some("ACCEPTED"));
         assert_eq!(ack.cbs_reference.as_deref(), Some("CBS-TXN-1"));
     }

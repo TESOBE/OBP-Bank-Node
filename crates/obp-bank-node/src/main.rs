@@ -13,6 +13,7 @@ mod interface_c;
 mod obp_client;
 mod outbox;
 mod rest;
+mod routing;
 mod settlement_store;
 
 use std::net::SocketAddr;
@@ -242,6 +243,15 @@ struct ObpApiConfig {
     /// Alternative to client-credentials: a pre-obtained DirectLogin token.
     #[serde(default)]
     direct_login_token: String,
+    /// How often to refresh the cached routing-scheme registry used for A1.1
+    /// beneficiary-routing validation. `0` disables the refresher entirely —
+    /// the registry then never loads and validation stays off (fail-open).
+    #[serde(default = "default_routing_refresh_secs")]
+    routing_refresh_secs: u64,
+}
+
+fn default_routing_refresh_secs() -> u64 {
+    300
 }
 
 impl Default for ObpApiConfig {
@@ -253,6 +263,7 @@ impl Default for ObpApiConfig {
             client_secret: String::new(),
             scope: None,
             direct_login_token: String::new(),
+            routing_refresh_secs: default_routing_refresh_secs(),
         }
     }
 }
@@ -345,8 +356,11 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("failed to open outbox at {}", config.outbox.path.display()))?;
 
     let obp = Arc::new(
-        ObpClient::new(config.obp_api.base_url.clone(), build_obp_auth(&config.obp_api))
-            .context("failed to build OBP API client")?,
+        ObpClient::new(
+            config.obp_api.base_url.clone(),
+            build_obp_auth(&config.obp_api),
+        )
+        .context("failed to build OBP API client")?,
     );
 
     // The dispatcher owns the backend and drains the outbox asynchronously.
@@ -362,16 +376,22 @@ async fn main() -> anyhow::Result<()> {
     // The settlement and evidence stores are opened unconditionally — the
     // south-side read API serves them even when no settlement rail or
     // Interface C consumer is running (e.g. mock mode, consumer off).
-    let settlement_store =
-        SettlementStore::connect(&config.settlement.store_path).await.with_context(|| {
+    let settlement_store = SettlementStore::connect(&config.settlement.store_path)
+        .await
+        .with_context(|| {
             format!(
                 "failed to open settlement store at {}",
                 config.settlement.store_path.display()
             )
         })?;
-    let evidence = EvidenceStore::connect(&config.evidence.path).await.with_context(|| {
-        format!("failed to open evidence store at {}", config.evidence.path.display())
-    })?;
+    let evidence = EvidenceStore::connect(&config.evidence.path)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to open evidence store at {}",
+                config.evidence.path.display()
+            )
+        })?;
 
     // Settlement finality: whenever a settlement rail exists, start the
     // finality watcher — even with the Interface C consumer off, previously
@@ -433,11 +453,25 @@ async fn main() -> anyhow::Result<()> {
         info!("rabbitmq.enabled=false — Interface C consumer not started");
     }
 
+    // Routing-scheme registry: cached from OBP-API for synchronous A1.1
+    // beneficiary-routing validation. Fail-open until first load.
+    let routing = routing::RoutingRegistry::default();
+    if config.obp_api.routing_refresh_secs > 0 {
+        routing::spawn_refresher(
+            routing.clone(),
+            Arc::clone(&obp),
+            config.obp_api.routing_refresh_secs,
+        );
+    } else {
+        info!("obp_api.routing_refresh_secs=0 — routing-scheme validation disabled");
+    }
+
     let state = BankNodeState {
         outbox,
         settlements: settlement_store,
         evidence,
         obp,
+        routing,
         blockchain_label,
         bank_id: config.bank.bank_id.clone(),
         account_id: config.bank.account_id.clone(),
@@ -455,7 +489,9 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("failed to bind {addr}"))?;
     info!(%addr, "listening");
-    axum::serve(listener, app).await.context("axum::serve failed")?;
+    axum::serve(listener, app)
+        .await
+        .context("axum::serve failed")?;
     Ok(())
 }
 
@@ -533,7 +569,10 @@ fn build_obp_auth(cfg: &ObpApiConfig) -> ObpAuth {
 /// Build the notary backend and, when on Cardano, the matching ADA settlement
 /// backend (sharing the same wallet + Ogmios + submission lock). Mock mode has
 /// no settlement rail, so its settlement backend is `None`.
-type Backends = (Arc<dyn BlockchainBackend>, Option<Arc<dyn SettlementBackend>>);
+type Backends = (
+    Arc<dyn BlockchainBackend>,
+    Option<Arc<dyn SettlementBackend>>,
+);
 
 async fn build_backend(config: &Config) -> anyhow::Result<Backends> {
     match config.blockchain.kind {
@@ -559,7 +598,9 @@ async fn build_backend(config: &Config) -> anyhow::Result<Backends> {
                         rate = config.settlement.ada_rate_minor_per_whole_ada,
                         "FX source: STUB fixed rate — tests/offline development only"
                     );
-                    Arc::new(StubFxSource::new(config.settlement.ada_rate_minor_per_whole_ada.into()))
+                    Arc::new(StubFxSource::new(
+                        config.settlement.ada_rate_minor_per_whole_ada.into(),
+                    ))
                 }
             };
             let settlement: Arc<dyn SettlementBackend> =

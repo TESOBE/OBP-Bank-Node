@@ -108,10 +108,13 @@ impl FxSource for CoinGeckoFxSource {
             .ok_or_else(|| {
                 BlockchainError::Rejected(format!("fx: no {asset}/{currency} quote in response"))
             })?;
-        let minor_per_whole_asset = price_to_minor(price, 2)
-            .map_err(|e| BlockchainError::Rejected(format!("fx: {e}")))?;
+        let minor_per_whole_asset =
+            price_to_minor(price, 2).map_err(|e| BlockchainError::Rejected(format!("fx: {e}")))?;
 
-        info!(asset, currency, price, minor_per_whole_asset, "settle-time FX quote");
+        info!(
+            asset,
+            currency, price, minor_per_whole_asset, "settle-time FX quote"
+        );
         Ok(FxQuote {
             asset: asset.to_ascii_uppercase(),
             currency: currency.to_ascii_uppercase(),
@@ -184,15 +187,25 @@ mod tests {
 
     #[tokio::test]
     async fn http_error_is_rejected() {
-        let base = stub(serde_json::json!({}), axum::http::StatusCode::TOO_MANY_REQUESTS).await;
+        let base = stub(
+            serde_json::json!({}),
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+        )
+        .await;
         let fx = CoinGeckoFxSource::new(base, 5).unwrap();
-        assert!(matches!(fx.quote("ADA", "KES").await.unwrap_err(), BlockchainError::Rejected(_)));
+        assert!(matches!(
+            fx.quote("ADA", "KES").await.unwrap_err(),
+            BlockchainError::Rejected(_)
+        ));
     }
 
     #[tokio::test]
     async fn unreachable_endpoint_is_rejected() {
         let fx = CoinGeckoFxSource::new("http://127.0.0.1:1", 2).unwrap();
-        assert!(matches!(fx.quote("ADA", "KES").await.unwrap_err(), BlockchainError::Rejected(_)));
+        assert!(matches!(
+            fx.quote("ADA", "KES").await.unwrap_err(),
+            BlockchainError::Rejected(_)
+        ));
     }
 
     #[tokio::test]

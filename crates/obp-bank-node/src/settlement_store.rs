@@ -100,7 +100,9 @@ impl SettlementStore {
                 })?;
             }
         }
-        let options = SqliteConnectOptions::new().filename(path).create_if_missing(true);
+        let options = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true);
         let pool = SqlitePoolOptions::new()
             .max_connections(4)
             .connect_with(options)
@@ -340,7 +342,10 @@ mod tests {
     #[tokio::test]
     async fn first_claim_wins_second_sees_existing() {
         let s = SettlementStore::connect_in_memory().await.unwrap();
-        assert!(matches!(s.claim(claim_fields("k1")).await.unwrap(), Claim::Claimed));
+        assert!(matches!(
+            s.claim(claim_fields("k1")).await.unwrap(),
+            Claim::Claimed
+        ));
         match s.claim(claim_fields("k1")).await.unwrap() {
             Claim::Existing(row) => {
                 assert_eq!(row.status, status::SETTLING);
@@ -354,7 +359,9 @@ mod tests {
     async fn full_lifecycle_settling_submitted_final() {
         let s = SettlementStore::connect_in_memory().await.unwrap();
         s.claim(claim_fields("k1")).await.unwrap();
-        s.mark_submitted("k1", "tx-1", "cardano", "ADA", "10000000").await.unwrap();
+        s.mark_submitted("k1", "tx-1", "cardano", "ADA", "10000000")
+            .await
+            .unwrap();
         let row = s.get("k1").await.unwrap().unwrap();
         assert_eq!(row.status, status::SUBMITTED);
         assert_eq!(row.tx_id.as_deref(), Some("tx-1"));
@@ -388,7 +395,9 @@ mod tests {
         assert_eq!(row.status, status::SETTLING, "retryable error reopens");
         assert!(row.error_reason.is_none());
 
-        s.mark_error("k1", "transport lost mid-submit", false).await.unwrap();
+        s.mark_error("k1", "transport lost mid-submit", false)
+            .await
+            .unwrap();
         s.reclaim_for_retry("k1").await.unwrap();
         let row = s.get("k1").await.unwrap().unwrap();
         assert_eq!(row.status, status::ERROR, "ambiguous error must stick");
@@ -399,8 +408,14 @@ mod tests {
         let s = SettlementStore::connect_in_memory().await.unwrap();
         s.claim(claim_fields("key-1")).await.unwrap(); // settlement_id = "settle-1"
 
-        assert_eq!(s.find("key-1").await.unwrap().unwrap().idempotency_key, "key-1");
-        assert_eq!(s.find("settle-1").await.unwrap().unwrap().idempotency_key, "key-1");
+        assert_eq!(
+            s.find("key-1").await.unwrap().unwrap().idempotency_key,
+            "key-1"
+        );
+        assert_eq!(
+            s.find("settle-1").await.unwrap().unwrap().idempotency_key,
+            "key-1"
+        );
         assert!(s.find("nope").await.unwrap().is_none());
     }
 
@@ -421,8 +436,12 @@ mod tests {
         for k in ["a", "b", "c"] {
             s.claim(claim_fields(k)).await.unwrap();
         }
-        s.mark_submitted("a", "tx-a", "cardano", "ADA", "1").await.unwrap();
-        s.mark_submitted("b", "tx-b", "cardano", "ADA", "1").await.unwrap();
+        s.mark_submitted("a", "tx-a", "cardano", "ADA", "1")
+            .await
+            .unwrap();
+        s.mark_submitted("b", "tx-b", "cardano", "ADA", "1")
+            .await
+            .unwrap();
         s.mark_final("b", 20).await.unwrap();
         let work = s.list_submitted(10).await.unwrap();
         assert_eq!(work.len(), 1);

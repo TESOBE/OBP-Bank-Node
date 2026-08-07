@@ -10,7 +10,7 @@ the app; it is read-and-trigger only, outside the money path.
 
 Manual testing of Bank Node functionality, and a demonstrable walk-through of
 the Open Corridor round trip (the flow proven live 2026-07-31, see
-`roundtrip/STATUS.md`) without shell scripts and SQLite dumps.
+`dev/STATUS.md`) without shell scripts and SQLite dumps.
 
 ## Demo storyline the UI must carry
 
@@ -21,10 +21,14 @@ the Open Corridor round trip (the flow proven live 2026-07-31, see
    `INITIATED → SUBMITTED → PROMISE_WRITTEN → REPORTED`; show the promise tx
    hash with a Cardanoscan preprod link, and the salted-commitment story
    (on-chain metadata = hash only; cleartext + salt held by the banks).
-3. **Position** (both nodes): bilateral view assembled by the app —
-   node A's unsettled outbound rows vs node B's unsettled outbound rows,
-   with the net. (Pre-settlement, each node only knows its own outbound leg;
-   the app joins the two. OBP-API is not consulted.)
+3. **Position**: this bank's unsettled outbound exposure per corridor
+   (other bank × currency), read from its own node. (Revised 2026-08-07
+   with Simon: each app instance is **locked to one node**, reflecting what
+   a bank client deploying Open Corridor actually sees — pre-settlement a
+   bank only knows its own outbound legs; the authoritative bilateral net
+   is OBP-API's, surfaced through the settle/corridor view in step 4. The
+   earlier bilateral join across both nodes is dropped; on localhost the
+   two app instances side by side give the whole-corridor picture.)
 4. **Settle** (node A): button calls the node's new settle-request endpoint
    (below); watch the settlement row go `SETTLING → SUBMITTED → FINAL` with
    confirmation depth, Cardanoscan link for the ADA transfer.
@@ -72,7 +76,7 @@ not the app.
    Interactive error split: an OBP business rejection (403 missing role,
    404 unknown settlement, …) passes through with its original status and
    OBP code; transport trouble is a 502 `OBP-BANK-NODE-INTERFACE-B-001`.
-   `roundtrip/setup_obp.sh` now grants both node service users the
+   `dev/setup_obp.sh` now grants both node service users the
    bank-scoped `CanSettleOpenCorridor` at their own bank.
 
 ## Shape
@@ -84,11 +88,10 @@ overridable via `OBP_BANK_NODE_APP_CONFIG` — mirrors the node's
 `OBP_BN_APP_SERVER__BIND=0.0.0.0:8091` — note this machine's nginx
 already occupies the default 8090). Defaults: bind `0.0.0.0:8090`, nodes
 `node-a`→:8088, `node-b`→:8089. Run: `cargo run -p obp-bank-node-app`.
-Dev-env wiring (2026-08-07, same day): `roundtrip/` gained
-`app-a.yaml`/`app-b.yaml` (per-node UI instances on :8091/:8092, home
-node listed first = default in the send/settle selectors; the other node
-included so the bilateral position view works — production would list
-only the bank's own node) plus `start_node_a.sh` / `start_node_b.sh` /
+Dev-env wiring (2026-08-07, same day): `dev/` gained
+`app-a.yaml`/`app-b.yaml` (per-node UI instances on :8091/:8092, each
+**locked to its own node** — the bank-client view, see the revised
+storyline step 3) plus `start_node_a.sh` / `start_node_b.sh` /
 `start_app_a.sh` / `start_app_b.sh`, and
 `commands/_helpers/open_dev_env` now opens four themed terminals running
 them (nodes A/B + both UIs). The proxy
@@ -109,7 +112,7 @@ stored A1.1 payload — the position table nets those client-side.
   unauthenticated, but the app must not bake in the assumption), and no
   CORS changes are needed on the node.
 - **Config**: list of nodes (`name`, `base_url`, credentials ref). Demo
-  config = node A + node B from `roundtrip/`.
+  config = node A + node B from `dev/`.
 - **UI**: static HTML/JS, polling the app's JSON endpoints. No framework
   build step unless it earns it.
 - The app displays; the nodes decide. Any state transition shown must be

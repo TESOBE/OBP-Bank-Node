@@ -223,10 +223,12 @@ impl OutboxStore {
     }
 
     pub async fn get(&self, id: &str) -> Result<Option<OutboxRecord>, OutboxError> {
-        let rec = sqlx::query_as::<_, OutboxRecord>("SELECT * FROM outbox WHERE transaction_request_id = ?")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?;
+        let rec = sqlx::query_as::<_, OutboxRecord>(
+            "SELECT * FROM outbox WHERE transaction_request_id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(rec)
     }
 
@@ -375,12 +377,14 @@ impl OutboxStore {
 
     async fn set_status(&self, id: &str, new_status: &str) -> Result<(), OutboxError> {
         let now = rfc3339(Utc::now());
-        sqlx::query("UPDATE outbox SET status = ?, updated_at = ? WHERE transaction_request_id = ?")
-            .bind(new_status)
-            .bind(&now)
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE outbox SET status = ?, updated_at = ? WHERE transaction_request_id = ?",
+        )
+        .bind(new_status)
+        .bind(&now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 }
@@ -408,7 +412,10 @@ mod tests {
     #[tokio::test]
     async fn insert_then_get_roundtrips_at_initiated() {
         let store = OutboxStore::connect_in_memory().await.unwrap();
-        store.insert(entry("tr-1", r#"{"amount":"10"}"#)).await.unwrap();
+        store
+            .insert(entry("tr-1", r#"{"amount":"10"}"#))
+            .await
+            .unwrap();
 
         let rec = store.get("tr-1").await.unwrap().expect("row present");
         assert_eq!(rec.status, status::INITIATED);
@@ -439,12 +446,18 @@ mod tests {
         let store = OutboxStore::connect_in_memory().await.unwrap();
         store.insert(entry("tr-2", "{}")).await.unwrap();
 
-        store.mark_submitted("tr-2", Some("obp-tr-42")).await.unwrap();
+        store
+            .mark_submitted("tr-2", Some("obp-tr-42"))
+            .await
+            .unwrap();
         let rec = store.get("tr-2").await.unwrap().unwrap();
         assert_eq!(rec.status, status::SUBMITTED);
         assert_eq!(rec.obp_transaction_request_id.as_deref(), Some("obp-tr-42"));
 
-        store.mark_promise_written("tr-2", "txhash-abc", "cardano").await.unwrap();
+        store
+            .mark_promise_written("tr-2", "txhash-abc", "cardano")
+            .await
+            .unwrap();
         let rec = store.get("tr-2").await.unwrap().unwrap();
         assert_eq!(rec.status, status::PROMISE_WRITTEN);
         assert_eq!(rec.promise_tx_id.as_deref(), Some("txhash-abc"));
@@ -470,11 +483,17 @@ mod tests {
     async fn mark_exception_records_reason() {
         let store = OutboxStore::connect_in_memory().await.unwrap();
         store.insert(entry("tr-3", "{}")).await.unwrap();
-        store.mark_exception("tr-3", "unroutable destination").await.unwrap();
+        store
+            .mark_exception("tr-3", "unroutable destination")
+            .await
+            .unwrap();
 
         let rec = store.get("tr-3").await.unwrap().unwrap();
         assert_eq!(rec.status, status::EXCEPTION);
-        assert_eq!(rec.exception_reason.as_deref(), Some("unroutable destination"));
+        assert_eq!(
+            rec.exception_reason.as_deref(),
+            Some("unroutable destination")
+        );
     }
 
     #[tokio::test]
@@ -496,9 +515,15 @@ mod tests {
         let store = OutboxStore::connect_in_memory().await.unwrap();
         store.insert(entry("due-1", "{}")).await.unwrap();
         store.insert(entry("unreported-1", "{}")).await.unwrap();
-        store.mark_promise_written("unreported-1", "tx", "cardano").await.unwrap();
+        store
+            .mark_promise_written("unreported-1", "tx", "cardano")
+            .await
+            .unwrap();
         store.insert(entry("done-1", "{}")).await.unwrap();
-        store.mark_promise_written("done-1", "tx", "cardano").await.unwrap();
+        store
+            .mark_promise_written("done-1", "tx", "cardano")
+            .await
+            .unwrap();
         store.mark_reported("done-1").await.unwrap();
         store.insert(entry("failed-1", "{}")).await.unwrap();
         store.mark_exception("failed-1", "nope").await.unwrap();
@@ -508,7 +533,10 @@ mod tests {
         // REPORTED and EXCEPTION are terminal.
         let cutoff = Utc::now() + chrono::Duration::hours(1);
         let due = store.claim_due(cutoff, 10).await.unwrap();
-        let ids: Vec<_> = due.iter().map(|r| r.transaction_request_id.as_str()).collect();
+        let ids: Vec<_> = due
+            .iter()
+            .map(|r| r.transaction_request_id.as_str())
+            .collect();
         assert_eq!(ids, vec!["due-1", "unreported-1"], "non-terminal rows only");
     }
 
@@ -522,20 +550,33 @@ mod tests {
 
         // The covered list carries OBP TR ids — including the other bank's,
         // which match no local row and are silently skipped.
-        let covered = vec!["obp-1".to_string(), "obp-3".to_string(), "obp-theirs".to_string()];
+        let covered = vec![
+            "obp-1".to_string(),
+            "obp-3".to_string(),
+            "obp-theirs".to_string(),
+        ];
         let stamped = store.mark_settled(&covered, "settle-1").await.unwrap();
         assert_eq!(stamped, 2);
 
         let a = store.get("tr-a").await.unwrap().unwrap();
         assert_eq!(a.settlement_id.as_deref(), Some("settle-1"));
         let settled_at_first = a.settled_at.clone().expect("settled_at set");
-        assert!(store.get("tr-b").await.unwrap().unwrap().settlement_id.is_none());
+        assert!(store
+            .get("tr-b")
+            .await
+            .unwrap()
+            .unwrap()
+            .settlement_id
+            .is_none());
 
         // Re-stamping (redelivered result / poll) is idempotent: no new rows,
         // original settled_at preserved.
         let again = store.mark_settled(&covered, "settle-1").await.unwrap();
         assert_eq!(again, 0);
-        assert_eq!(store.get("tr-a").await.unwrap().unwrap().settled_at, Some(settled_at_first));
+        assert_eq!(
+            store.get("tr-a").await.unwrap().unwrap().settled_at,
+            Some(settled_at_first)
+        );
 
         // Empty list is a no-op (and must not produce `IN ()` SQL).
         assert_eq!(store.mark_settled(&[], "settle-2").await.unwrap(), 0);
@@ -581,8 +622,17 @@ mod tests {
         // The settlement-linkage columns were added by the same migration.
         assert!(rec.settlement_id.is_none());
         assert!(rec.settled_at.is_none());
-        store.mark_submitted("tr-old", Some("obp-old")).await.unwrap();
-        assert_eq!(store.mark_settled(&["obp-old".into()], "s-1").await.unwrap(), 1);
+        store
+            .mark_submitted("tr-old", Some("obp-old"))
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .mark_settled(&["obp-old".into()], "s-1")
+                .await
+                .unwrap(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -594,6 +644,9 @@ mod tests {
         // Cutoff in the past: the just-attempted row is still backing off.
         let cutoff = Utc::now() - chrono::Duration::hours(1);
         let due = store.claim_due(cutoff, 10).await.unwrap();
-        assert!(due.is_empty(), "row attempted after the cutoff must not be due");
+        assert!(
+            due.is_empty(),
+            "row attempted after the cutoff must not be due"
+        );
     }
 }

@@ -38,6 +38,8 @@ async fn router_with_obp(obp_base_url: &str) -> (axum::Router, BankNodeState) {
         settlements: SettlementStore::connect_in_memory().await.unwrap(),
         evidence: EvidenceStore::connect_in_memory().await.unwrap(),
         obp: Arc::new(ObpClient::new(obp_base_url, ObpAuth::None).unwrap()),
+        // Unloaded — routing validation is fail-open unless a test loads it.
+        routing: crate::routing::RoutingRegistry::default(),
         blockchain_label: "mock",
         bank_id: "test.bank.id".into(),
         account_id: "test-account-id".into(),
@@ -55,7 +57,8 @@ async fn body_bytes(resp: axum::response::Response) -> Vec<u8> {
 
 #[tokio::test]
 async fn root_health_returns_200_with_blockchain_label() {
-    let resp = router().await
+    let resp = router()
+        .await
         .oneshot(
             Request::builder()
                 .method(Method::GET)
@@ -75,7 +78,8 @@ async fn root_health_returns_200_with_blockchain_label() {
 
 #[tokio::test]
 async fn versioned_health_endpoint_responds() {
-    let resp = router().await
+    let resp = router()
+        .await
         .oneshot(
             Request::builder()
                 .method(Method::GET)
@@ -105,7 +109,8 @@ async fn initiate_payment_returns_202_with_uuid_and_state_identity() {
             "account_routing": { "scheme": "IBAN", "address": "KE12KCBL0000009876543210" }
         }
     });
-    let resp = router().await
+    let resp = router()
+        .await
         .oneshot(
             Request::builder()
                 .method(Method::POST)
@@ -166,6 +171,89 @@ async fn post_initiate(payload: serde_json::Value) -> axum::response::Response {
         )
         .await
         .unwrap()
+}
+
+/// A router whose routing registry is loaded with the demo schemes — routing
+/// validation is live (unlike the default fail-open unloaded registry).
+async fn router_with_routing() -> axum::Router {
+    let (app, state) = router_with_state().await;
+    state.routing.load(vec![
+        crate::obp_client::ObpRoutingScheme {
+            scheme: "OBP".into(),
+            status: "ACTIVE".into(),
+            address_pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$".into(),
+            example_address: "rt.bank.b".into(),
+        },
+        crate::obp_client::ObpRoutingScheme {
+            scheme: "BIC".into(),
+            status: "ACTIVE".into(),
+            address_pattern: "^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$".into(),
+            example_address: "NWBKGB2LXXX".into(),
+        },
+        crate::obp_client::ObpRoutingScheme {
+            scheme: "IBAN".into(),
+            status: "ACTIVE".into(),
+            address_pattern: "^[A-Z]{2}[0-9]{2}[A-Z0-9]{1,30}$".into(),
+            example_address: "GB29NWBK60161331926819".into(),
+        },
+    ]);
+    app
+}
+
+async fn post_initiate_to(
+    app: axum::Router,
+    payload: serde_json::Value,
+) -> axum::response::Response {
+    app.oneshot(
+        Request::builder()
+            .method(Method::POST)
+            .uri("/obp-bank-node/v5.1.0/transaction-requests")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn initiate_payment_accepts_valid_routing_when_registry_loaded() {
+    // valid_payload uses BIC + IBAN — both registered with matching addresses.
+    let resp = post_initiate_to(router_with_routing().await, valid_payload()).await;
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn initiate_payment_rejects_unknown_routing_scheme() {
+    let mut payload = valid_payload();
+    payload["to"]["other_account_routing_scheme"] = serde_json::json!("SORT_CODE");
+    let resp = post_initiate_to(router_with_routing().await, payload).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let v: serde_json::Value = serde_json::from_slice(&body_bytes(resp).await).unwrap();
+    assert_eq!(v["error_code"], "OBP-BANK-NODE-ROUTING-002");
+    assert!(v["message"].as_str().unwrap().contains("SORT_CODE"));
+}
+
+#[tokio::test]
+async fn initiate_payment_rejects_address_not_matching_scheme_pattern() {
+    let mut payload = valid_payload();
+    // A BIC must be 8 or 11 chars — this one is malformed.
+    payload["to"]["other_bank_routing_address"] = serde_json::json!("not-a-bic");
+    let resp = post_initiate_to(router_with_routing().await, payload).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let v: serde_json::Value = serde_json::from_slice(&body_bytes(resp).await).unwrap();
+    assert_eq!(v["error_code"], "OBP-BANK-NODE-ROUTING-003");
+    // The message carries the scheme's example address so callers can self-correct.
+    assert!(v["message"].as_str().unwrap().contains("NWBKGB2LXXX"));
+}
+
+#[tokio::test]
+async fn initiate_payment_skips_routing_validation_while_registry_unloaded() {
+    // Default router: registry never loaded — fail-open, unknown scheme passes.
+    let mut payload = valid_payload();
+    payload["to"]["other_bank_routing_scheme"] = serde_json::json!("TOTALLY_UNKNOWN");
+    let resp = post_initiate(payload).await;
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
 }
 
 #[tokio::test]
@@ -230,7 +318,8 @@ async fn initiate_payment_rejects_missing_originator_block() {
 
 #[tokio::test]
 async fn initiate_payment_rejects_malformed_json() {
-    let resp = router().await
+    let resp = router()
+        .await
         .oneshot(
             Request::builder()
                 .method(Method::POST)
@@ -248,7 +337,8 @@ async fn initiate_payment_rejects_malformed_json() {
 
 #[tokio::test]
 async fn get_unknown_transaction_request_returns_404() {
-    let resp = router().await
+    let resp = router()
+        .await
         .oneshot(
             Request::builder()
                 .method(Method::GET)
@@ -310,7 +400,8 @@ async fn initiate_then_get_returns_persisted_initiated_row() {
 
 #[tokio::test]
 async fn list_transaction_requests_returns_empty_array() {
-    let resp = router().await
+    let resp = router()
+        .await
         .oneshot(
             Request::builder()
                 .method(Method::GET)
@@ -387,7 +478,8 @@ async fn settlement_row_is_readable_by_key_or_settlement_id() {
     assert_eq!(v["net_amount_minor"], "100000");
 
     // Same row via settlement_id, and present in the list.
-    let (status, by_sid) = get_json(app.clone(), "/obp-bank-node/v5.1.0/settlements/settle-9").await;
+    let (status, by_sid) =
+        get_json(app.clone(), "/obp-bank-node/v5.1.0/settlements/settle-9").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(by_sid["idempotency_key"], "idem-9");
     let (_, list) = get_json(app, "/obp-bank-node/v5.1.0/settlements").await;
@@ -465,7 +557,10 @@ fn obp_settle_result() -> serde_json::Value {
     })
 }
 
-async fn post_settle(app: axum::Router, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
+async fn post_settle(
+    app: axum::Router,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
     let resp = app
         .oneshot(
             Request::builder()
@@ -487,11 +582,13 @@ async fn request_settlement_calls_obp_and_stamps_covered_outbox_rows() {
     use axum::routing::post as axum_post;
     let stub = axum::Router::new().route(
         "/obp/v7.0.0/banks/test.bank.id/open-corridor/settlements",
-        axum_post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
-            assert_eq!(body["other_bank_id"], "other.bank");
-            assert_eq!(body["currency"], "KES");
-            (StatusCode::CREATED, axum::Json(obp_settle_result()))
-        }),
+        axum_post(
+            |axum::Json(body): axum::Json<serde_json::Value>| async move {
+                assert_eq!(body["other_bank_id"], "other.bank");
+                assert_eq!(body["currency"], "KES");
+                (StatusCode::CREATED, axum::Json(obp_settle_result()))
+            },
+        ),
     );
     let base = spawn_obp_stub(stub).await;
     let (app, state) = router_with_obp(&base).await;
@@ -528,7 +625,14 @@ async fn request_settlement_calls_obp_and_stamps_covered_outbox_rows() {
     let a = state.outbox.get("tr-a").await.unwrap().unwrap();
     assert_eq!(a.settlement_id.as_deref(), Some("settle-42"));
     assert!(a.settled_at.is_some());
-    assert!(state.outbox.get("tr-b").await.unwrap().unwrap().settlement_id.is_none());
+    assert!(state
+        .outbox
+        .get("tr-b")
+        .await
+        .unwrap()
+        .unwrap()
+        .settlement_id
+        .is_none());
 }
 
 #[tokio::test]
@@ -623,10 +727,13 @@ async fn corridor_settlement_proxies_obp_and_stamps_linkage() {
         })
         .await
         .unwrap();
-    state.outbox.mark_submitted("tr-a", Some("obp-tr-a")).await.unwrap();
+    state
+        .outbox
+        .mark_submitted("tr-a", Some("obp-tr-a"))
+        .await
+        .unwrap();
 
-    let (status, v) =
-        get_json(app, "/obp-bank-node/v5.1.0/settlements/settle-42/corridor").await;
+    let (status, v) = get_json(app, "/obp-bank-node/v5.1.0/settlements/settle-42/corridor").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["settlement_status"], "FINAL");
 
@@ -672,11 +779,18 @@ async fn transaction_request_status_surfaces_settlement_linkage() {
         })
         .await
         .unwrap();
-    state.outbox.mark_submitted("tr-linked", Some("obp-tr-x")).await.unwrap();
-    state.outbox.mark_settled(&["obp-tr-x".into()], "settle-7").await.unwrap();
+    state
+        .outbox
+        .mark_submitted("tr-linked", Some("obp-tr-x"))
+        .await
+        .unwrap();
+    state
+        .outbox
+        .mark_settled(&["obp-tr-x".into()], "settle-7")
+        .await
+        .unwrap();
 
-    let (status, v) =
-        get_json(app, "/obp-bank-node/v5.1.0/transaction-requests/tr-linked").await;
+    let (status, v) = get_json(app, "/obp-bank-node/v5.1.0/transaction-requests/tr-linked").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["settlement_id"], "settle-7");
     assert!(!v["settled_at"].is_null());

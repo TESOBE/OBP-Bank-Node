@@ -102,7 +102,9 @@ impl Dispatcher {
 
         let mut advanced = 0;
         for row in due {
-            self.store.record_attempt(&row.transaction_request_id).await?;
+            self.store
+                .record_attempt(&row.transaction_request_id)
+                .await?;
             if self.process_row(&row).await? {
                 advanced += 1;
             }
@@ -213,9 +215,14 @@ impl Dispatcher {
                 return Ok(true);
             };
             let preimage = self.canonical_preimage(row);
-            let commitment =
-                PromiseRecord::compute_commitment(preimage.as_bytes(), row.commitment_salt.as_bytes());
-            let blockchain = row.promise_blockchain.as_deref().unwrap_or(self.blockchain_label);
+            let commitment = PromiseRecord::compute_commitment(
+                preimage.as_bytes(),
+                row.commitment_salt.as_bytes(),
+            );
+            let blockchain = row
+                .promise_blockchain
+                .as_deref()
+                .unwrap_or(self.blockchain_label);
             let evidence = PromiseEvidence {
                 tx_hash,
                 blockchain,
@@ -358,7 +365,11 @@ mod tests {
     }
 
     /// No-retry-window config so `claim_due` returns rows immediately in tests.
-    fn dispatcher(store: OutboxStore, obp_base: String, backend: Arc<dyn BlockchainBackend>) -> Dispatcher {
+    fn dispatcher(
+        store: OutboxStore,
+        obp_base: String,
+        backend: Arc<dyn BlockchainBackend>,
+    ) -> Dispatcher {
         let obp = Arc::new(ObpClient::new(obp_base, ObpAuth::None).unwrap());
         Dispatcher::new(
             store,
@@ -421,7 +432,11 @@ mod tests {
         assert_eq!(rec.status, status::PROMISE_WRITTEN);
 
         disp.process_due_once().await.unwrap();
-        assert_eq!(backend.writes().len(), 1, "the Promise must not be re-written on retry");
+        assert_eq!(
+            backend.writes().len(),
+            1,
+            "the Promise must not be re-written on retry"
+        );
         let rec = store.get("tr-nr").await.unwrap().unwrap();
         assert_eq!(rec.status, status::PROMISE_WRITTEN);
     }
@@ -455,8 +470,14 @@ mod tests {
         // Simulates a crash after the chain write but before the report-back.
         let store = OutboxStore::connect_in_memory().await.unwrap();
         insert_row(&store, "tr-rw").await;
-        store.mark_submitted("tr-rw", Some("obp-tr-rw")).await.unwrap();
-        store.mark_promise_written("tr-rw", "txhash-live", "mock").await.unwrap();
+        store
+            .mark_submitted("tr-rw", Some("obp-tr-rw"))
+            .await
+            .unwrap();
+        store
+            .mark_promise_written("tr-rw", "txhash-live", "mock")
+            .await
+            .unwrap();
         let backend = Arc::new(MockBackend::new());
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let base = spawn_obp_stub(full_obp(tx)).await;
@@ -466,7 +487,11 @@ mod tests {
 
         let rec = store.get("tr-rw").await.unwrap().unwrap();
         assert_eq!(rec.status, status::REPORTED);
-        assert_eq!(backend.writes().len(), 0, "the Promise must not be re-written");
+        assert_eq!(
+            backend.writes().len(),
+            0,
+            "the Promise must not be re-written"
+        );
         let body = rx.recv().await.unwrap();
         assert_eq!(body["tx_hash"], "txhash-live", "reports the stored tx hash");
     }
@@ -478,7 +503,10 @@ mod tests {
         let store = OutboxStore::connect_in_memory().await.unwrap();
         insert_row(&store, "tr-noid").await;
         store.mark_submitted("tr-noid", None).await.unwrap();
-        store.mark_promise_written("tr-noid", "txhash-x", "mock").await.unwrap();
+        store
+            .mark_promise_written("tr-noid", "txhash-x", "mock")
+            .await
+            .unwrap();
         let backend = Arc::new(MockBackend::new());
         // No HTTP call is made on this path; a refused port proves it.
         let disp = dispatcher(store.clone(), "http://127.0.0.1:1".into(), backend);
@@ -487,7 +515,10 @@ mod tests {
 
         let rec = store.get("tr-noid").await.unwrap().unwrap();
         assert_eq!(rec.status, status::EXCEPTION);
-        assert!(rec.exception_reason.unwrap().contains("transaction request id"));
+        assert!(rec
+            .exception_reason
+            .unwrap()
+            .contains("transaction request id"));
     }
 
     #[tokio::test]
@@ -503,7 +534,11 @@ mod tests {
         let rec = store.get("tr-2").await.unwrap().unwrap();
         assert_eq!(rec.status, status::EXCEPTION);
         assert!(rec.exception_reason.unwrap().contains("OBP-30018"));
-        assert_eq!(backend.writes().len(), 0, "no Promise on a rejected request");
+        assert_eq!(
+            backend.writes().len(),
+            0,
+            "no Promise on a rejected request"
+        );
     }
 
     #[tokio::test]
@@ -531,7 +566,10 @@ mod tests {
         // because the report-back can't get through.
         let store = OutboxStore::connect_in_memory().await.unwrap();
         insert_row(&store, "tr-4").await;
-        store.mark_submitted("tr-4", Some("obp-tr-4")).await.unwrap();
+        store
+            .mark_submitted("tr-4", Some("obp-tr-4"))
+            .await
+            .unwrap();
         let backend = Arc::new(MockBackend::new());
         let disp = dispatcher(store.clone(), "http://127.0.0.1:1".into(), backend.clone());
 

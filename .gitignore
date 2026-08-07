@@ -20,5 +20,5 @@
 *.db-shm
 
 # Round-trip test runtime output (CBS receipts) and minted DirectLogin tokens
-WIP/roundtrip/data/
-WIP/roundtrip/env.sh
+dev/data/
+dev/env.sh

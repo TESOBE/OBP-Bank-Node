@@ -61,6 +61,27 @@ for B in "$BANK_A" "$BANK_B"; do
   grant "$SA_ID" "$B" CanSettleOpenCorridor
 done
 
+echo "== registering routing schemes (node validates beneficiary routing against these)"
+grant "$SA_ID" "" CanCreateRoutingScheme
+register_scheme() { # register_scheme <json-body> <name>
+  api POST /obp/v7.0.0/routing-schemes "$1" \
+    | grep -qE '"scheme"|OBP-30515' && echo "  scheme $2 ok" \
+    || echo "  scheme $2 — check manually"
+}
+# The three allow-listed global (unprefixed) schemes; country must be INT.
+register_scheme '{"scheme":"OBP","country":"INT","category":"ACCOUNT",
+  "address_pattern":"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$","example_address":"rt.bank.b",
+  "description":"OBP bank id or account id, as used in OBP account routings.",
+  "downstream_rails":[],"status":"ACTIVE"}' OBP
+register_scheme '{"scheme":"IBAN","country":"INT","category":"ACCOUNT",
+  "address_pattern":"^[A-Z]{2}[0-9]{2}[A-Z0-9]{1,30}$","example_address":"GB29NWBK60161331926819",
+  "description":"International Bank Account Number (ISO 13616), no spaces.",
+  "downstream_rails":[],"status":"ACTIVE"}' IBAN
+register_scheme '{"scheme":"BIC","country":"INT","category":"BANK",
+  "address_pattern":"^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$","example_address":"NWBKGB2LXXX",
+  "description":"ISO 9362 Business Identifier Code, 8 or 11 characters.",
+  "downstream_rails":[],"status":"ACTIVE"}' BIC
+
 echo "== creating node service users"
 for U in "$NODE_A_USER" "$NODE_B_USER"; do
   api POST /obp/v5.1.0/users \

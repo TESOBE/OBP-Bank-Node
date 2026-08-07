@@ -298,7 +298,10 @@ impl ObpClient {
         });
         let req = self.http.post(&url).json(&body);
         let req = self.authorize(req).await?;
-        let resp = req.send().await.map_err(|e| ObpClientError::Transport(e.to_string()))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ObpClientError::Transport(e.to_string()))?;
 
         let status = resp.status();
         let text = resp
@@ -323,7 +326,10 @@ impl ObpClient {
         debug!(%url, "reading Open Corridor settlement from OBP-API");
         let req = self.http.get(&url);
         let req = self.authorize(req).await?;
-        let resp = req.send().await.map_err(|e| ObpClientError::Transport(e.to_string()))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ObpClientError::Transport(e.to_string()))?;
 
         let status = resp.status();
         let text = resp
@@ -383,6 +389,71 @@ impl ObpClient {
         }
         Err(classify_failure(status, &text))
     }
+
+    /// Fetch the ACTIVE rows of OBP-API's routing-scheme registry
+    /// (`GET /obp/v7.0.0/routing-schemes`), following pagination. Feeds the
+    /// node's `RoutingRegistry` cache for A1.1 beneficiary-routing validation.
+    pub async fn get_routing_schemes(&self) -> Result<Vec<ObpRoutingScheme>, ObpClientError> {
+        const PAGE: usize = 500; // server-side maximum
+        let mut all: Vec<ObpRoutingScheme> = Vec::new();
+        loop {
+            let url = format!(
+                "{}/obp/{}/routing-schemes?status=ACTIVE&limit={}&offset={}",
+                self.base_url,
+                OBP_API_VERSION,
+                PAGE,
+                all.len()
+            );
+            debug!(%url, "fetching routing-scheme registry page from OBP-API");
+            let req = self.http.get(&url);
+            let req = self.authorize(req).await?;
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| ObpClientError::Transport(e.to_string()))?;
+
+            let status = resp.status();
+            let text = resp
+                .text()
+                .await
+                .map_err(|e| ObpClientError::Transport(format!("reading response body: {e}")))?;
+            if !status.is_success() {
+                return Err(classify_failure(status, &text));
+            }
+            let page: RoutingSchemesPage = serde_json::from_str(&text).map_err(|e| {
+                ObpClientError::Transport(format!("unparseable routing-schemes response: {e}"))
+            })?;
+            let fetched = page.routing_schemes.len();
+            all.extend(page.routing_schemes);
+            if fetched < PAGE || all.len() as i64 >= page.pagination.total {
+                return Ok(all);
+            }
+        }
+    }
+}
+
+/// One registry row, as listed by OBP-API. Only the fields the node validates
+/// with; unknown fields are ignored.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ObpRoutingScheme {
+    pub scheme: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub address_pattern: String,
+    #[serde(default)]
+    pub example_address: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RoutingSchemesPage {
+    routing_schemes: Vec<ObpRoutingScheme>,
+    pagination: RoutingSchemesPagination,
+}
+
+#[derive(Debug, Deserialize)]
+struct RoutingSchemesPagination {
+    total: i64,
 }
 
 /// OBP-API's settlement resource, as the node consumes it: the fields the node
@@ -408,7 +479,11 @@ fn parse_settlement_response(body: &str) -> Result<ObpSettlementResponse, ObpCli
     let covered_transaction_request_ids = raw
         .get("covered_transaction_request_ids")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_owned))
+                .collect()
+        })
         .unwrap_or_default();
     Ok(ObpSettlementResponse {
         settlement_id,
@@ -539,7 +614,10 @@ mod tests {
             .submit_open_corridor("ke.01.kcs", "acct-1", r#"{"value":{}}"#)
             .await
             .unwrap();
-        assert_eq!(accepted.obp_transaction_request_id.as_deref(), Some("obp-tr-999"));
+        assert_eq!(
+            accepted.obp_transaction_request_id.as_deref(),
+            Some("obp-tr-999")
+        );
     }
 
     #[tokio::test]
@@ -562,7 +640,9 @@ mod tests {
             .unwrap_err();
         assert!(!err.is_retryable(), "4xx must be terminal");
         match err {
-            ObpClientError::Rejected { status, error_code, .. } => {
+            ObpClientError::Rejected {
+                status, error_code, ..
+            } => {
                 assert_eq!(status, 400);
                 assert_eq!(error_code, "OBP-30018");
             }
@@ -582,7 +662,10 @@ mod tests {
             .submit_open_corridor("ke.01.kcs", "acct-1", "{}")
             .await
             .unwrap_err();
-        assert!(err.is_retryable(), "404 must be operational/retryable, not terminal");
+        assert!(
+            err.is_retryable(),
+            "404 must be operational/retryable, not terminal"
+        );
     }
 
     #[tokio::test]
@@ -700,9 +783,15 @@ mod tests {
         let base = spawn_stub(router).await;
         let client = ObpClient::new(base, ObpAuth::None).unwrap();
 
-        let result = client.create_settlement("rt.bank.a", "rt.bank.b", "KES").await.unwrap();
+        let result = client
+            .create_settlement("rt.bank.a", "rt.bank.b", "KES")
+            .await
+            .unwrap();
         assert_eq!(result.settlement_id.as_deref(), Some("settle-77"));
-        assert_eq!(result.covered_transaction_request_ids, vec!["obp-tr-1", "obp-tr-2"]);
+        assert_eq!(
+            result.covered_transaction_request_ids,
+            vec!["obp-tr-1", "obp-tr-2"]
+        );
         assert_eq!(result.raw["net_amount"], "1000.00");
 
         let sent = rx.recv().await.unwrap();
@@ -724,10 +813,18 @@ mod tests {
         let base = spawn_stub(router).await;
         let client = ObpClient::new(base, ObpAuth::None).unwrap();
 
-        let err = client.create_settlement("rt.bank.a", "rt.bank.b", "KES").await.unwrap_err();
+        let err = client
+            .create_settlement("rt.bank.a", "rt.bank.b", "KES")
+            .await
+            .unwrap_err();
         match err {
-            ObpClientError::Rejected { status, error_code, .. } => {
-                assert_eq!(status, 403, "interactive calls pass the real status through");
+            ObpClientError::Rejected {
+                status, error_code, ..
+            } => {
+                assert_eq!(
+                    status, 403,
+                    "interactive calls pass the real status through"
+                );
                 assert_eq!(error_code, "OBP-20006");
             }
             other => panic!("expected Rejected, got {other:?}"),
@@ -749,9 +846,14 @@ mod tests {
         let base = spawn_stub(router).await;
         let client = ObpClient::new(base, ObpAuth::None).unwrap();
 
-        let err = client.get_settlement("rt.bank.a", "nope").await.unwrap_err();
+        let err = client
+            .get_settlement("rt.bank.a", "nope")
+            .await
+            .unwrap_err();
         match err {
-            ObpClientError::Rejected { status, error_code, .. } => {
+            ObpClientError::Rejected {
+                status, error_code, ..
+            } => {
                 assert_eq!(status, 404);
                 assert_eq!(error_code, "OBP-40058");
             }

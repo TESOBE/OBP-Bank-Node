@@ -40,7 +40,10 @@ pub async fn run(config: ConsumerConfig, router: Arc<Router>) -> anyhow::Result<
     let conn = Connection::connect(&config.uri, props)
         .await
         .with_context(|| format!("connecting to RabbitMQ ({})", redact(&config.uri)))?;
-    let channel = conn.create_channel().await.context("creating AMQP channel")?;
+    let channel = conn
+        .create_channel()
+        .await
+        .context("creating AMQP channel")?;
 
     channel
         .queue_declare(
@@ -83,21 +86,17 @@ pub async fn run(config: ConsumerConfig, router: Arc<Router>) -> anyhow::Result<
             .as_ref()
             .map(|s| s.as_str().to_string());
 
-        let reply = router.handle(&message_id, &correlation_id, &delivery.data).await;
+        let reply = router
+            .handle(&message_id, &correlation_id, &delivery.data)
+            .await;
 
         match &reply_to {
             Some(reply_to) => match serde_json::to_vec(&reply) {
                 Ok(bytes) => {
-                    let rprops =
-                        BasicProperties::default().with_correlation_id(correlation_id.clone().into());
+                    let rprops = BasicProperties::default()
+                        .with_correlation_id(correlation_id.clone().into());
                     if let Err(e) = channel
-                        .basic_publish(
-                            "",
-                            reply_to,
-                            BasicPublishOptions::default(),
-                            &bytes,
-                            rprops,
-                        )
+                        .basic_publish("", reply_to, BasicPublishOptions::default(), &bytes, rprops)
                         .await
                     {
                         error!(error = %e, %reply_to, "Interface C: failed to publish reply");
@@ -118,7 +117,9 @@ pub async fn run(config: ConsumerConfig, router: Arc<Router>) -> anyhow::Result<
 }
 
 fn str_prop(prop: &Option<lapin::types::ShortString>) -> String {
-    prop.as_ref().map(|s| s.as_str().to_string()).unwrap_or_default()
+    prop.as_ref()
+        .map(|s| s.as_str().to_string())
+        .unwrap_or_default()
 }
 
 /// Hide credentials in a logged AMQP URI: `amqp://user:pass@host` → `amqp://***@host`.
@@ -142,6 +143,9 @@ mod tests {
             "amqp://***@localhost:5672/%2fbank.x"
         );
         // No credentials → unchanged.
-        assert_eq!(redact("amqp://localhost:5672/%2f"), "amqp://localhost:5672/%2f");
+        assert_eq!(
+            redact("amqp://localhost:5672/%2f"),
+            "amqp://localhost:5672/%2f"
+        );
     }
 }

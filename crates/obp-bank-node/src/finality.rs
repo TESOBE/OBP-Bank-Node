@@ -136,7 +136,10 @@ mod tests {
         fn settles_from(&self) -> &str {
             "addr_test1me"
         }
-        async fn settle(&self, _i: &SettlementInstruction) -> obp_blockchain::Result<SettlementOutcome> {
+        async fn settle(
+            &self,
+            _i: &SettlementInstruction,
+        ) -> obp_blockchain::Result<SettlementOutcome> {
             unreachable!("watcher never settles")
         }
         async fn confirm(&self, _tx: &TxReference) -> obp_blockchain::Result<ConfirmationStatus> {
@@ -177,7 +180,10 @@ mod tests {
             })
             .await
             .unwrap();
-        store.mark_submitted(key, "tx-1", "cardano", "ADA", "10").await.unwrap();
+        store
+            .mark_submitted(key, "tx-1", "cardano", "ADA", "10")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -225,10 +231,17 @@ mod tests {
         assert_eq!(store.get("k1").await.unwrap().unwrap().last_depth, 4);
         w.tick().await.unwrap();
         let row = store.get("k1").await.unwrap().unwrap();
-        assert_eq!(row.status, status::SUBMITTED, "rollback keeps the row in play");
+        assert_eq!(
+            row.status,
+            status::SUBMITTED,
+            "rollback keeps the row in play"
+        );
         assert_eq!(row.last_depth, 0, "depth resets on rollback");
         w.tick().await.unwrap();
-        assert_eq!(store.get("k1").await.unwrap().unwrap().status, status::FINAL);
+        assert_eq!(
+            store.get("k1").await.unwrap().unwrap().status,
+            status::FINAL
+        );
     }
 
     #[tokio::test]
@@ -248,6 +261,9 @@ mod tests {
         w.tick().await.unwrap();
         // Second tick has an empty script; it must not call confirm again.
         w.tick().await.unwrap();
-        assert_eq!(store.get("k1").await.unwrap().unwrap().status, status::FINAL);
+        assert_eq!(
+            store.get("k1").await.unwrap().unwrap().status,
+            status::FINAL
+        );
     }
 }

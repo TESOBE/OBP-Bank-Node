@@ -30,10 +30,19 @@
           <label>Description
             <input name="description" value="Demo payment">
           </label>
-          <label>Beneficiary bank (OBP bank id)
+          <label>Beneficiary name
+            <input name="beneficiary_name" value="Beneficiary at rt.bank.b" required>
+          </label>
+          <label>Beneficiary bank routing scheme
+            <input name="other_bank_scheme" value="OBP" required>
+          </label>
+          <label>Beneficiary bank routing address
             <input name="other_bank" value="rt.bank.b" required>
           </label>
-          <label>Beneficiary account (OBP account id)
+          <label>Beneficiary account routing scheme
+            <input name="other_account_scheme" value="OBP" required>
+          </label>
+          <label>Beneficiary account routing address
             <input name="other_account" value="settlement-b" required>
           </label>
           <label>Originator name
@@ -60,9 +69,10 @@
 
     <section id="position">
       <h2><span class="step">3</span> Position</h2>
-      <p class="hint">Bilateral view assembled by this app from each node's own unsettled outbound legs
+      <p class="hint">This bank's unsettled outbound exposure per corridor
         (<code>SUBMITTED</code>/<code>PROMISE_WRITTEN</code>/<code>REPORTED</code>, not yet covered by a settlement).
-        OBP-API is not consulted.</p>
+        A node only knows its own outbound legs — the authoritative bilateral net is computed by
+        OBP-API at settle time (see the corridor view in step 4).</p>
       <div id="position-view"></div>
     </section>
 

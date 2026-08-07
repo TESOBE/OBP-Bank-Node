@@ -9,7 +9,9 @@
 
 use std::sync::Arc;
 
-use obp_blockchain::settlement::{PartyRef, SettlementBackend, SettlementInstruction as BcSettlement};
+use obp_blockchain::settlement::{
+    PartyRef, SettlementBackend, SettlementInstruction as BcSettlement,
+};
 use obp_blockchain::{BlockchainError, PromiseRecord};
 use tracing::{info, warn};
 
@@ -54,10 +56,17 @@ impl Router {
 
     /// Dispatch one message. Always returns a reply envelope (never panics on a
     /// bad body) so the consumer can publish something back to `replyTo`.
-    pub async fn handle(&self, message_id: &str, correlation_id: &str, body: &[u8]) -> ReplyEnvelope {
+    pub async fn handle(
+        &self,
+        message_id: &str,
+        correlation_id: &str,
+        body: &[u8],
+    ) -> ReplyEnvelope {
         match message_id {
             message_id::CREDIT_NOTIFICATION => self.credit_notification(correlation_id, body).await,
-            message_id::SETTLEMENT_INSTRUCTION => self.settlement_instruction(correlation_id, body).await,
+            message_id::SETTLEMENT_INSTRUCTION => {
+                self.settlement_instruction(correlation_id, body).await
+            }
             message_id::NETTING_SNAPSHOT => self.netting_snapshot(correlation_id, body),
             message_id::STATUS_UPDATE => self.status_update(correlation_id, body),
             other => {
@@ -94,7 +103,11 @@ impl Router {
         let evidence_present = cn.promise_commitment.is_some()
             && cn.promise_salt.is_some()
             && cn.promise_preimage.is_some();
-        let verified = match (&cn.promise_commitment, &cn.promise_salt, &cn.promise_preimage) {
+        let verified = match (
+            &cn.promise_commitment,
+            &cn.promise_salt,
+            &cn.promise_preimage,
+        ) {
             (Some(commitment), Some(salt), Some(preimage)) => {
                 PromiseRecord::verify_v1(preimage.as_bytes(), salt.as_bytes(), commitment)
             }
@@ -158,7 +171,11 @@ impl Router {
             Ok(ack) => {
                 if let Err(e) = self
                     .evidence
-                    .record_cbs_result(&cn.transaction_request_id, "DELIVERED", ack.cbs_reference.as_deref())
+                    .record_cbs_result(
+                        &cn.transaction_request_id,
+                        "DELIVERED",
+                        ack.cbs_reference.as_deref(),
+                    )
                     .await
                 {
                     warn!(error = %e, "credit_notification: failed to record CBS result");
@@ -181,7 +198,11 @@ impl Router {
                 {
                     warn!(error = %se, "credit_notification: failed to record CBS result");
                 }
-                ReplyEnvelope::error(correlation_id, error_code::CBS_DELIVERY_FAILED, e.to_string())
+                ReplyEnvelope::error(
+                    correlation_id,
+                    error_code::CBS_DELIVERY_FAILED,
+                    e.to_string(),
+                )
             }
         }
     }
@@ -227,15 +248,33 @@ impl Router {
         // obligation.
         let amount = match si.amount.as_deref() {
             Some(a) => a,
-            None => return ReplyEnvelope::error(correlation_id, error_code::BAD_MESSAGE, "settlement_instruction: amount is required"),
+            None => {
+                return ReplyEnvelope::error(
+                    correlation_id,
+                    error_code::BAD_MESSAGE,
+                    "settlement_instruction: amount is required",
+                )
+            }
         };
         let net_amount_minor = match parse_minor_units(amount, 2) {
             Ok(v) => v,
-            Err(e) => return ReplyEnvelope::error(correlation_id, error_code::BAD_MESSAGE, format!("settlement_instruction: {e}")),
+            Err(e) => {
+                return ReplyEnvelope::error(
+                    correlation_id,
+                    error_code::BAD_MESSAGE,
+                    format!("settlement_instruction: {e}"),
+                )
+            }
         };
         let creditor_address = match si.creditor_address.clone() {
             Some(a) => a,
-            None => return ReplyEnvelope::error(correlation_id, error_code::BAD_MESSAGE, "settlement_instruction: creditor_address is required"),
+            None => {
+                return ReplyEnvelope::error(
+                    correlation_id,
+                    error_code::BAD_MESSAGE,
+                    "settlement_instruction: creditor_address is required",
+                )
+            }
         };
         let idempotency_key = match si
             .idempotency_key
@@ -273,7 +312,11 @@ impl Router {
                     // Provably-never-on-chain failure: reopen and try again.
                     if let Err(e) = svc.store.reclaim_for_retry(&idempotency_key).await {
                         warn!(error = %e, "settlement store: reclaim failed");
-                        return ReplyEnvelope::error(correlation_id, error_code::PLATFORM, "settlement store unavailable");
+                        return ReplyEnvelope::error(
+                            correlation_id,
+                            error_code::PLATFORM,
+                            "settlement store unavailable",
+                        );
                     }
                 } else {
                     return reply_for_existing(correlation_id, &row, svc.finality_depth);
@@ -281,13 +324,21 @@ impl Router {
             }
             Err(e) => {
                 warn!(error = %e, "settlement store: claim failed");
-                return ReplyEnvelope::error(correlation_id, error_code::PLATFORM, "settlement store unavailable");
+                return ReplyEnvelope::error(
+                    correlation_id,
+                    error_code::PLATFORM,
+                    "settlement store unavailable",
+                );
             }
         }
 
         // This node is the debtor: pay out of the backend's own account.
         let instruction = BcSettlement {
-            snapshot_id: si.snapshot_id.clone().or_else(|| si.settlement_id.clone()).unwrap_or_default(),
+            snapshot_id: si
+                .snapshot_id
+                .clone()
+                .or_else(|| si.settlement_id.clone())
+                .unwrap_or_default(),
             debtor: PartyRef {
                 bank_id: self.bank_id.clone(),
                 account: svc.backend.settles_from().to_string(),
@@ -347,7 +398,11 @@ impl Router {
                 // redelivery. Transport/internal errors are ambiguous — the tx
                 // may be on chain — so they stick until reconciled.
                 let retryable = matches!(e, BlockchainError::Rejected(_));
-                if let Err(se) = svc.store.mark_error(&idempotency_key, &e.to_string(), retryable).await {
+                if let Err(se) = svc
+                    .store
+                    .mark_error(&idempotency_key, &e.to_string(), retryable)
+                    .await
+                {
                     warn!(error = %se, "settlement store: mark_error failed");
                 }
                 warn!(error = %e, settlement_id = ?si.settlement_id, retryable, "settlement failed");
@@ -408,7 +463,9 @@ fn reply_for_existing(
         settlement_store::status::ERROR => ReplyEnvelope::error(
             correlation_id,
             error_code::SETTLEMENT_FAILED,
-            row.error_reason.clone().unwrap_or_else(|| "settlement failed".into()),
+            row.error_reason
+                .clone()
+                .unwrap_or_else(|| "settlement failed".into()),
         ),
         status => ReplyEnvelope::ok(
             correlation_id,
@@ -439,7 +496,9 @@ fn parse_minor_units(amount: &str, decimals: u32) -> Result<u128, String> {
     let int: u128 = if int_part.is_empty() {
         0
     } else {
-        int_part.parse().map_err(|_| format!("invalid amount: {amount:?}"))?
+        int_part
+            .parse()
+            .map_err(|_| format!("invalid amount: {amount:?}"))?
     };
     let width = decimals as usize;
     let mut frac = frac_part.to_string();
@@ -450,7 +509,8 @@ fn parse_minor_units(amount: &str, decimals: u32) -> Result<u128, String> {
     let frac_val: u128 = if frac.is_empty() {
         0
     } else {
-        frac.parse().map_err(|_| format!("invalid amount fraction: {amount:?}"))?
+        frac.parse()
+            .map_err(|_| format!("invalid amount fraction: {amount:?}"))?
     };
     int.checked_mul(10u128.pow(decimals))
         .and_then(|v| v.checked_add(frac_val))
@@ -462,8 +522,8 @@ mod tests {
     use super::*;
     use axum::{routing::post, Json, Router as AxumRouter};
     use std::net::SocketAddr;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     async fn cbs_stub_counting(counter: Arc<AtomicUsize>) -> String {
         let router = AxumRouter::new().route(
@@ -591,7 +651,9 @@ mod tests {
         let r = router_with_cbs(&cbs_url).await;
         let (body, id) = credit_with_valid_commitment();
 
-        let reply = r.handle(message_id::CREDIT_NOTIFICATION, "corr-2", body.as_bytes()).await;
+        let reply = r
+            .handle(message_id::CREDIT_NOTIFICATION, "corr-2", body.as_bytes())
+            .await;
         assert!(reply.is_ok(), "expected ok, got {:?}", reply.status);
         assert_eq!(reply.data["verified"], true);
         assert_eq!(reply.data["cbs_reference"], "CBS-1");
@@ -620,7 +682,9 @@ mod tests {
         })
         .to_string();
 
-        let reply = r.handle(message_id::CREDIT_NOTIFICATION, "corr-3", body.as_bytes()).await;
+        let reply = r
+            .handle(message_id::CREDIT_NOTIFICATION, "corr-3", body.as_bytes())
+            .await;
         assert_eq!(reply.status.error_code, error_code::COMMITMENT_MISMATCH);
         // Still recorded (as evidence of the bad notification), marked unverified.
         let rec = r.evidence.get("tr-bad").await.unwrap().unwrap();
@@ -640,7 +704,9 @@ mod tests {
         })
         .to_string();
 
-        let reply = r.handle(message_id::CREDIT_NOTIFICATION, "corr-4", body.as_bytes()).await;
+        let reply = r
+            .handle(message_id::CREDIT_NOTIFICATION, "corr-4", body.as_bytes())
+            .await;
         assert!(reply.is_ok());
         assert_eq!(reply.data["verified"], false);
         assert_eq!(counter.load(Ordering::SeqCst), 1);
@@ -649,7 +715,9 @@ mod tests {
     #[tokio::test]
     async fn malformed_body_returns_bad_message() {
         let r = router_with_cbs("http://127.0.0.1:1/credit").await;
-        let reply = r.handle(message_id::CREDIT_NOTIFICATION, "corr-5", b"{not json").await;
+        let reply = r
+            .handle(message_id::CREDIT_NOTIFICATION, "corr-5", b"{not json")
+            .await;
         assert_eq!(reply.status.error_code, error_code::BAD_MESSAGE);
     }
 
@@ -657,7 +725,9 @@ mod tests {
     async fn cbs_down_returns_delivery_failed() {
         let r = router_with_cbs("http://127.0.0.1:1/credit").await;
         let (body, id) = credit_with_valid_commitment();
-        let reply = r.handle(message_id::CREDIT_NOTIFICATION, "corr-6", body.as_bytes()).await;
+        let reply = r
+            .handle(message_id::CREDIT_NOTIFICATION, "corr-6", body.as_bytes())
+            .await;
         assert_eq!(reply.status.error_code, error_code::CBS_DELIVERY_FAILED);
         // The failed delivery attempt is recorded on the evidence row.
         let rec = r.evidence.get(&id).await.unwrap().unwrap();
@@ -668,10 +738,20 @@ mod tests {
     #[tokio::test]
     async fn netting_snapshot_and_status_update_are_acknowledged() {
         let r = router_with_cbs("http://127.0.0.1:1/credit").await;
-        let n = r.handle(message_id::NETTING_SNAPSHOT, "c", br#"{"snapshot_id":"snap1"}"#).await;
+        let n = r
+            .handle(
+                message_id::NETTING_SNAPSHOT,
+                "c",
+                br#"{"snapshot_id":"snap1"}"#,
+            )
+            .await;
         assert!(n.is_ok());
         let u = r
-            .handle(message_id::STATUS_UPDATE, "c", br#"{"transaction_request_id":"tr-1","status":"COMPLETED"}"#)
+            .handle(
+                message_id::STATUS_UPDATE,
+                "c",
+                br#"{"transaction_request_id":"tr-1","status":"COMPLETED"}"#,
+            )
             .await;
         assert!(u.is_ok());
     }
@@ -699,7 +779,9 @@ mod tests {
         let (r, store) = router_with("http://127.0.0.1:1/credit", Some(settlement.clone())).await;
 
         let body = settlement_body("idem-1");
-        let reply = r.handle(message_id::SETTLEMENT_INSTRUCTION, "c", body.as_bytes()).await;
+        let reply = r
+            .handle(message_id::SETTLEMENT_INSTRUCTION, "c", body.as_bytes())
+            .await;
 
         assert!(reply.is_ok(), "expected ok, got {:?}", reply.status);
         assert_eq!(reply.data["tx_id"], "settle-tx-1");
@@ -709,9 +791,12 @@ mod tests {
         assert_eq!(reply.data["finality_depth"], TEST_FINALITY_DEPTH);
         assert_eq!(calls.load(Ordering::SeqCst), 1, "settle called once");
         // The debtor account was filled from the backend, and minor units parsed.
-        assert_eq!(settlement.last_creditor.lock().unwrap().as_deref(), Some("addr_test1creditor"));
+        assert_eq!(
+            settlement.last_creditor.lock().unwrap().as_deref(),
+            Some("addr_test1creditor")
+        );
         assert_eq!(*settlement.last_minor.lock().unwrap(), Some(2_500_000)); // 25000.00 → cents
-        // Durably recorded for the finality watcher.
+                                                                             // Durably recorded for the finality watcher.
         let row = store.unwrap().get("idem-1").await.unwrap().unwrap();
         assert_eq!(row.status, settlement_store::status::SUBMITTED);
         assert_eq!(row.tx_id.as_deref(), Some("settle-tx-1"));
@@ -729,22 +814,35 @@ mod tests {
         let (r, store) = router_with("http://127.0.0.1:1/credit", Some(settlement)).await;
         let body = settlement_body("idem-1");
 
-        let first = r.handle(message_id::SETTLEMENT_INSTRUCTION, "c1", body.as_bytes()).await;
+        let first = r
+            .handle(message_id::SETTLEMENT_INSTRUCTION, "c1", body.as_bytes())
+            .await;
         assert_eq!(first.data["status"], settlement_store::status::SUBMITTED);
 
         // Redelivery (OBP-API outbox retry / status poll): recorded state back,
         // no second payment.
-        let second = r.handle(message_id::SETTLEMENT_INSTRUCTION, "c2", body.as_bytes()).await;
+        let second = r
+            .handle(message_id::SETTLEMENT_INSTRUCTION, "c2", body.as_bytes())
+            .await;
         assert!(second.is_ok());
         assert_eq!(second.data["status"], settlement_store::status::SUBMITTED);
         assert_eq!(second.data["tx_id"], "settle-tx-1");
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "settle must run exactly once");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "settle must run exactly once"
+        );
 
         // Once the watcher finalizes, redelivery reports FINAL with depth.
         let store = store.unwrap();
         store.record_depth("idem-1", 3).await.unwrap();
-        store.mark_final("idem-1", TEST_FINALITY_DEPTH).await.unwrap();
-        let third = r.handle(message_id::SETTLEMENT_INSTRUCTION, "c3", body.as_bytes()).await;
+        store
+            .mark_final("idem-1", TEST_FINALITY_DEPTH)
+            .await
+            .unwrap();
+        let third = r
+            .handle(message_id::SETTLEMENT_INSTRUCTION, "c3", body.as_bytes())
+            .await;
         assert_eq!(third.data["status"], settlement_store::status::FINAL);
         assert_eq!(third.data["depth"], TEST_FINALITY_DEPTH);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -763,7 +861,9 @@ mod tests {
         // No idempotency_key AND no settlement_id → refuse; a redelivered
         // instruction would be indistinguishable from a new obligation.
         let body = br#"{"currency":"KES","amount":"10.00","creditor_address":"x"}"#;
-        let reply = r.handle(message_id::SETTLEMENT_INSTRUCTION, "c", body).await;
+        let reply = r
+            .handle(message_id::SETTLEMENT_INSTRUCTION, "c", body)
+            .await;
         assert_eq!(reply.status.error_code, error_code::BAD_MESSAGE);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
@@ -771,9 +871,15 @@ mod tests {
     #[tokio::test]
     async fn settlement_instruction_without_backend_is_not_configured() {
         let r = router_with_cbs("http://127.0.0.1:1/credit").await; // settlement = None
-        let body = br#"{"settlement_id":"s1","currency":"KES","amount":"10.00","creditor_address":"x"}"#;
-        let reply = r.handle(message_id::SETTLEMENT_INSTRUCTION, "c", body).await;
-        assert_eq!(reply.status.error_code, error_code::SETTLEMENT_NOT_CONFIGURED);
+        let body =
+            br#"{"settlement_id":"s1","currency":"KES","amount":"10.00","creditor_address":"x"}"#;
+        let reply = r
+            .handle(message_id::SETTLEMENT_INSTRUCTION, "c", body)
+            .await;
+        assert_eq!(
+            reply.status.error_code,
+            error_code::SETTLEMENT_NOT_CONFIGURED
+        );
     }
 
     /// A backend that fails with the scripted error `fail_times` times, then
@@ -830,12 +936,20 @@ mod tests {
         let (r, _) = router_with("http://127.0.0.1:1/credit", Some(backend)).await;
         let body = settlement_body("idem-r");
 
-        let first = r.handle(message_id::SETTLEMENT_INSTRUCTION, "c1", body.as_bytes()).await;
+        let first = r
+            .handle(message_id::SETTLEMENT_INSTRUCTION, "c1", body.as_bytes())
+            .await;
         assert_eq!(first.status.error_code, error_code::SETTLEMENT_FAILED);
 
         // `Rejected` provably never reached the chain → redelivery retries.
-        let second = r.handle(message_id::SETTLEMENT_INSTRUCTION, "c2", body.as_bytes()).await;
-        assert!(second.is_ok(), "retryable failure must reopen: {:?}", second.status);
+        let second = r
+            .handle(message_id::SETTLEMENT_INSTRUCTION, "c2", body.as_bytes())
+            .await;
+        assert!(
+            second.is_ok(),
+            "retryable failure must reopen: {:?}",
+            second.status
+        );
         assert_eq!(second.data["status"], settlement_store::status::SUBMITTED);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
@@ -851,14 +965,22 @@ mod tests {
         let (r, _) = router_with("http://127.0.0.1:1/credit", Some(backend)).await;
         let body = settlement_body("idem-t");
 
-        let first = r.handle(message_id::SETTLEMENT_INSTRUCTION, "c1", body.as_bytes()).await;
+        let first = r
+            .handle(message_id::SETTLEMENT_INSTRUCTION, "c1", body.as_bytes())
+            .await;
         assert_eq!(first.status.error_code, error_code::SETTLEMENT_FAILED);
 
         // Transport is ambiguous — the transfer may be on chain. Redelivery
         // must repeat the recorded error, not pay again.
-        let second = r.handle(message_id::SETTLEMENT_INSTRUCTION, "c2", body.as_bytes()).await;
+        let second = r
+            .handle(message_id::SETTLEMENT_INSTRUCTION, "c2", body.as_bytes())
+            .await;
         assert_eq!(second.status.error_code, error_code::SETTLEMENT_FAILED);
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "no automatic second attempt");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "no automatic second attempt"
+        );
     }
 
     #[test]

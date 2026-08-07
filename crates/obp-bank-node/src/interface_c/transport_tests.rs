@@ -65,12 +65,18 @@ async fn spawn_stub_cbs() -> String {
 #[ignore = "requires a local RabbitMQ on 5672 (or OBP_BN_TEST_AMQP_URI); run with --ignored"]
 async fn interface_c_transport_round_trips_all_message_types() {
     let uri = amqp_uri();
-    let unique = format!("{}-{}", std::process::id(), chrono::Utc::now().timestamp_micros());
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_micros()
+    );
     let rpc_queue = format!("obp_rpc_queue_itest_{unique}");
     let reply_queue = format!("obp_reply_itest_{unique}");
 
     // ---- assemble the node side: evidence store, stub CBS, router, consumer.
-    let evidence = EvidenceStore::connect_in_memory().await.expect("evidence store");
+    let evidence = EvidenceStore::connect_in_memory()
+        .await
+        .expect("evidence store");
     let cbs = CbsClient::new(spawn_stub_cbs().await, None, 5).expect("cbs client");
     // No settlement rail on this router: the settlement_instruction case below
     // asserts the NOT_CONFIGURED reply. The idempotency/finality path has its
@@ -101,7 +107,10 @@ async fn interface_c_transport_round_trips_all_message_types() {
     channel
         .queue_declare(
             &rpc_queue,
-            QueueDeclareOptions { durable: true, ..Default::default() },
+            QueueDeclareOptions {
+                durable: true,
+                ..Default::default()
+            },
             FieldTable::default(),
         )
         .await
@@ -109,7 +118,11 @@ async fn interface_c_transport_round_trips_all_message_types() {
     channel
         .queue_declare(
             &reply_queue,
-            QueueDeclareOptions { exclusive: true, auto_delete: true, ..Default::default() },
+            QueueDeclareOptions {
+                exclusive: true,
+                auto_delete: true,
+                ..Default::default()
+            },
             FieldTable::default(),
         )
         .await
@@ -143,9 +156,17 @@ async fn interface_c_transport_round_trips_all_message_types() {
     let messages: Vec<(&str, &str, String)> = vec![
         ("c1", message_id::CREDIT_NOTIFICATION, credit_ok),
         ("c2", message_id::CREDIT_NOTIFICATION, credit_tampered),
-        ("c3", message_id::CREDIT_NOTIFICATION, "this is not json".into()),
+        (
+            "c3",
+            message_id::CREDIT_NOTIFICATION,
+            "this is not json".into(),
+        ),
         ("c4", message_id::SETTLEMENT_INSTRUCTION, "{}".into()),
-        ("c5", message_id::NETTING_SNAPSHOT, r#"{"snapshot_id":"snap-itest"}"#.into()),
+        (
+            "c5",
+            message_id::NETTING_SNAPSHOT,
+            r#"{"snapshot_id":"snap-itest"}"#.into(),
+        ),
         (
             "c6",
             message_id::STATUS_UPDATE,
@@ -160,7 +181,13 @@ async fn interface_c_transport_round_trips_all_message_types() {
             .with_correlation_id((*correlation_id).into())
             .with_reply_to(reply_queue.as_str().into());
         channel
-            .basic_publish("", &rpc_queue, BasicPublishOptions::default(), body.as_bytes(), props)
+            .basic_publish(
+                "",
+                &rpc_queue,
+                BasicPublishOptions::default(),
+                body.as_bytes(),
+                props,
+            )
             .await
             .expect("publish")
             .await
@@ -173,7 +200,10 @@ async fn interface_c_transport_round_trips_all_message_types() {
         .basic_consume(
             &reply_queue,
             "itest-replies",
-            BasicConsumeOptions { no_ack: true, ..Default::default() },
+            BasicConsumeOptions {
+                no_ack: true,
+                ..Default::default()
+            },
             FieldTable::default(),
         )
         .await
@@ -201,17 +231,31 @@ async fn interface_c_transport_round_trips_all_message_types() {
             .to_string();
         // The AMQP property must match the envelope's own correlation id.
         assert_eq!(
-            delivery.properties.correlation_id().as_ref().map(|s| s.as_str()),
+            delivery
+                .properties
+                .correlation_id()
+                .as_ref()
+                .map(|s| s.as_str()),
             Some(correlation_id.as_str()),
             "AMQP correlationId property must match the envelope"
         );
         replies.insert(correlation_id, envelope);
     }
 
-    let code = |c: &str| replies[c]["status"]["errorCode"].as_str().unwrap_or("?").to_string();
+    let code = |c: &str| {
+        replies[c]["status"]["errorCode"]
+            .as_str()
+            .unwrap_or("?")
+            .to_string()
+    };
 
     // Valid credit: ok reply carrying the CBS reference and verified=true.
-    assert_eq!(code("c1"), "", "valid credit must succeed: {:?}", replies["c1"]);
+    assert_eq!(
+        code("c1"),
+        "",
+        "valid credit must succeed: {:?}",
+        replies["c1"]
+    );
     assert_eq!(replies["c1"]["data"]["cbs_reference"], "CBS-ITEST-1");
     assert_eq!(replies["c1"]["data"]["verified"], true);
     // Tampered evidence: refused, customer not credited.
@@ -225,7 +269,11 @@ async fn interface_c_transport_round_trips_all_message_types() {
     assert_eq!(code("c7"), error_code::NOT_IMPLEMENTED);
 
     // ---- evidence-store side effects.
-    let ok = evidence.get("tr-itest-ok").await.expect("query").expect("evidence stored");
+    let ok = evidence
+        .get("tr-itest-ok")
+        .await
+        .expect("query")
+        .expect("evidence stored");
     assert!(ok.verified, "valid triplet must be stored verified");
     assert_eq!(ok.promise_salt, salt);
     assert_eq!(ok.promise_id.as_deref(), Some("cardano-tx-itest"));
@@ -240,12 +288,20 @@ async fn interface_c_transport_round_trips_all_message_types() {
     let redeclared = channel
         .queue_declare(
             &rpc_queue,
-            QueueDeclareOptions { durable: true, passive: true, ..Default::default() },
+            QueueDeclareOptions {
+                durable: true,
+                passive: true,
+                ..Default::default()
+            },
             FieldTable::default(),
         )
         .await
         .expect("passive redeclare");
-    assert_eq!(redeclared.message_count(), 0, "all messages must be consumed and acked");
+    assert_eq!(
+        redeclared.message_count(),
+        0,
+        "all messages must be consumed and acked"
+    );
 
     // ---- cleanup: stop the consumer, remove the durable test queue.
     consumer_task.abort();

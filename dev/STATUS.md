@@ -37,7 +37,7 @@ Node B receives credit notification + evidence and posts to a CBS stub.
    `PostSimpleCounterpartyJson400` field-for-field (new fields
    serde-defaulted), `InitiateRequest.charge_policy` default `SHARED`.
    Workspace tests green (77+43 pass, 2 ignored).
-6. **All round-trip artifacts written** in `WIP/roundtrip/`:
+6. **All round-trip artifacts written** in `dev/`:
    - `setup_rabbitmq.sh` — vhosts `/bank.rt.bank.a` + `/bank.rt.bank.b`,
      users `bank_a_node`/`rtpass-a`, `bank_b_node`/`rtpass-b` (idempotent)
    - `setup_obp.sh` — banks `rt.bank.a`/`rt.bank.b`, node users
@@ -98,19 +98,19 @@ Node B receives credit notification + evidence and posts to a CBS stub.
    - OBP-API: `cd ~/Documents/workspace_2024/OBP-API-Simon/OBP-API && nohup java --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.lang.reflect=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED --add-opens java.base/java.lang.invoke=ALL-UNNAMED --add-opens java.base/java.util.jar=ALL-UNNAMED --add-opens java.base/sun.reflect.generics.reflectiveObjects=ALL-UNNAMED --add-opens java.base/java.io=ALL-UNNAMED --add-opens java.base/java.util.concurrent=ALL-UNNAMED --add-opens java.base/java.security=ALL-UNNAMED -jar obp-api/target/obp-api.jar > /tmp/obp-api.log 2>&1 &`
      (the jar already contains the prop; wait ~2-3 min, check
      `curl -s localhost:8080/obp/v7.0.0/root`)
-2. `bash WIP/roundtrip/setup_rabbitmq.sh` (NOT yet run — was about to when
+2. `bash dev/setup_rabbitmq.sh` (NOT yet run — was about to when
    paused)
-3. `bash WIP/roundtrip/setup_obp.sh` (NOT yet run). Caveats — endpoints were
+3. `bash dev/setup_obp.sh` (NOT yet run). Caveats — endpoints were
    written from the JSON factories but not yet exercised; verify on first
    run: user-creation path (`POST /obp/v5.1.0/users`), user-lookup path
    (`GET /obp/v5.1.0/users/username/{u}`), create-bank version (v5.0.0),
    and the grep'd "already exists" error codes for idempotent re-runs.
 4. Start the three processes (from repo root; each in its own terminal or
    nohup):
-   - `python3 WIP/roundtrip/cbs_stub.py`
-   - `source WIP/roundtrip/env.sh && OBP_BANK_NODE_CONFIG=WIP/roundtrip/node-a.yaml OBP_BN_OBP_API__DIRECT_LOGIN_TOKEN="$RT_NODE_A_TOKEN" cargo run -p obp-bank-node`
-   - `source WIP/roundtrip/env.sh && OBP_BANK_NODE_CONFIG=WIP/roundtrip/node-b.yaml OBP_BN_OBP_API__DIRECT_LOGIN_TOKEN="$RT_NODE_B_TOKEN" cargo run -p obp-bank-node`
-5. `bash WIP/roundtrip/run_roundtrip.sh` — caveats to verify on first run:
+   - `python3 dev/cbs_stub.py`
+   - `source dev/env.sh && OBP_BANK_NODE_CONFIG=dev/node-a.yaml OBP_BN_OBP_API__DIRECT_LOGIN_TOKEN="$RT_NODE_A_TOKEN" cargo run -p obp-bank-node`
+   - `source dev/env.sh && OBP_BANK_NODE_CONFIG=dev/node-b.yaml OBP_BN_OBP_API__DIRECT_LOGIN_TOKEN="$RT_NODE_B_TOKEN" cargo run -p obp-bank-node`
+5. `bash dev/run_roundtrip.sh` — caveats to verify on first run:
    the sqlite column names it queries (`settlements.confirmation_depth`,
    `evidence` table columns) were written from memory, not checked against
    the actual schemas in `settlement_store.rs` / `evidence.rs`; fix the

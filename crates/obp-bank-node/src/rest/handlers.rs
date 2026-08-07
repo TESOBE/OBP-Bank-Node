@@ -27,6 +27,7 @@ use super::BankNodeState;
 use crate::evidence::EvidenceRecord;
 use crate::obp_client::ObpClientError;
 use crate::outbox::{NewEntry, OutboxRecord};
+use crate::routing::RoutingViolation;
 use crate::settlement_store::SettlementRow;
 
 /// Build an OBP-style error response: an HTTP status plus an [`ErrorBody`]
@@ -54,7 +55,11 @@ fn validate(req: &InitiateRequest) -> Result<(), (StatusCode, &'static str, Stri
     const BAD_REQUEST: StatusCode = StatusCode::BAD_REQUEST;
 
     if req.value.currency.trim().is_empty() {
-        return Err((BAD_REQUEST, "OBP-10001", "value.currency is required".into()));
+        return Err((
+            BAD_REQUEST,
+            "OBP-10001",
+            "value.currency is required".into(),
+        ));
     }
 
     // Parse only to check the sign — the amount is carried as a string and is
@@ -78,10 +83,22 @@ fn validate(req: &InitiateRequest) -> Result<(), (StatusCode, &'static str, Stri
     }
 
     for (field, value) in [
-        ("other_bank_routing_scheme", &req.to.other_bank_routing_scheme),
-        ("other_bank_routing_address", &req.to.other_bank_routing_address),
-        ("other_account_routing_scheme", &req.to.other_account_routing_scheme),
-        ("other_account_routing_address", &req.to.other_account_routing_address),
+        (
+            "other_bank_routing_scheme",
+            &req.to.other_bank_routing_scheme,
+        ),
+        (
+            "other_bank_routing_address",
+            &req.to.other_bank_routing_address,
+        ),
+        (
+            "other_account_routing_scheme",
+            &req.to.other_account_routing_scheme,
+        ),
+        (
+            "other_account_routing_address",
+            &req.to.other_account_routing_address,
+        ),
     ] {
         if value.trim().is_empty() {
             return Err((BAD_REQUEST, "OBP-10001", format!("to.{field} is required")));
@@ -120,6 +137,28 @@ pub async fn initiate_payment(
     if let Err((status, code, message)) = validate(&req) {
         warn!(%code, %message, "initiate_payment rejected invalid request");
         return error(status, code, message);
+    }
+
+    // Beneficiary routing against the cached OBP-API registry — reject an
+    // unknown scheme or malformed address before anything is persisted.
+    // Skipped while the registry has never loaded (fail-open).
+    for (field, scheme, address) in [
+        (
+            "to.other_bank_routing",
+            &req.to.other_bank_routing_scheme,
+            &req.to.other_bank_routing_address,
+        ),
+        (
+            "to.other_account_routing",
+            &req.to.other_account_routing_scheme,
+            &req.to.other_account_routing_address,
+        ),
+    ] {
+        if let Err(v) = state.routing.check(field, scheme, address) {
+            let (code, message) = routing_violation_message(v);
+            warn!(%code, %message, "initiate_payment rejected beneficiary routing");
+            return error(StatusCode::BAD_REQUEST, code, message);
+        }
     }
 
     let id = Uuid::new_v4().to_string();
@@ -275,6 +314,29 @@ fn parse_rfc3339(s: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(s)
         .map(|d| d.with_timezone(&Utc))
         .unwrap_or_else(|_| Utc::now())
+}
+
+/// Map a routing-registry violation onto the south-side error code + message.
+/// The mismatch message carries the scheme's example address so the caller can
+/// self-correct without consulting the registry.
+fn routing_violation_message(v: RoutingViolation) -> (&'static str, String) {
+    match v {
+        RoutingViolation::UnknownScheme { field, scheme } => (
+            "OBP-BANK-NODE-ROUTING-002",
+            format!("unknown or inactive routing scheme '{scheme}' in {field}"),
+        ),
+        RoutingViolation::AddressMismatch {
+            field,
+            scheme,
+            example_address,
+        } => (
+            "OBP-BANK-NODE-ROUTING-003",
+            format!(
+                "address in {field} does not match the pattern registered for \
+                 scheme '{scheme}' (example: {example_address})"
+            ),
+        ),
+    }
 }
 
 /// Map an Interface B failure onto a south-side error response. An OBP

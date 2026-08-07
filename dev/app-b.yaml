@@ -1,0 +1,12 @@
+# Bank Node App for bank B — locked to its own node (rt.bank.b), exactly as
+# a bank client using Open Corridor would deploy it. The localhost demo runs
+# a second instance (app-a.yaml) so both banks' views sit side by side.
+# Start from the repo root:
+#   OBP_BANK_NODE_APP_CONFIG=dev/app-b.yaml cargo run -p obp-bank-node-app
+
+server:
+  bind: "0.0.0.0:8092"
+
+nodes:
+  - name: "node-b"
+    base_url: "http://localhost:8089"

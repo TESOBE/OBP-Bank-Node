@@ -2,8 +2,8 @@
 # beneficiary side needs no chain access: commitment verification is pure
 # hashing and the ADA lands at B's address from A's transfer).
 # Start from the repo root:
-#   source WIP/roundtrip/env.sh
-#   OBP_BANK_NODE_CONFIG=WIP/roundtrip/node-b.yaml \
+#   source dev/env.sh
+#   OBP_BANK_NODE_CONFIG=dev/node-b.yaml \
 #   OBP_BN_OBP_API__DIRECT_LOGIN_TOKEN="$RT_NODE_B_TOKEN" cargo run -p obp-bank-node
 
 server:
@@ -20,10 +20,10 @@ blockchain:
   type: "mock"
 
 outbox:
-  path: "./WIP/roundtrip/data/node-b/outbox.db"
+  path: "./dev/data/node-b/outbox.db"
 
 evidence:
-  path: "./WIP/roundtrip/data/node-b/evidence.db"
+  path: "./dev/data/node-b/evidence.db"
 
 rabbitmq:
   enabled: true

@@ -1,7 +1,7 @@
 # Round-trip test — Bank Node A (debtor, rt.bank.a, Cardano preprod).
 # Start from the repo root:
-#   source WIP/roundtrip/env.sh
-#   OBP_BANK_NODE_CONFIG=WIP/roundtrip/node-a.yaml \
+#   source dev/env.sh
+#   OBP_BANK_NODE_CONFIG=dev/node-a.yaml \
 #   OBP_BN_OBP_API__DIRECT_LOGIN_TOKEN="$RT_NODE_A_TOKEN" cargo run -p obp-bank-node
 
 server:
@@ -23,10 +23,10 @@ blockchain:
     wallet_skey_path: "./secrets/cardano.skey"
 
 outbox:
-  path: "./WIP/roundtrip/data/node-a/outbox.db"
+  path: "./dev/data/node-a/outbox.db"
 
 evidence:
-  path: "./WIP/roundtrip/data/node-a/evidence.db"
+  path: "./dev/data/node-a/evidence.db"
 
 rabbitmq:
   enabled: true
@@ -51,7 +51,7 @@ settlement:
   # Fast finality for the test run (2 blocks ≈ 40 s on preprod).
   finality_depth: 2
   finality_poll_secs: 10
-  store_path: "./WIP/roundtrip/data/node-a/settlements.db"
+  store_path: "./dev/data/node-a/settlements.db"
   ada_rate_minor_per_whole_ada: 2122
 
 local_secret: "rt-local-secret"

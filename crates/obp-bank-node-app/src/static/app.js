@@ -96,57 +96,49 @@ function renderTrTables() {
   $("#tr-tables").innerHTML = html;
 }
 
-// ---- step 3: position (assembled by the app) -----------------------------
+// ---- step 3: position (this bank's outbound exposure) --------------------
 
 const IN_CORRIDOR = new Set(["SUBMITTED", "PROMISE_WRITTEN", "REPORTED"]);
 
-function unsettledByCurrency(rows) {
-  // currency -> { total, count } over unsettled in-corridor outbound legs
+function outboundExposure(rows) {
+  // "other_bank|currency" -> { other, currency, total, count } over unsettled
+  // in-corridor outbound legs. A node only knows its own outbound side; the
+  // authoritative bilateral net is OBP-API's, at settle time.
   const acc = {};
   for (const tr of rows) {
     if (!IN_CORRIDOR.has(tr.status) || tr.settlement_id || !tr.value) continue;
     const amount = Number(tr.value.amount);
     if (!Number.isFinite(amount)) continue;
-    const cur = tr.value.currency;
-    acc[cur] = acc[cur] || { total: 0, count: 0 };
-    acc[cur].total += amount;
-    acc[cur].count += 1;
+    const key = `${tr.other_bank_id || "?"}|${tr.value.currency}`;
+    acc[key] = acc[key] || {
+      other: tr.other_bank_id || "?", currency: tr.value.currency, total: 0, count: 0,
+    };
+    acc[key].total += amount;
+    acc[key].count += 1;
   }
-  return acc;
+  return Object.values(acc);
 }
 
 function renderPosition() {
-  if (NODES.length < 2) {
-    $("#position-view").innerHTML = `<p class="empty">two nodes are needed for a bilateral view</p>`;
-    return;
-  }
-  const [a, b] = NODES; // demo topology is bilateral: first two configured nodes
-  const aOut = unsettledByCurrency(TRS[a.name] || []);
-  const bOut = unsettledByCurrency(TRS[b.name] || []);
-  const currencies = [...new Set([...Object.keys(aOut), ...Object.keys(bOut)])];
-  if (currencies.length === 0) {
-    $("#position-view").innerHTML = `<p class="empty">no unsettled corridor legs</p>`;
-    return;
-  }
-  const rows = currencies.map((cur) => {
-    const av = aOut[cur] || { total: 0, count: 0 };
-    const bv = bOut[cur] || { total: 0, count: 0 };
-    const net = av.total - bv.total;
-    const direction = net === 0 ? "level"
-      : net > 0 ? `${esc(a.name)} owes` : `${esc(b.name)} owes`;
-    return `<tr>
-      <td>${esc(cur)}</td>
-      <td class="num">${av.total.toFixed(2)} <span class="dim">(${av.count})</span></td>
-      <td class="num">${bv.total.toFixed(2)} <span class="dim">(${bv.count})</span></td>
-      <td class="num net">${Math.abs(net).toFixed(2)}</td>
-      <td>${direction}</td>
-    </tr>`;
+  const html = NODES.map((n) => {
+    const corridors = outboundExposure(TRS[n.name] || []);
+    if (corridors.length === 0) {
+      return `<h3>${esc(n.name)}</h3><p class="empty">no unsettled outbound corridor legs</p>`;
+    }
+    const rows = corridors.map((c) => `<tr>
+      <td>${esc(c.other)}</td>
+      <td>${esc(c.currency)}</td>
+      <td class="num net">${c.total.toFixed(2)}</td>
+      <td class="num">${c.count}</td>
+    </tr>`).join("");
+    return `<h3>${esc(n.name)}</h3>
+      <table>
+        <thead><tr><th>other bank</th><th>currency</th>
+          <th>unsettled outbound</th><th>promises</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
   }).join("");
-  $("#position-view").innerHTML = `<table>
-    <thead><tr><th>currency</th><th>${esc(a.name)} → ${esc(b.name)}</th>
-      <th>${esc(b.name)} → ${esc(a.name)}</th><th>net</th><th>direction</th></tr></thead>
-    <tbody>${rows}</tbody>
-  </table>`;
+  $("#position-view").innerHTML = html;
 }
 
 // ---- step 4: settlements -------------------------------------------------
@@ -227,11 +219,11 @@ function sendPayload(form) {
     value: { currency: f.get("currency"), amount: f.get("amount") },
     description: f.get("description"),
     to: {
-      name: `Beneficiary at ${f.get("other_bank")}`,
+      name: f.get("beneficiary_name"),
       description: `${f.get("other_account")} at ${f.get("other_bank")}`,
-      other_bank_routing_scheme: "OBP",
+      other_bank_routing_scheme: f.get("other_bank_scheme"),
       other_bank_routing_address: f.get("other_bank"),
-      other_account_routing_scheme: "OBP",
+      other_account_routing_scheme: f.get("other_account_scheme"),
       other_account_routing_address: f.get("other_account"),
     },
     originator: {

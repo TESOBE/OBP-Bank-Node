@@ -17,6 +17,7 @@ use axum::{
 use crate::evidence::EvidenceStore;
 use crate::obp_client::ObpClient;
 use crate::outbox::OutboxStore;
+use crate::routing::RoutingRegistry;
 use crate::settlement_store::SettlementStore;
 
 pub mod handlers;
@@ -37,6 +38,9 @@ pub struct BankNodeState {
     pub settlements: SettlementStore,
     pub evidence: EvidenceStore,
     pub obp: Arc<ObpClient>,
+    /// Cached OBP-API routing-scheme registry for beneficiary-routing
+    /// validation at initiation. Fail-open while unloaded.
+    pub routing: RoutingRegistry,
     pub blockchain_label: &'static str,
     pub bank_id: String,
     pub account_id: String,
@@ -61,7 +65,10 @@ pub fn build_router(state: BankNodeState) -> Router {
             "/obp-bank-node/v5.1.0/settlements",
             post(request_settlement).get(list_settlements),
         )
-        .route("/obp-bank-node/v5.1.0/settlements/:key", get(get_settlement))
+        .route(
+            "/obp-bank-node/v5.1.0/settlements/:key",
+            get(get_settlement),
+        )
         .route(
             "/obp-bank-node/v5.1.0/settlements/:key/corridor",
             get(get_corridor_settlement),

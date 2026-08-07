@@ -3,6 +3,36 @@
 State of the project as of the pause point, so we can resume without re-litigating
 decisions.
 
+## 2026-08-07 (evening) — dev env restructure; routing-scheme validation
+
+- **`WIP/roundtrip/` → `dev/`** (repo root; Simon: past experimentation).
+  All path references updated: `.gitignore`, launchers, YAML comments,
+  `dev/STATUS.md` re-run instructions, these notes, `APP.md`, and
+  `commands/_helpers/open_dev_env`. `run_roundtrip.sh` keeps its name (it
+  runs the round-trip test); `dev/` gained `start_node_a/b.sh` +
+  `start_app_a/b.sh` and per-node app configs `app-a/b.yaml` (UIs on
+  :8091/:8092, **each locked to its own node** — bank-client view; the
+  bilateral position join was dropped from the UI, position = own
+  outbound exposure per corridor; APP.md storyline step 3 revised).
+  `open_dev_env` opens four themed terminals (nodes A/B + both UIs).
+- **UI Send form** now takes the full end-recipient routing: beneficiary
+  name + bank/account routing scheme and address (was hardcoded `OBP`).
+- **Routing-scheme validation — built** (this repo): new `routing.rs`
+  `RoutingRegistry` caches OBP-API's registry
+  (`ObpClient::get_routing_schemes`, paginated `GET /routing-schemes`),
+  refreshed at boot + every `obp_api.routing_refresh_secs` (default 300,
+  0 = off). `initiate_payment` rejects before persisting: unknown/inactive
+  beneficiary scheme → 400 `OBP-BANK-NODE-ROUTING-002`; address failing
+  the scheme's `address_pattern` → 400 `OBP-BANK-NODE-ROUTING-003`
+  (message carries the example address). **Fail-open until first load**
+  (OBP-API down / mock dev ⇒ validation off, warned). `dev/setup_obp.sh`
+  registers the allow-listed global schemes `OBP`/`IBAN`/`BIC`
+  (country `INT`) via `POST /obp/v7.0.0/routing-schemes` +
+  `CanCreateRoutingScheme`. `DOCS/A1_A2.md` error table updated.
+  **157 workspace tests pass** (was 148). Open: category enforcement
+  (bank-scheme-must-be-BANK) needs an OBP-API-side decision — the single
+  `OBP` registry entry serves both bank ids and account ids.
+
 ## 2026-08-07 (later) — resume checklist executed; `/app` UI crate built
 
 - **Checklist step 1 done**: `Http4s700RoutesTest` re-run post-rename —
@@ -96,10 +126,10 @@ rationale: the old POST /open-corridor/settle name oversold — it nets and
 
 **3. Bank Node repo consequences (this repo):**
 
-- `WIP/roundtrip/run_roundtrip.sh` — settle step now POSTs
+- `dev/run_roundtrip.sh` — settle step now POSTs
   `banks/rt.bank.a/open-corridor/settlements` with
   `{other_bank_id, currency}`.
-- `WIP/roundtrip/setup_obp.sh` — `CanSettleOpenCorridor` granted per-bank
+- `dev/setup_obp.sh` — `CanSettleOpenCorridor` granted per-bank
   (both banks), no longer system-level.
 - `WIP/OPEN_CORRIDOR_INTERFACE_C_PUBLISH_PLAN.md` §5.3 updated (resource
   shape noted as superseding the flat shape).
@@ -200,7 +230,7 @@ The end-to-end Open Corridor loop ran for real — two KES 500 payments from
 `rt.bank.a`, promises on-chain, settle-pair netting (KES 1000), credit
 notifications verified and CBS-posted at node B, and a 47.125-tADA
 settlement transfer FINAL at depth 2, confirmed back to OBP-API's outbox
-relay (row DELIVERED). Full evidence: `WIP/roundtrip/STATUS.md`.
+relay (row DELIVERED). Full evidence: `dev/STATUS.md`.
 
 Defects fixed on the way (details in STATUS.md "Fixes applied"):
 node submit-URL had a spurious `/views/` segment (`obp_client.rs` +
