@@ -61,12 +61,18 @@ if [[ -n "$leftover" ]]; then
   echo "$leftover" >&2
 fi
 
+# The vhosts must exist before the nodes boot their Interface C consumers —
+# forgetting this step strands credit notifications in PENDING (2026-08-09),
+# so the bump runs it directly. Idempotent.
+echo
+echo "creating RabbitMQ vhosts for the new generation:"
+bash "$DIR/setup_rabbitmq.sh"
+
 cat <<EOF
 
-Done. Bring-up for the new generation:
-  1. dev/setup_rabbitmq.sh                  # new vhosts /bank.rt.bank.{a,b}$NEXT
-  2. (restart OBP-API only if its build changed)
-  3. dev/setup_obp.sh                       # grants, broker registrations, fresh env.sh
-  4. restart nodes + apps (start_node_*.sh, start_app_*.sh)
-  5. each /setup page: log in, Apply the missing items to green
+Done. Remaining bring-up for the new generation:
+  1. (restart OBP-API only if its build changed)
+  2. dev/setup_obp.sh                       # grants, broker registrations, fresh env.sh
+  3. restart nodes + apps (start_node_*.sh, start_app_*.sh)
+  4. each /setup page: log in, Apply the missing items to green
 EOF

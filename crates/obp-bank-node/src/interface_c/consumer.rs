@@ -45,6 +45,13 @@ pub async fn run(config: ConsumerConfig, router: Arc<Router>) -> anyhow::Result<
         .await
         .context("creating AMQP channel")?;
 
+    // Queue args MUST match OBP-API's publisher declare exactly (durable +
+    // x-message-ttl 60000): AMQP treats inequivalent args as PRECONDITION_FAILED,
+    // and whichever side reaches a fresh vhost first wins the declare. The TTL
+    // is the RPC-expiry convention — an undelivered instruction goes stale in
+    // 60s and OBP-API's outbox relay redelivers it anyway.
+    let mut queue_args = FieldTable::default();
+    queue_args.insert("x-message-ttl".into(), lapin::types::AMQPValue::LongInt(60_000));
     channel
         .queue_declare(
             &config.queue,
@@ -52,7 +59,7 @@ pub async fn run(config: ConsumerConfig, router: Arc<Router>) -> anyhow::Result<
                 durable: true,
                 ..Default::default()
             },
-            FieldTable::default(),
+            queue_args,
         )
         .await
         .with_context(|| format!("declaring queue {}", config.queue))?;
