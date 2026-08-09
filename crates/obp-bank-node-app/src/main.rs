@@ -88,18 +88,21 @@ fn default_oauth_provider() -> String {
 /// Declarative desired state for the `/setup` page. Wire-shaped blocks
 /// (`routing_schemes`, `broker`) are kept as raw JSON so the YAML carries
 /// exactly what OBP-API's endpoints receive — no re-modelling here.
+///
+/// Single-bank by construction (decided 2026-08-09): the app acts on behalf
+/// of ONE node = one bank, so its setup block describes only that bank's
+/// world — never another bank's accounts, broker credentials, or grants.
+/// The exception is `routing_schemes`, which are system-level catalogue
+/// entries (API-operator scope in production; carried here for dev).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SetupConfig {
     /// Bodies for `POST /obp/v7.0.0/routing-schemes`, verbatim. Checked via
     /// `GET /routing-schemes/{scheme}`.
     #[serde(default)]
     pub routing_schemes: Vec<serde_json::Value>,
+    /// This instance's own bank.
     #[serde(default)]
-    pub banks: Vec<SetupBank>,
-    /// Entitlements for users that already exist (e.g. the node service
-    /// users). The page grants but NEVER creates users.
-    #[serde(default)]
-    pub role_grants: Vec<SetupRoleGrant>,
+    pub bank: Option<SetupBank>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +118,10 @@ pub struct SetupBank {
     /// Body for `PUT /obp/v7.0.0/banks/{id}/open-corridor/broker`, verbatim.
     #[serde(default)]
     pub broker: Option<serde_json::Value>,
+    /// Entitlements at THIS bank for users that already exist (the bank's
+    /// node service user). The page grants but never creates users.
+    #[serde(default)]
+    pub role_grants: Vec<SetupRoleGrant>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,12 +144,11 @@ pub struct SetupFxRate {
     pub inverse_rate: f64,
 }
 
+/// A role at the configured bank (the bank id is implied — grants outside
+/// the own bank are not expressible).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetupRoleGrant {
     pub username: String,
-    /// Empty string = system-level role.
-    #[serde(default)]
-    pub bank_id: String,
     pub role: String,
 }
 

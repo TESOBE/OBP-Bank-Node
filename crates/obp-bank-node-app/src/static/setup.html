@@ -16,20 +16,16 @@
   <main>
     <section id="login-section" hidden>
       <h2>Log in</h2>
-      <p class="hint">This operator page reconciles the OBP-API instance against this app's
-        configured Open Corridor state. Log in with an OBP administrator account via the
-        instance's OIDC provider (the same flow the OBP Portal uses); the token stays
-        server-side.</p>
+      <p class="hint">Reconciles the OBP-API instance against this app's configured
+        Open Corridor state. Log in with an OBP admin account via the instance's
+        OIDC provider.</p>
       <button id="login-btn">Log in with OBP</button>
       <pre id="login-error" class="result result-err" hidden></pre>
     </section>
 
     <section id="status-section" hidden>
       <h2>Instance checks</h2>
-      <p class="hint">Desired state comes from this app instance's <code>setup</code> config.
-        Checks are read-only; <em>Apply</em> issues the same idempotent create/register calls
-        as <code>dev/setup_obp.sh</code>. This page never creates users — service users are
-        provisioned outside the app.</p>
+      <p class="hint">Desired state comes from this app instance's <code>setup</code> config.</p>
       <div class="setup-toolbar">
         <button id="refresh-btn" class="small">Re-check</button>
         <button id="apply-all-btn" class="small">Apply all missing</button>
@@ -78,8 +74,8 @@
   </main>
 
   <footer>
-    <p>Operator surface: talks to OBP-API as the logged-in administrator. The storyline
-      pages talk only to Bank Nodes.</p>
+    <p>Operator surface: talks to OBP-API as a logged-in user who needs some bank roles.
+      The storyline pages talk only to Bank Nodes.</p>
   </footer>
 
   <script src="/setup.js"></script>

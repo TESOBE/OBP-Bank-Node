@@ -37,11 +37,12 @@ obp_api:
   oauth_client_secret: "pnp0v1vjl5f5r5o123hrrgreslxgtqie2oojwf0a"
   callback_url: "http://localhost:8091/setup/callback"
 
-# Desired Open Corridor state the setup page reconciles OBP-API against —
-# the same world dev/setup_obp.sh creates, minus user registration (the
-# node service users rt.node.a/b are provisioned by the script; the page
-# only checks/grants their roles). Checks are read-only; Apply mirrors the
-# script's idempotent calls.
+# Desired Open Corridor state the setup page reconciles OBP-API against.
+# Single-bank (2026-08-09): this instance acts for its own bank only — the
+# other bank's setup is that bank's own app instance's job. Routing schemes
+# are the system-level catalogue (API-operator scope in production; carried
+# here for dev). The node service users are provisioned by setup_obp.sh;
+# the page only checks/grants their roles.
 setup:
   routing_schemes:
     - scheme: "OBP"
@@ -69,57 +70,31 @@ setup:
       downstream_rails: []
       status: "ACTIVE"
 
-  banks:
-    - id: "rt.bank.a"
-      full_name: "Round-trip rt.bank.a"
-      accounts:
-        - id: "settlement-a"
-          label: "Node A corridor account"
-          currency: "KES"
-          owner_username: "rt.node.a"
-        - id: "OBP-OUTGOING-SETTLEMENT-ACCOUNT"
-          label: "OC outgoing settlement"
-          currency: "KES"
-        - id: "OBP-INCOMING-SETTLEMENT-ACCOUNT"
-          label: "OC incoming settlement"
-          currency: "KES"
-      fx:
-        - { from_currency: "EUR", to_currency: "KES", rate: 150.0, inverse_rate: 0.006667 }
-        - { from_currency: "KES", to_currency: "EUR", rate: 0.006667, inverse_rate: 150.0 }
-      broker:
-        host: "localhost"
-        port: 5672
-        virtual_host: "/bank.rt.bank.a"
-        username: "bank_a_node"
-        password: "rtpass-a"
-        use_ssl: false
-        settlement_address: "addr_test1vz233470pc30zzsceh9k2qmzkj4gvj7n976ulvdmed5w9mg0a37ns"
-    - id: "rt.bank.b"
-      full_name: "Round-trip rt.bank.b"
-      accounts:
-        - id: "settlement-b"
-          label: "Node B beneficiary account"
-          currency: "KES"
-          owner_username: "rt.node.b"
-        - id: "OBP-OUTGOING-SETTLEMENT-ACCOUNT"
-          label: "OC outgoing settlement"
-          currency: "KES"
-        - id: "OBP-INCOMING-SETTLEMENT-ACCOUNT"
-          label: "OC incoming settlement"
-          currency: "KES"
-      fx:
-        - { from_currency: "EUR", to_currency: "KES", rate: 150.0, inverse_rate: 0.006667 }
-        - { from_currency: "KES", to_currency: "EUR", rate: 0.006667, inverse_rate: 150.0 }
-      broker:
-        host: "localhost"
-        port: 5672
-        virtual_host: "/bank.rt.bank.b"
-        username: "bank_b_node"
-        password: "rtpass-b"
-        use_ssl: false
-        settlement_address: "addr_test1vqn7sn79x6k9a2353l458mk2gccmwqk7nza93zydpuvl7lquy6jcl"
-
-  role_grants:
-    - { username: "rt.node.a", bank_id: "rt.bank.a", role: "CanAttachOpenCorridorPromise" }
-    - { username: "rt.node.a", bank_id: "rt.bank.a", role: "CanSettleOpenCorridor" }
-    - { username: "rt.node.b", bank_id: "rt.bank.b", role: "CanSettleOpenCorridor" }
+  bank:
+    id: "rt.bank.a"
+    full_name: "Round-trip rt.bank.a"
+    accounts:
+      - id: "settlement-a"
+        label: "Node A corridor account"
+        currency: "KES"
+        owner_username: "rt.node.a"
+      - id: "OBP-OUTGOING-SETTLEMENT-ACCOUNT"
+        label: "OC outgoing settlement"
+        currency: "KES"
+      - id: "OBP-INCOMING-SETTLEMENT-ACCOUNT"
+        label: "OC incoming settlement"
+        currency: "KES"
+    fx:
+      - { from_currency: "EUR", to_currency: "KES", rate: 150.0, inverse_rate: 0.006667 }
+      - { from_currency: "KES", to_currency: "EUR", rate: 0.006667, inverse_rate: 150.0 }
+    broker:
+      host: "localhost"
+      port: 5672
+      virtual_host: "/bank.rt.bank.a"
+      username: "bank_a_node"
+      password: "rtpass-a"
+      use_ssl: false
+      settlement_address: "addr_test1vz233470pc30zzsceh9k2qmzkj4gvj7n976ulvdmed5w9mg0a37ns"
+    role_grants:
+      - { username: "rt.node.a", role: "CanAttachOpenCorridorPromise" }
+      - { username: "rt.node.a", role: "CanSettleOpenCorridor" }

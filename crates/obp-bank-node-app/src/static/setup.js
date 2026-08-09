@@ -56,7 +56,7 @@ let LAST_STATUS = null; // raw /api/setup/status body, feeds the JSON block
 function roleButton(i) {
   const rr = i.required_role || {};
   if (!rr.role) return "";
-  const label = rr.bank_id ? `${rr.role} @ ${rr.bank_id}` : rr.role;
+  const label = rr.bank_id ? `${rr.role} (${rr.bank_id})` : rr.role;
   return `<button class="small request-btn" data-bank="${esc(rr.bank_id)}"
             data-role="${esc(rr.role)}" title="Request ${esc(label)} for yourself">Request role</button>`;
 }
@@ -113,9 +113,15 @@ async function refresh() {
   }
   LAST_STATUS = r.body;
   ITEMS = Array.isArray(r.body.items) ? r.body.items : [];
+  // One app instance = one bank: test accounts go to the own bank.
+  if (r.body.bank) {
+    const bankField = $("#test-account-form").elements.namedItem("bank_id");
+    bankField.value = r.body.bank;
+    bankField.readOnly = true;
+  }
   const api = r.body.api || {};
   $("#api-info").textContent = api.status === "ok"
-    ? `OBP-API ${api.version || ""} · logged in as ${r.body.me.username}`
+    ? `logged in as ${r.body.me.username}`
     : `OBP-API unreachable: ${api.detail || ""}`;
   renderItems();
   await renderStatusJson();
@@ -220,13 +226,19 @@ async function boot() {
   });
 
   const me = await getJson("/api/setup/me");
-  if (me.status === 401 || !me.ok) {
+  if (me.status === 401) {
     showLoggedOut();
-    if (me.body && me.body.error_code === "OBP-BANK-NODE-APP-SETUP-NOT-CONFIGURED") {
-      const el = $("#login-error");
-      el.hidden = false;
-      el.textContent = me.body.message;
-    }
+    return;
+  }
+  if (!me.ok) {
+    // Not a login problem — the app or OBP-API failed. Say so rather than
+    // rendering it as "logged out".
+    showLoggedOut();
+    const el = $("#login-error");
+    el.hidden = false;
+    el.textContent = me.body && me.body.message
+      ? `${me.body.error_code || "error"}: ${me.body.message}`
+      : `HTTP ${me.status}`;
     return;
   }
   showLoggedIn(me.body);

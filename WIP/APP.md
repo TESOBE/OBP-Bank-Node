@@ -152,10 +152,20 @@ page, so an admin can verify an OBP-API instance is ready for Open Corridor
   **Prerequisite:** an OBP consumer registered with redirect URL
   `http://<app>/setup/callback` — its key/secret go in the config (or
   `OBP_BN_APP_OBP_API__OAUTH_CLIENT_*` env).
+- **Single-bank by construction** (revised 2026-08-09 with Simon; the first
+  cut carried the whole corridor — both banks — which broke the one-node
+  boundary and put bank B's broker credentials in bank A's config file):
+  the `setup` block describes ONE bank — `setup.bank` with its accounts,
+  FX rates, broker registration, and role grants (bank id implied, so
+  cross-bank grants are not expressible). Each instance reconciles only
+  its own side; the corridor works when both banks' operators have run
+  theirs. The exception is `routing_schemes` — system-level catalogue
+  entries, API-operator scope in production, carried in both dev configs
+  because applies are idempotent. The test-account form is locked to the
+  own bank.
 - **Declarative desired state** in the `setup` config block (see
-  `dev/app-a/b.yaml`, which carry the corridor world `setup_obp.sh`
-  creates): routing schemes (wire-shaped, posted verbatim), banks with
-  accounts / FX rates / broker registrations, and role grants. The page
+  `dev/app-a/b.yaml`): routing schemes (wire-shaped, posted verbatim), the
+  own bank's accounts / FX rates / broker registration, role grants. The page
   renders every item as a read-only check (`ok` / `missing` / `differs` /
   `unverified` / `error`) with per-item **Apply** + **Apply all missing**;
   applies re-derive the action server-side from config (the browser only
@@ -203,6 +213,11 @@ page, so an admin can verify an OBP-API instance is ready for Open Corridor
   settles.
 - Node API auth for the app in the demo environment: unauthenticated
   localhost first, or wire OAuth2 client-credentials from the start?
+- **Corridor directory page** (Simon, 2026-08-09): a read-only page listing
+  all banks set up for Open Corridor. Needs an OBP-API endpoint exposing
+  which banks have a broker registration (existence only — no credentials);
+  today the broker GET is per-bank and role-guarded, so the listing
+  endpoint is OBP-API-side work first.
 - ~~Whether the settle-request endpoint takes a counterparty bank parameter
   (multi-corridor future) or settles the node's single configured
   corridor.~~ Resolved 2026-08-07: it takes

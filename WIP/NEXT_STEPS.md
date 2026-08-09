@@ -3,6 +3,88 @@
 State of the project as of the pause point, so we can resume without re-litigating
 decisions.
 
+## 2026-08-09 (even later) — global routing schemes seeded at boot; NPE fix
+
+- **`RoutingSchemeSeed` now seeds the three global INT schemes**
+  (`OBP`/`IBAN`/`BIC`, decided with Simon) ahead of the TZ.* set — every
+  freshly booted OBP-API is Open-Corridor-ready without running
+  `setup_obp.sh` or the setup page's Apply for schemes. Same idempotent
+  insert, same `routing_schemes.seed_defaults_at_boot` toggle. The
+  script's/page's registrations remain harmless no-ops.
+- **NPE fix** in `MappedEntitlement.entitlementRequestId`: the column
+  defaults to null and the old accessor called `.toString` before the
+  null check — latent until the v6 `users/current` factory started
+  mapping the field, then every login-backed call 500'd (seen as
+  "login doesn't work" on the setup page). Accessor now null-safe; the
+  setup page also now surfaces backend errors on the login page instead
+  of rendering them as "logged out".
+- Setup page scheme items are labeled by category: "Account routing
+  scheme OBP/IBAN", "Bank routing scheme BIC" (Simon: be specific —
+  and they are NOT all account schemes).
+
+## 2026-08-09 (later) — virtual entitlements surfaced; v6 entitlement JSON enriched
+
+- Simon hit the confusion that granting worked before he held any granting
+  role: he's in `super_admin_user_ids`, whose users get VIRTUAL entitlements
+  (`CanCreateEntitlementAtOne/AnyBank`, `CanGetAnyUser`) at authorization
+  time. Endpoints that DISPLAY virtual entitlements: v6.0.0
+  `/users/current`, v3.0.0 `/my/entitlements`, v2.0.0+v4.0.0
+  `/users/USER_ID/entitlements`, v2.1.0 bank-scoped variant. v5.1.0
+  `/users/current` does NOT — which the setup page was using; it now uses
+  **v6.0.0 `/users/current`**, and system `CanCreateEntitlementAtAnyBank`
+  satisfies per-bank granting checks (same implication OBP applies).
+- **OBP-API working-tree change (UNCOMMITTED, compiles clean; jar rebuild +
+  restart needed before the new fields appear on the wire):**
+  `JSONFactory6.0.0.scala` — new `EntitlementJsonV600`
+  (`entitlement_id, role_name, bank_id, created_by_process,
+  entitlement_request_id`) used by `UserJsonV600`; previously no wire JSON
+  exposed `created_by_process` anywhere. The setup page shows
+  `created_by_process` as the detail on held "your entitlements" items
+  (blank until the new jar runs).
+- UI: dropped the "OBP-API v…" version text from the setup toolbar (kept in
+  the status JSON).
+- **`granted_by` — BUILT (2026-08-09, decided with Simon).** Rules agreed:
+  stable versions' wire JSON must not change (v2 "stable for years"), but
+  wire-neutral internal changes may go into old version modules — no new
+  endpoint version needed; and wherever a `cc` user id is available at a
+  grant call site, record it as the granter. Changes (OBP-API working
+  tree, uncommitted):
+  - `Entitlement` trait + `MappedEntitlement`: new `granted_by_user_id`
+    column (schemifier auto-adds on boot) + `grantedByUserId` accessor.
+    `addEntitlement`'s dead `grantorUserId` param (auth-gate, never called,
+    ignored super admins) renamed `grantedByUserId` and is now audit-only
+    storage — authorization stays at the endpoints.
+  - Granter recorded at: v2.0.0 + v7.0.0 direct-grant endpoints (the
+    caller), v6.0.0 group-membership grants (the admin), v6.0.0
+    dynamic-entity + backup and v5.0.0 bank-create self-grants + APIUtil
+    JIT (self). Left `None` (no cc): AfterApiAuth onboarding, ConsentUtil,
+    default entitlements. All wire-neutral.
+  - v6.0.0 `users/current` `EntitlementJsonV600` also carries
+    `granted_by_user_id` (with `created_by_process`,
+    `entitlement_request_id`) — the one wire change, v6 only.
+  - Setup page shows it: held role detail =
+    `created_by_process · granted by <user_id>`.
+
+## 2026-08-09 — setup page restructured single-bank
+
+Decided with Simon: the app acts for ONE node = one bank (the node-operator
+view), and the setup page must too. The first cut carried both banks'
+desired state in each instance — including the *other* bank's broker
+credentials in the config file, a real boundary violation. Now:
+`setup.bank` (singular) with accounts / fx / broker / `role_grants`
+(bank id implied — cross-bank grants inexpressible); `routing_schemes`
+stay in both configs (system catalogue, API-operator scope in production,
+idempotent applies; Simon ok'd). Status body gained `"bank"`; the
+test-account form is locked to the own bank. `dev/app-a/b.yaml` rewritten —
+each now carries only its own side. Display: `Role (bank_id)` instead of
+`Role @ bank_id`; page hints trimmed hard (see the terse-UI-copy memory).
+23 app tests / 170 workspace.
+
+New idea (Simon, not built): a read-only **corridor directory** page —
+all banks set up for Open Corridor. Needs an OBP-API listing endpoint
+(broker-registration existence only, no credentials); noted in `APP.md`
+§Open.
+
 ## 2026-08-08 — `/setup` operator page in the app (OBP-API provisioning UI)
 
 Decided with Simon: `dev/setup_obp.sh`'s OBP-API provisioning moves into the

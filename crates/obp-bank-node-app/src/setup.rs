@@ -236,13 +236,30 @@ async fn require_token(state: &SetupState, headers: &HeaderMap) -> Result<String
 struct Me {
     user_id: String,
     username: String,
-    /// `(bank_id, role_name)` pairs; bank_id is empty for system roles.
-    entitlements: Vec<(String, String)>,
+    entitlements: Vec<MeEntitlement>,
+}
+
+struct MeEntitlement {
+    /// Empty for system roles.
+    bank_id: String,
+    role: String,
+    /// "manual", "create_just_in_time_entitlements", or the virtual markers
+    /// "super_admin_user_ids" / "oidc_operator_user_ids". Empty when the
+    /// running OBP-API predates the field.
+    created_by_process: String,
+    /// user_id of the granter when a person made the grant; absent for
+    /// system processes, virtual entitlements, and pre-field rows.
+    granted_by_user_id: Option<String>,
 }
 
 async fn fetch_me(state: &SetupState, token: &str) -> Result<Me, String> {
+    // v6.0.0 (not v5.1.0): its entitlements list includes the VIRTUAL
+    // entitlements of `super_admin_user_ids` users (CanCreateEntitlementAt
+    // One/AnyBank, CanGetAnyUser, marked created_by_process
+    // "super_admin_user_ids") — without them a super admin's granting
+    // rights show as missing here while grants succeed anyway.
     let (status, body) = state
-        .obp(Method::GET, "/obp/v5.1.0/users/current", Some(token), None)
+        .obp(Method::GET, "/obp/v6.0.0/users/current", Some(token), None)
         .await?;
     if !status.is_success() {
         return Err(format!("GET /users/current returned {status}: {body}"));
@@ -251,11 +268,16 @@ async fn fetch_me(state: &SetupState, token: &str) -> Result<Me, String> {
         .as_array()
         .map(|list| {
             list.iter()
-                .map(|e| {
-                    (
-                        e["bank_id"].as_str().unwrap_or("").to_string(),
-                        e["role_name"].as_str().unwrap_or("").to_string(),
-                    )
+                .map(|e| MeEntitlement {
+                    bank_id: e["bank_id"].as_str().unwrap_or("").to_string(),
+                    role: e["role_name"].as_str().unwrap_or("").to_string(),
+                    created_by_process: e["created_by_process"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string(),
+                    granted_by_user_id: e["granted_by_user_id"]
+                        .as_str()
+                        .map(|s| s.to_string()),
                 })
                 .collect()
         })
@@ -277,9 +299,11 @@ async fn me(State(state): State<SetupState>, headers: HeaderMap) -> Response {
             "logged_in": true,
             "user_id": me.user_id,
             "username": me.username,
-            "entitlements": me.entitlements.iter().map(|(bank_id, role)| json!({
-                "bank_id": bank_id,
-                "role_name": role,
+            "entitlements": me.entitlements.iter().map(|e| json!({
+                "bank_id": e.bank_id,
+                "role_name": e.role,
+                "created_by_process": e.created_by_process,
+                "granted_by_user_id": e.granted_by_user_id,
             })).collect::<Vec<_>>(),
         }))
         .into_response(),
@@ -301,10 +325,8 @@ fn required_admin_roles(setup: &SetupConfig) -> Vec<(String, String)> {
     if !setup.routing_schemes.is_empty() {
         roles.push((String::new(), "CanCreateRoutingScheme".to_string()));
     }
-    if !setup.banks.is_empty() {
+    if let Some(bank) = &setup.bank {
         roles.push((String::new(), "CanCreateBank".to_string()));
-    }
-    for bank in &setup.banks {
         if !bank.accounts.is_empty() {
             roles.push((bank.id.clone(), "CanCreateAccount".to_string()));
         }
@@ -315,6 +337,12 @@ fn required_admin_roles(setup: &SetupConfig) -> Vec<(String, String)> {
             roles.push((
                 bank.id.clone(),
                 "CanConfigureOpenCorridorBroker".to_string(),
+            ));
+        }
+        if !bank.role_grants.is_empty() {
+            roles.push((
+                bank.id.clone(),
+                "CanCreateEntitlementAtOneBank".to_string(),
             ));
         }
     }
@@ -388,10 +416,14 @@ async fn status(State(state): State<SetupState>, headers: HeaderMap) -> Response
         }
     };
     for (bank_id, role) in required_admin_roles(setup) {
-        let held = me
-            .entitlements
-            .iter()
-            .any(|(b, r)| *b == bank_id && *r == role);
+        // System-level CanCreateEntitlementAtAnyBank satisfies the per-bank
+        // granting requirement — OBP checks the same implication.
+        let satisfied_by = me.entitlements.iter().find(|e| {
+            (e.bank_id == bank_id && e.role == role)
+                || (role == "CanCreateEntitlementAtOneBank"
+                    && e.bank_id.is_empty()
+                    && e.role == "CanCreateEntitlementAtAnyBank")
+        });
         items.push(item(
             format!("myrole:{bank_id}:{role}"),
             "me",
@@ -400,22 +432,35 @@ async fn status(State(state): State<SetupState>, headers: HeaderMap) -> Response
                 if bank_id.is_empty() {
                     "(system)".to_string()
                 } else {
-                    format!("@ {bank_id}")
+                    format!("({bank_id})")
                 }
             ),
-            if held { "ok" } else { "missing" },
-            if held {
-                String::new()
-            } else {
-                "Apply self-grants (superadmin); otherwise request the role".to_string()
+            if satisfied_by.is_some() { "ok" } else { "missing" },
+            match satisfied_by {
+                // Provenance: created_by_process, plus the granter when a
+                // person made the grant.
+                Some(e) => match &e.granted_by_user_id {
+                    Some(granter) => {
+                        format!("{} · granted by {}", e.created_by_process, granter)
+                    }
+                    None => e.created_by_process.clone(),
+                },
+                None => "Apply (self-grant)".to_string(),
             },
             (&bank_id, &role),
         ));
     }
 
-    // Routing schemes.
+    // Routing schemes. The title carries the scheme's category — BANK
+    // schemes address a bank (BIC), ACCOUNT schemes an account (IBAN, OBP);
+    // both halves of a payment's routing pairs are validated against them.
     for scheme in &setup.routing_schemes {
         let name = scheme["scheme"].as_str().unwrap_or("?");
+        let kind = match scheme["category"].as_str().unwrap_or("") {
+            "ACCOUNT" => "Account routing scheme",
+            "BANK" => "Bank routing scheme",
+            _ => "Routing scheme",
+        };
         let (status_str, detail) = match state
             .obp(
                 Method::GET,
@@ -448,15 +493,16 @@ async fn status(State(state): State<SetupState>, headers: HeaderMap) -> Response
         items.push(item(
             format!("scheme:{name}"),
             "schemes",
-            format!("Routing scheme {name}"),
+            format!("{kind} {name}"),
             status_str,
             detail,
             ("", "CanCreateRoutingScheme"),
         ));
     }
 
-    // Banks, and each bank's accounts / FX rates / broker registration.
-    for bank in &setup.banks {
+    // The own bank, its accounts / FX rates / broker registration, and the
+    // role grants at it.
+    if let Some(bank) = &setup.bank {
         let b = &bank.id;
         let (status_str, detail) = match state
             .obp(
@@ -550,7 +596,7 @@ async fn status(State(state): State<SetupState>, headers: HeaderMap) -> Response
             items.push(item(
                 format!("fx:{b}:{from}:{to}"),
                 "banks",
-                format!("FX {from}→{to} @ {b}"),
+                format!("FX {from}→{to} ({b})"),
                 status_str,
                 detail,
                 (b, "CanCreateFxRate"),
@@ -591,79 +637,72 @@ async fn status(State(state): State<SetupState>, headers: HeaderMap) -> Response
             items.push(item(
                 format!("broker:{b}"),
                 "banks",
-                format!("Open Corridor broker @ {b}"),
+                format!("Open Corridor broker ({b})"),
                 status_str,
                 detail,
                 (b, "CanConfigureOpenCorridorBroker"),
             ));
         }
-    }
 
-    // Role grants for pre-existing users (never created here).
-    for grant in &setup.role_grants {
-        let (status_str, detail) = match state
-            .obp(
-                Method::GET,
-                &format!("/obp/v5.1.0/users/username/{}", grant.username),
-                Some(&token),
-                None,
-            )
-            .await
-        {
-            Ok((status, body)) if status.is_success() => {
-                let held = body["entitlements"]["list"]
-                    .as_array()
-                    .map(|list| {
-                        list.iter().any(|e| {
-                            e["bank_id"].as_str().unwrap_or("") == grant.bank_id
-                                && e["role_name"].as_str().unwrap_or("") == grant.role
+        // Role grants at the own bank for pre-existing users (never
+        // created here).
+        for grant in &bank.role_grants {
+            let (status_str, detail) = match state
+                .obp(
+                    Method::GET,
+                    &format!("/obp/v5.1.0/users/username/{}", grant.username),
+                    Some(&token),
+                    None,
+                )
+                .await
+            {
+                Ok((status, body)) if status.is_success() => {
+                    let held = body["entitlements"]["list"]
+                        .as_array()
+                        .map(|list| {
+                            list.iter().any(|e| {
+                                e["bank_id"].as_str().unwrap_or("") == *b
+                                    && e["role_name"].as_str().unwrap_or("") == grant.role
+                            })
                         })
-                    })
-                    .unwrap_or(false);
-                if held {
-                    ("ok", String::new())
-                } else {
-                    ("missing", String::new())
+                        .unwrap_or(false);
+                    if held {
+                        ("ok", String::new())
+                    } else {
+                        ("missing", String::new())
+                    }
                 }
-            }
-            Ok((status, body)) => {
-                let (s, d) = classify(status, &body, String::new());
-                if s == "missing" {
-                    (
-                        "error",
-                        format!(
-                            "user {} does not exist — service users are provisioned outside this app",
-                            grant.username
-                        ),
-                    )
-                } else {
-                    (s, d)
+                Ok((status, body)) => {
+                    let (s, d) = classify(status, &body, String::new());
+                    if s == "missing" {
+                        (
+                            "error",
+                            format!(
+                                "user {} does not exist — service users are provisioned outside this app",
+                                grant.username
+                            ),
+                        )
+                    } else {
+                        (s, d)
+                    }
                 }
-            }
-            Err(e) => ("error", e),
-        };
-        items.push(item(
-            format!("grant:{}@{}:{}", grant.username, grant.bank_id, grant.role),
-            "grants",
-            format!(
-                "{} for {}{}",
-                grant.role,
-                grant.username,
-                if grant.bank_id.is_empty() {
-                    String::new()
-                } else {
-                    format!(" @ {}", grant.bank_id)
-                }
-            ),
-            status_str,
-            detail,
-            // Granting an entitlement to another user needs granting rights
-            // at that bank (or superadmin).
-            (&grant.bank_id, "CanCreateEntitlementAtOneBank"),
-        ));
+                Err(e) => ("error", e),
+            };
+            items.push(item(
+                format!("grant:{}@{}:{}", grant.username, b, grant.role),
+                "grants",
+                format!("{} for {} ({})", grant.role, grant.username, b),
+                status_str,
+                detail,
+                // Granting an entitlement to another user needs granting
+                // rights at the bank (or superadmin).
+                (b, "CanCreateEntitlementAtOneBank"),
+            ));
+        }
     }
 
     Json(json!({
+        "bank": setup.bank.as_ref().map(|b| b.id.clone()),
         "generated_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "obp_api": {
             "base_url": state.0.cfg.base_url,
@@ -853,7 +892,7 @@ async fn apply(
             }
             None => Err(format!("no routing scheme {name} in the setup config")),
         },
-        Some(("bank", bank_id)) => match setup.banks.iter().find(|b| b.id == bank_id) {
+        Some(("bank", bank_id)) => match setup.bank.as_ref().filter(|b| b.id == bank_id) {
             Some(bank) => {
                 state
                     .obp(
@@ -871,14 +910,14 @@ async fn apply(
                     )
                     .await
             }
-            None => Err(format!("no bank {bank_id} in the setup config")),
+            None => Err(format!("{bank_id} is not this instance's bank")),
         },
         Some(("account", rest)) => match rest.split_once('/') {
             Some((bank_id, account_id)) => {
                 match setup
-                    .banks
-                    .iter()
-                    .find(|b| b.id == bank_id)
+                    .bank
+                    .as_ref()
+                    .filter(|b| b.id == bank_id)
                     .and_then(|b| b.accounts.iter().find(|a| a.id == account_id))
                 {
                     Some(account) => {
@@ -904,9 +943,9 @@ async fn apply(
             match parts.as_slice() {
                 [bank_id, from, to] => {
                     match setup
-                        .banks
-                        .iter()
-                        .find(|b| b.id == *bank_id)
+                        .bank
+                        .as_ref()
+                        .filter(|b| b.id == *bank_id)
                         .and_then(|b| {
                             b.fx.iter()
                                 .find(|f| f.from_currency == *from && f.to_currency == *to)
@@ -938,9 +977,9 @@ async fn apply(
             }
         }
         Some(("broker", bank_id)) => match setup
-            .banks
-            .iter()
-            .find(|b| b.id == bank_id)
+            .bank
+            .as_ref()
+            .filter(|b| b.id == bank_id)
             .and_then(|b| b.broker.as_ref())
         {
             Some(broker) => {
@@ -961,14 +1000,15 @@ async fn apply(
                 .and_then(|(user, rest)| rest.split_once(':').map(|(b, r)| (user, b, r)))
             {
                 Some((username, bank_id, role)) => {
-                    match setup.role_grants.iter().find(|g| {
-                        g.username == username && g.bank_id == bank_id && g.role == role
+                    match setup.bank.as_ref().filter(|b| b.id == bank_id).and_then(|b| {
+                        b.role_grants
+                            .iter()
+                            .find(|g| g.username == username && g.role == role)
                     }) {
                         Some(grant) => match resolve_user_id(&state, &token, &grant.username).await
                         {
                             Ok(user_id) => {
-                                grant_role(&state, &token, &user_id, &grant.bank_id, &grant.role)
-                                    .await
+                                grant_role(&state, &token, &user_id, bank_id, &grant.role).await
                             }
                             Err(e) => Err(e),
                         },

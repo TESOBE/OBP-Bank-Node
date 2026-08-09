@@ -91,17 +91,23 @@ fn obp_stub(base: String, captured: Arc<Mutex<Captured>>) -> Router {
             get(|| async { Json(json!({ "version": "v7.0.0", "git_commit": "deadbeef" })) }),
         )
         .route(
-            "/obp/v5.1.0/users/current",
+            "/obp/v6.0.0/users/current",
             get(|headers: HeaderMap| async move {
                 if !bearer_ok(&headers) {
                     return (StatusCode::UNAUTHORIZED, Json(json!({ "message": "OBP-20001" })))
                         .into_response();
                 }
+                // v6.0.0 includes super-admin VIRTUAL entitlements in the
+                // list, marked by created_by_process.
                 Json(json!({
                     "user_id": "admin-user-id",
                     "username": "admin",
                     "entitlements": { "list": [
-                        { "bank_id": "", "role_name": "CanCreateBank" },
+                        { "bank_id": "", "role_name": "CanCreateBank",
+                          "created_by_process": "manual",
+                          "granted_by_user_id": "granter-user-id" },
+                        { "bank_id": "", "role_name": "CanCreateEntitlementAtAnyBank",
+                          "created_by_process": "super_admin_user_ids" },
                     ]},
                 }))
                 .into_response()
@@ -257,52 +263,41 @@ fn setup_config() -> SetupConfig {
             json!({ "scheme": "OBP", "country": "INT", "category": "ACCOUNT", "status": "ACTIVE" }),
             json!({ "scheme": "IBAN", "country": "INT", "category": "ACCOUNT", "status": "ACTIVE" }),
         ],
-        banks: vec![
-            SetupBank {
-                id: "rt.bank.a".into(),
-                full_name: Some("Round-trip rt.bank.a".into()),
-                accounts: vec![SetupAccount {
-                    id: "settlement-a".into(),
-                    label: "Node A corridor account".into(),
-                    currency: "KES".into(),
-                    owner_username: Some("rt.node.a".into()),
-                }],
-                fx: vec![crate::SetupFxRate {
-                    from_currency: "EUR".into(),
-                    to_currency: "KES".into(),
-                    rate: 150.0,
-                    inverse_rate: 0.006667,
-                }],
-                broker: Some(json!({
-                    "host": "localhost",
-                    "port": 5672,
-                    "virtual_host": "/bank.rt.bank.a",
-                    "username": "bank_a_node",
-                    "password": "secret",
-                    "use_ssl": false,
-                    "settlement_address": "addr_test1aaa",
-                })),
-            },
-            SetupBank {
-                id: "rt.bank.b".into(),
-                full_name: None,
-                accounts: vec![],
-                fx: vec![],
-                broker: None,
-            },
-        ],
-        role_grants: vec![
-            SetupRoleGrant {
-                username: "rt.node.a".into(),
-                bank_id: "rt.bank.a".into(),
-                role: "CanSettleOpenCorridor".into(),
-            },
-            SetupRoleGrant {
-                username: "ghost".into(),
-                bank_id: "rt.bank.a".into(),
-                role: "CanSettleOpenCorridor".into(),
-            },
-        ],
+        bank: Some(SetupBank {
+            id: "rt.bank.a".into(),
+            full_name: Some("Round-trip rt.bank.a".into()),
+            accounts: vec![SetupAccount {
+                id: "settlement-a".into(),
+                label: "Node A corridor account".into(),
+                currency: "KES".into(),
+                owner_username: Some("rt.node.a".into()),
+            }],
+            fx: vec![crate::SetupFxRate {
+                from_currency: "EUR".into(),
+                to_currency: "KES".into(),
+                rate: 150.0,
+                inverse_rate: 0.006667,
+            }],
+            broker: Some(json!({
+                "host": "localhost",
+                "port": 5672,
+                "virtual_host": "/bank.rt.bank.a",
+                "username": "bank_a_node",
+                "password": "secret",
+                "use_ssl": false,
+                "settlement_address": "addr_test1aaa",
+            })),
+            role_grants: vec![
+                SetupRoleGrant {
+                    username: "rt.node.a".into(),
+                    role: "CanSettleOpenCorridor".into(),
+                },
+                SetupRoleGrant {
+                    username: "ghost".into(),
+                    role: "CanSettleOpenCorridor".into(),
+                },
+            ],
+        }),
     }
 }
 
@@ -486,17 +481,35 @@ async fn status_classifies_present_missing_and_broken_items() {
         .map(|i| (i["id"].as_str().unwrap().to_string(), i.clone()))
         .collect();
 
+    // One instance = one bank: only the own bank's items exist.
+    assert_eq!(v["bank"], "rt.bank.a");
+    assert!(!by_id.keys().any(|k| k.contains("rt.bank.b")));
+
     assert_eq!(by_id["scheme:OBP"]["status"], "ok");
     assert_eq!(by_id["scheme:IBAN"]["status"], "missing");
     assert_eq!(by_id["bank:rt.bank.a"]["status"], "ok");
-    assert_eq!(by_id["bank:rt.bank.b"]["status"], "missing");
     assert_eq!(by_id["account:rt.bank.a/settlement-a"]["status"], "ok");
     assert_eq!(by_id["fx:rt.bank.a:EUR:KES"]["status"], "missing");
     // Broker registered and matching on every non-password field.
     assert_eq!(by_id["broker:rt.bank.a"]["status"], "ok");
-    // The admin holds CanCreateBank but not CanCreateRoutingScheme.
+    // The admin holds CanCreateBank but not CanCreateRoutingScheme; held
+    // items show how the entitlement came to be.
     assert_eq!(by_id["myrole::CanCreateBank"]["status"], "ok");
+    assert_eq!(
+        by_id["myrole::CanCreateBank"]["detail"],
+        "manual · granted by granter-user-id"
+    );
     assert_eq!(by_id["myrole::CanCreateRoutingScheme"]["status"], "missing");
+    // The virtual CanCreateEntitlementAtAnyBank (super admin) satisfies the
+    // per-bank granting requirement, and the detail says so.
+    assert_eq!(
+        by_id["myrole:rt.bank.a:CanCreateEntitlementAtOneBank"]["status"],
+        "ok"
+    );
+    assert_eq!(
+        by_id["myrole:rt.bank.a:CanCreateEntitlementAtOneBank"]["detail"],
+        "super_admin_user_ids"
+    );
     // rt.node.a exists without the role; ghost does not exist — and the page
     // must say so rather than offer to create it.
     assert_eq!(
