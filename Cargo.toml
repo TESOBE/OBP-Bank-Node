@@ -69,6 +69,8 @@ regex = "1"
 # cryptography & encoding
 hex = "0.4"
 ed25519-dalek = { version = "2", features = ["zeroize"] }
+rand = "0.8"
+base64 = "0.22"
 
 # Internal crates
 obp-blockchain = { path = "crates/obp-blockchain" }

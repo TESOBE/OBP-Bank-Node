@@ -1,10 +1,17 @@
 # OBP Bank Node App — demo / manual-test UI
 
-Decided 2026-08-07: lives at `/app` in this repo. Talks **only** to
-OBP-Bank-Node APIs (in the demo topology: node A on :8088, node B on :8089).
-It never calls OBP-API, RabbitMQ, or the chain directly — everything it shows
-or triggers goes through a node's south-side REST API. No business logic in
-the app; it is read-and-trigger only, outside the money path.
+Decided 2026-08-07: lives at `/app` in this repo. The storyline pages talk
+**only** to OBP-Bank-Node APIs (in the demo topology: node A on :8088, node B
+on :8089) — they never call OBP-API, RabbitMQ, or the chain directly;
+everything they show or trigger goes through a node's south-side REST API. No
+business logic in the app; it is read-and-trigger only, outside the money
+path.
+
+Revised 2026-08-08 (with Simon): the app gained a second, explicitly separate
+surface — the `/setup` **operator page** (see §Setup page below), which DOES
+talk to OBP-API, as a logged-in administrator. The node-only boundary now
+applies to the storyline pages; the setup page is the one deliberate
+exception, with its own auth and its own config block.
 
 ## Purpose
 
@@ -124,6 +131,59 @@ stored A1.1 payload — the position table nets those client-side.
   build step unless it earns it.
 - The app displays; the nodes decide. Any state transition shown must be
   readable from a node endpoint, never inferred by the app.
+
+## Setup page (`/setup`) — built 2026-08-08
+
+Moves `dev/setup_obp.sh`'s OBP-API provisioning into the app as an operator
+page, so an admin can verify an OBP-API instance is ready for Open Corridor
+(and fix it) without shell scripts.
+
+- **Auth = the Portal's scheme** (decided with Simon; implementation mirrors
+  `OBP-Frontend/packages/shared/src/lib/server/oauth`): the app fetches
+  OBP-API's `GET /obp/v5.1.0/well-known` provider list, picks the configured
+  provider (default `obp-oidc`), reads its OIDC discovery document, and
+  redirects the admin's browser through the authorization-code flow with
+  PKCE (S256). The code is exchanged server-side with the registered
+  consumer's client id/secret; tokens live in an in-memory session behind an
+  opaque HttpOnly cookie — the browser never sees a token or credential.
+  Config block `obp_api` (`base_url`, `oauth_provider`, `oauth_client_id`,
+  `oauth_client_secret`, `callback_url`, optional `discovery_url` override);
+  without it the page reports "not configured" and no OBP-API call is made.
+  **Prerequisite:** an OBP consumer registered with redirect URL
+  `http://<app>/setup/callback` — its key/secret go in the config (or
+  `OBP_BN_APP_OBP_API__OAUTH_CLIENT_*` env).
+- **Declarative desired state** in the `setup` config block (see
+  `dev/app-a/b.yaml`, which carry the corridor world `setup_obp.sh`
+  creates): routing schemes (wire-shaped, posted verbatim), banks with
+  accounts / FX rates / broker registrations, and role grants. The page
+  renders every item as a read-only check (`ok` / `missing` / `differs` /
+  `unverified` / `error`) with per-item **Apply** + **Apply all missing**;
+  applies re-derive the action server-side from config (the browser only
+  names an item id) and mirror the script's idempotent calls
+  ("already exists" = success). "Your entitlements" checks the admin's own
+  roles against what the applies need, with self-grant as the apply.
+  A free-form **test account** form covers seeding demo accounts.
+  Every item carries the role its apply needs (`required_role`), and a
+  **Request role** button next to each Apply files an OBP entitlement
+  request (`POST /obp/v3.0.0/entitlement-requests`) for the logged-in
+  admin — the path when self-granting isn't possible; a pending duplicate
+  counts as success (added 2026-08-08 with Simon).
+- **Status JSON block** (added 2026-08-08): a copy-pasteable
+  machine-readable snapshot below the checks — the full status body
+  (`generated_at`, OBP-API info, admin, all items with statuses) plus the
+  instance's node list with `/health` results through the proxy. Intended
+  to be handed verbatim to an agent working on the Bank Node or this app.
+- **No user registration, no email validation** (Simon, 2026-08-08, hard
+  scope line): accounts/grants naming an `owner_username`/`username` require
+  the user to already exist — a missing user is an error, never a
+  provisioning action. The node service users (and the psql
+  `authuser.validated` flip + `env.sh` token writing) stay with
+  `setup_obp.sh`, which remains the one-shot bootstrap; the page covers
+  everything after that.
+- The admin acts with their own entitlements — the page holds no service
+  credential and adds no OBP-API changes; every call is an existing
+  endpoint (`banks`, `routing-schemes`, `accounts`, `fx`, entitlements,
+  `open-corridor/broker`).
 
 ## Honest-demo caveats
 

@@ -150,8 +150,21 @@ a:hover { text-decoration: underline; }
 .chip-reported, .chip-final, .chip-verified { background: #eef7f0; color: var(--ok); }
 .chip-exception, .chip-error, .chip-failed { background: #fdf0ef; color: var(--err); }
 
+.page-nav { font-size: .82rem; }
+
+td.actions { white-space: nowrap; }
+
+/* setup page */
+.setup-toolbar {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  margin-bottom: .5rem;
+  font-size: .82rem;
+}
+
 /* header node health */
-.node-health { display: flex; gap: .5rem; }
+.node-health { display: flex; gap: .5rem; align-items: center; }
 .node-chip {
   padding: .1rem .6rem;
   border-radius: 999px;

@@ -3,6 +3,50 @@
 State of the project as of the pause point, so we can resume without re-litigating
 decisions.
 
+## 2026-08-08 — `/setup` operator page in the app (OBP-API provisioning UI)
+
+Decided with Simon: `dev/setup_obp.sh`'s OBP-API provisioning moves into the
+app as a separate `/setup` page, authenticated **like the Portal / API
+Manager** (OIDC authorization-code + PKCE against the provider from OBP-API's
+`/well-known`; code exchanged server-side; token in an in-memory session
+behind an HttpOnly cookie). Hard scope line from Simon: **no user
+registration and no email validation** — the page checks/grants roles for
+existing users but a missing user is an error; service-user creation, the
+psql `authuser.validated` flip, and `env.sh` token writing stay in
+`setup_obp.sh` as the one-shot bootstrap.
+
+Built (all in `crates/obp-bank-node-app`; full description in `APP.md`
+§Setup page):
+
+- `oidc.rs` (well-known → discovery → login/callback/refresh, sessions),
+  `setup.rs` (check/apply API + test-account endpoint), `/setup` static page.
+  New config: `obp_api` block (OIDC client; page inert without it) +
+  declarative `setup` block (routing schemes verbatim, banks/accounts/FX/
+  brokers, role grants). `dev/app-a/b.yaml` carry the corridor desired state;
+  **consumer key/secret are `CHANGE-ME` placeholders — an OBP consumer with
+  redirect URL `http://localhost:8091|8092/setup/callback` must be registered
+  and its key/secret configured before first login.**
+- Checks are read-only GETs; applies re-derive the OBP call server-side from
+  config by item id and mirror the script's idempotent bodies. Account
+  existence reads can be `unverified` (admin holds no view on node-user
+  accounts) — Apply stays idempotent.
+- Same day, with Simon: **Request role** button next to every Apply (items
+  carry `required_role`; button files `POST /obp/v3.0.0/entitlement-requests`
+  for the logged-in admin, duplicate-pending = ok) and a **Status JSON**
+  section — a copy-pasteable snapshot (status body + node health via the
+  proxy) to hand to an agent working on either repo.
+- **170 workspace tests pass** (node 104 + app 23 + blockchain 43); the app
+  tests drive the full OIDC flow (PKCE challenge/verifier asserted
+  end-to-end) and the check/apply/request API against a stub OBP.
+- **Consumers registered on the live sandbox** (2026-08-08, via
+  `POST /obp/v5.1.0/management/consumers` as the round-trip superadmin):
+  `obp-bank-node-app-8091-setup` / `-8092-setup`; key/secret written into
+  `dev/app-a/b.yaml`. `/setup/login` verified redirecting to the live
+  obp-oidc authorize endpoint (:9000) with the registered client_id.
+- Not yet done: the interactive browser login + a live reconcile run
+  (restart the app instances first — the running ones predate this build).
+  The storyline-UI-against-live-stack item from 2026-08-07 also still stands.
+
 ## 2026-08-07 (shutdown) — UI polish; where things stand
 
 Final additions after the evening block below, all verified before shutdown:

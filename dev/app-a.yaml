@@ -19,3 +19,107 @@ ui_defaults:
   other_bank: "rt.bank.b"
   other_account: "settlement-b"
   other_bank_id: "rt.bank.b"
+
+# --- /setup operator page -------------------------------------------------
+# OBP-API + OIDC client for the setup page (the Portal's login scheme: the
+# provider comes from OBP-API's /obp/v5.1.0/well-known, the admin logs in
+# interactively, this app exchanges the code server-side). The consumer must
+# be registered in OBP with redirect URL http://localhost:8091/setup/callback;
+# put its key/secret here or via env:
+#   OBP_BN_APP_OBP_API__OAUTH_CLIENT_ID=... OBP_BN_APP_OBP_API__OAUTH_CLIENT_SECRET=...
+# Consumer 'obp-bank-node-app-8091-setup' (registered 2026-08-08 via
+# POST /obp/v5.1.0/management/consumers; localhost-dev credentials, same
+# class as the broker passwords below).
+obp_api:
+  base_url: "http://localhost:8080"
+  oauth_provider: "obp-oidc"
+  oauth_client_id: "xu5htct5zlvmshfvmfruc2riay3pd4uone5jb3ov"
+  oauth_client_secret: "pnp0v1vjl5f5r5o123hrrgreslxgtqie2oojwf0a"
+  callback_url: "http://localhost:8091/setup/callback"
+
+# Desired Open Corridor state the setup page reconciles OBP-API against —
+# the same world dev/setup_obp.sh creates, minus user registration (the
+# node service users rt.node.a/b are provisioned by the script; the page
+# only checks/grants their roles). Checks are read-only; Apply mirrors the
+# script's idempotent calls.
+setup:
+  routing_schemes:
+    - scheme: "OBP"
+      country: "INT"
+      category: "ACCOUNT"
+      address_pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+      example_address: "rt.bank.b"
+      description: "OBP bank id or account id, as used in OBP account routings."
+      downstream_rails: []
+      status: "ACTIVE"
+    - scheme: "IBAN"
+      country: "INT"
+      category: "ACCOUNT"
+      address_pattern: "^[A-Z]{2}[0-9]{2}[A-Z0-9]{1,30}$"
+      example_address: "GB29NWBK60161331926819"
+      description: "International Bank Account Number (ISO 13616), no spaces."
+      downstream_rails: []
+      status: "ACTIVE"
+    - scheme: "BIC"
+      country: "INT"
+      category: "BANK"
+      address_pattern: "^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$"
+      example_address: "NWBKGB2LXXX"
+      description: "ISO 9362 Business Identifier Code, 8 or 11 characters."
+      downstream_rails: []
+      status: "ACTIVE"
+
+  banks:
+    - id: "rt.bank.a"
+      full_name: "Round-trip rt.bank.a"
+      accounts:
+        - id: "settlement-a"
+          label: "Node A corridor account"
+          currency: "KES"
+          owner_username: "rt.node.a"
+        - id: "OBP-OUTGOING-SETTLEMENT-ACCOUNT"
+          label: "OC outgoing settlement"
+          currency: "KES"
+        - id: "OBP-INCOMING-SETTLEMENT-ACCOUNT"
+          label: "OC incoming settlement"
+          currency: "KES"
+      fx:
+        - { from_currency: "EUR", to_currency: "KES", rate: 150.0, inverse_rate: 0.006667 }
+        - { from_currency: "KES", to_currency: "EUR", rate: 0.006667, inverse_rate: 150.0 }
+      broker:
+        host: "localhost"
+        port: 5672
+        virtual_host: "/bank.rt.bank.a"
+        username: "bank_a_node"
+        password: "rtpass-a"
+        use_ssl: false
+        settlement_address: "addr_test1vz233470pc30zzsceh9k2qmzkj4gvj7n976ulvdmed5w9mg0a37ns"
+    - id: "rt.bank.b"
+      full_name: "Round-trip rt.bank.b"
+      accounts:
+        - id: "settlement-b"
+          label: "Node B beneficiary account"
+          currency: "KES"
+          owner_username: "rt.node.b"
+        - id: "OBP-OUTGOING-SETTLEMENT-ACCOUNT"
+          label: "OC outgoing settlement"
+          currency: "KES"
+        - id: "OBP-INCOMING-SETTLEMENT-ACCOUNT"
+          label: "OC incoming settlement"
+          currency: "KES"
+      fx:
+        - { from_currency: "EUR", to_currency: "KES", rate: 150.0, inverse_rate: 0.006667 }
+        - { from_currency: "KES", to_currency: "EUR", rate: 0.006667, inverse_rate: 150.0 }
+      broker:
+        host: "localhost"
+        port: 5672
+        virtual_host: "/bank.rt.bank.b"
+        username: "bank_b_node"
+        password: "rtpass-b"
+        use_ssl: false
+        settlement_address: "addr_test1vqn7sn79x6k9a2353l458mk2gccmwqk7nza93zydpuvl7lquy6jcl"
+
+  role_grants:
+    - { username: "rt.node.a", bank_id: "rt.bank.a", role: "CanAttachOpenCorridorPromise" }
+    - { username: "rt.node.a", bank_id: "rt.bank.a", role: "CanSettleOpenCorridor" }
+    - { username: "rt.node.b", bank_id: "rt.bank.b", role: "CanSettleOpenCorridor" }

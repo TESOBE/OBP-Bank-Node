@@ -58,7 +58,7 @@ fn stub_node() -> Router {
 }
 
 fn app_with(nodes: Vec<NodeConfig>) -> Router {
-    build_router(AppState::new(nodes, Default::default()).unwrap())
+    build_router(AppState::new(nodes, Default::default()).unwrap(), None)
 }
 
 fn node(name: &str, base_url: &str) -> NodeConfig {
@@ -126,8 +126,10 @@ async fn ui_defaults_are_served_verbatim() {
         ("other_bank".to_string(), "rt.bank.b".to_string()),
         ("other_bank_id".to_string(), "rt.bank.b".to_string()),
     ]);
-    let app =
-        build_router(AppState::new(vec![node("node-a", "http://127.0.0.1:1")], defaults).unwrap());
+    let app = build_router(
+        AppState::new(vec![node("node-a", "http://127.0.0.1:1")], defaults).unwrap(),
+        None,
+    );
     let resp = app.oneshot(get_req("/api/ui-defaults")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let v = body_json(resp).await;

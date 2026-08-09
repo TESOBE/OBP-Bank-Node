@@ -61,7 +61,7 @@ impl AppState {
     }
 }
 
-pub fn build_router(state: AppState) -> Router {
+pub fn build_router(state: AppState, setup: Option<crate::setup::SetupState>) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/app.js", get(app_js))
@@ -70,6 +70,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/ui-defaults", get(ui_defaults))
         .route("/api/nodes/:node/*path", get(proxy_get).post(proxy_post))
         .with_state(state)
+        .merge(crate::setup::router(setup))
 }
 
 async fn index() -> Html<&'static str> {

@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OBP Bank Node — Setup</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>OBP-API Setup — Open Corridor</h1>
+    <nav class="page-nav"><a href="/">← storyline</a></nav>
+    <div id="session-box" class="node-health"></div>
+  </header>
+
+  <main>
+    <section id="login-section" hidden>
+      <h2>Log in</h2>
+      <p class="hint">This operator page reconciles the OBP-API instance against this app's
+        configured Open Corridor state. Log in with an OBP administrator account via the
+        instance's OIDC provider (the same flow the OBP Portal uses); the token stays
+        server-side.</p>
+      <button id="login-btn">Log in with OBP</button>
+      <pre id="login-error" class="result result-err" hidden></pre>
+    </section>
+
+    <section id="status-section" hidden>
+      <h2>Instance checks</h2>
+      <p class="hint">Desired state comes from this app instance's <code>setup</code> config.
+        Checks are read-only; <em>Apply</em> issues the same idempotent create/register calls
+        as <code>dev/setup_obp.sh</code>. This page never creates users — service users are
+        provisioned outside the app.</p>
+      <div class="setup-toolbar">
+        <button id="refresh-btn" class="small">Re-check</button>
+        <button id="apply-all-btn" class="small">Apply all missing</button>
+        <span id="api-info" class="dim"></span>
+      </div>
+      <div id="setup-items"></div>
+      <pre id="apply-result" class="result" hidden></pre>
+    </section>
+
+    <section id="status-json-section" hidden>
+      <h2>Status JSON</h2>
+      <p class="hint">Machine-readable snapshot of everything above (plus node health) —
+        copy-paste it to an agent working on the OBP Bank Node or this app.</p>
+      <div class="setup-toolbar">
+        <button id="copy-json-btn" class="small">Copy</button>
+      </div>
+      <pre id="status-json" class="result"></pre>
+    </section>
+
+    <section id="test-account-section" hidden>
+      <h2>Create test account</h2>
+      <p class="hint">Seed extra demo accounts (product <code>OPEN_CORRIDOR</code>, zero
+        balance). The owner must be an existing OBP user; empty = you.</p>
+      <form id="test-account-form">
+        <div class="grid">
+          <label>Bank id
+            <input name="bank_id" required>
+          </label>
+          <label>Account id
+            <input name="account_id" required>
+          </label>
+          <label>Label
+            <input name="label" value="Test account">
+          </label>
+          <label>Currency
+            <input name="currency" value="KES" required>
+          </label>
+          <label>Owner username (optional)
+            <input name="owner_username" placeholder="defaults to you">
+          </label>
+        </div>
+        <button type="submit">Create account</button>
+        <pre id="test-account-result" class="result" hidden></pre>
+      </form>
+    </section>
+  </main>
+
+  <footer>
+    <p>Operator surface: talks to OBP-API as the logged-in administrator. The storyline
+      pages talk only to Bank Nodes.</p>
+  </footer>
+
+  <script src="/setup.js"></script>
+</body>
+</html>

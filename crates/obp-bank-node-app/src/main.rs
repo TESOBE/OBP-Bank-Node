@@ -2,10 +2,19 @@
 //!
 //! Serves the static single-page UI and a whitelisted JSON proxy over the
 //! configured Bank Nodes (demo topology: node A on :8088, node B on :8089).
-//! The app talks ONLY to Bank Node south-side APIs — never OBP-API, RabbitMQ,
-//! or the chain — and holds no business logic: it displays, the nodes decide.
-//! The backend exists so node credentials stay out of the browser and no CORS
-//! changes are needed on the node.
+//! The storyline pages talk ONLY to Bank Node south-side APIs — never OBP-API,
+//! RabbitMQ, or the chain — and hold no business logic: they display, the
+//! nodes decide. The backend exists so node credentials stay out of the
+//! browser and no CORS changes are needed on the node.
+//!
+//! The one deliberate exception is the `/setup` operator page: with an
+//! `obp_api` config block present, an administrator can log in to OBP-API
+//! through its OIDC provider (the same authorization-code flow the OBP Portal
+//! and API Manager use) and reconcile the instance against the declarative
+//! `setup` block — banks, routing schemes, accounts, FX rates, Open Corridor
+//! brokers, role grants. Tokens live in a server-side session; the browser
+//! never sees a credential. The page never registers users and never touches
+//! email validation — service users are provisioned outside the app.
 
 use anyhow::Context;
 use figment::providers::{Env, Format, Serialized, Yaml};
@@ -13,8 +22,12 @@ use figment::Figment;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
+mod oidc;
 mod proxy;
+mod setup;
 
+#[cfg(test)]
+mod setup_tests;
 #[cfg(test)]
 mod tests;
 
@@ -33,6 +46,104 @@ pub struct Config {
     /// at the node.
     #[serde(default)]
     pub ui_defaults: std::collections::HashMap<String, String>,
+    /// OBP-API connection + OIDC client for the `/setup` operator page.
+    /// Absent ⇒ the page reports itself as not configured and no OBP-API
+    /// call is ever made.
+    #[serde(default)]
+    pub obp_api: Option<ObpApiConfig>,
+    /// Desired Open Corridor state the `/setup` page reconciles OBP-API
+    /// against. Only meaningful together with `obp_api`.
+    #[serde(default)]
+    pub setup: SetupConfig,
+}
+
+/// How the `/setup` page reaches and authenticates to OBP-API — the same
+/// scheme the OBP Portal / API Manager use: the OIDC provider list comes from
+/// OBP-API's `/obp/v5.1.0/well-known`, the admin logs in interactively via
+/// the provider's authorization-code flow (PKCE), and this app exchanges the
+/// code server-side with its registered consumer's client id/secret.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObpApiConfig {
+    /// e.g. `http://localhost:8080`
+    pub base_url: String,
+    /// Provider name to select from the well-known list (Portal names:
+    /// `obp-oidc`, `keycloak`, `google`).
+    #[serde(default = "default_oauth_provider")]
+    pub oauth_provider: String,
+    pub oauth_client_id: String,
+    pub oauth_client_secret: String,
+    /// Must equal the redirect URL registered for the consumer:
+    /// `http://<this app>/setup/callback`.
+    pub callback_url: String,
+    /// Optional override: fetch the OIDC discovery document from this URL
+    /// directly instead of consulting the well-known list.
+    #[serde(default)]
+    pub discovery_url: Option<String>,
+}
+
+fn default_oauth_provider() -> String {
+    "obp-oidc".into()
+}
+
+/// Declarative desired state for the `/setup` page. Wire-shaped blocks
+/// (`routing_schemes`, `broker`) are kept as raw JSON so the YAML carries
+/// exactly what OBP-API's endpoints receive — no re-modelling here.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SetupConfig {
+    /// Bodies for `POST /obp/v7.0.0/routing-schemes`, verbatim. Checked via
+    /// `GET /routing-schemes/{scheme}`.
+    #[serde(default)]
+    pub routing_schemes: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub banks: Vec<SetupBank>,
+    /// Entitlements for users that already exist (e.g. the node service
+    /// users). The page grants but NEVER creates users.
+    #[serde(default)]
+    pub role_grants: Vec<SetupRoleGrant>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetupBank {
+    pub id: String,
+    #[serde(default)]
+    pub full_name: Option<String>,
+    #[serde(default)]
+    pub accounts: Vec<SetupAccount>,
+    /// One entry per direction for `PUT /obp/v2.2.0/banks/{id}/fx`.
+    #[serde(default)]
+    pub fx: Vec<SetupFxRate>,
+    /// Body for `PUT /obp/v7.0.0/banks/{id}/open-corridor/broker`, verbatim.
+    #[serde(default)]
+    pub broker: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetupAccount {
+    pub id: String,
+    #[serde(default)]
+    pub label: String,
+    pub currency: String,
+    /// Existing OBP username to own the account; defaults to the logged-in
+    /// admin. Looked up, never created.
+    #[serde(default)]
+    pub owner_username: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetupFxRate {
+    pub from_currency: String,
+    pub to_currency: String,
+    pub rate: f64,
+    pub inverse_rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetupRoleGrant {
+    pub username: String,
+    /// Empty string = system-level role.
+    #[serde(default)]
+    pub bank_id: String,
+    pub role: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +182,8 @@ impl Default for Config {
                 },
             ],
             ui_defaults: std::collections::HashMap::new(),
+            obp_api: None,
+            setup: SetupConfig::default(),
         }
     }
 }
@@ -101,13 +214,19 @@ async fn main() -> anyhow::Result<()> {
     info!(
         bind = %config.server.bind,
         nodes = ?config.nodes.iter().map(|n| format!("{}={}", n.name, n.base_url)).collect::<Vec<_>>(),
+        setup = config.obp_api.as_ref().map(|o| o.base_url.as_str()).unwrap_or("(not configured)"),
         "OBP Bank Node App starting"
     );
 
-    let app = proxy::build_router(proxy::AppState::new(
-        config.nodes.clone(),
-        config.ui_defaults.clone(),
-    )?);
+    let setup_state = config
+        .obp_api
+        .clone()
+        .map(|obp| setup::SetupState::new(obp, config.setup.clone()))
+        .transpose()?;
+    let app = proxy::build_router(
+        proxy::AppState::new(config.nodes.clone(), config.ui_defaults.clone())?,
+        setup_state,
+    );
 
     let addr: std::net::SocketAddr = config
         .server
