@@ -143,6 +143,20 @@ function renderPosition() {
 
 // ---- step 4: settlements -------------------------------------------------
 
+// Minor units (assumed exponent 2) -> major, e.g. 175500 -> "1755.00".
+function fmtMinor(minor) {
+  const n = Number(minor);
+  return Number.isFinite(n) ? (n / 100).toFixed(2) : String(minor ?? "");
+}
+
+// The rail reports on-chain base units; ADA has 6 decimals (lovelace).
+function fmtRail(amount, asset) {
+  if (!amount) return "";
+  const n = Number(amount);
+  if (asset === "ADA" && Number.isFinite(n)) return `${(n / 1_000_000).toFixed(6)} ADA`;
+  return `${amount} ${asset || ""}`;
+}
+
 async function renderSettlements() {
   const parts = await Promise.all(NODES.map(async (n) => {
     const r = await getJson(nodeUrl(n.name, "settlements"));
@@ -154,8 +168,8 @@ async function renderSettlements() {
       <tr>
         <td title="${esc(s.idempotency_key)}">${short(s.settlement_id || s.idempotency_key)}</td>
         <td>${chip(s.status)}</td>
-        <td class="num">${esc(s.net_amount_minor)} <span class="dim">minor ${esc(s.currency)}</span></td>
-        <td class="num">${esc(s.asset_amount ? `${s.asset_amount} ${s.asset || ""}` : "")}</td>
+        <td class="num">${esc(fmtMinor(s.net_amount_minor))} ${esc(s.currency)}</td>
+        <td class="num">${esc(fmtRail(s.asset_amount, s.asset))}</td>
         <td class="num">${s.depth}/${s.finality_depth}</td>
         <td>${txLink(s.tx_id)}</td>
         <td>${esc(s.error_reason || "")}</td>

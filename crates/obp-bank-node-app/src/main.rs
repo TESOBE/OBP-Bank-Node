@@ -115,7 +115,7 @@ pub struct SetupBank {
     /// One entry per direction for `PUT /obp/v2.2.0/banks/{id}/fx`.
     #[serde(default)]
     pub fx: Vec<SetupFxRate>,
-    /// Body for `PUT /obp/v7.0.0/banks/{id}/open-corridor/broker`, verbatim.
+    /// Body for `PUT /obp/v7.0.0/banks/{id}/amqp-broker`, verbatim.
     #[serde(default)]
     pub broker: Option<serde_json::Value>,
     /// Entitlements at THIS bank for users that already exist (the bank's

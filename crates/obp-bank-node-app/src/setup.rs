@@ -346,7 +346,7 @@ fn required_admin_roles(setup: &SetupConfig) -> Vec<(String, String)> {
         if bank.broker.is_some() {
             roles.push((
                 bank.id.clone(),
-                "CanConfigureOpenCorridorBroker".to_string(),
+                "CanConfigureAmqpBankBroker".to_string(),
             ));
         }
         if !bank.role_grants.is_empty() {
@@ -388,7 +388,12 @@ fn classify(status: StatusCode, body: &Value, ok_detail: String) -> (&'static st
         return ("ok", ok_detail);
     }
     let message = body["message"].as_str().unwrap_or("").to_string();
-    if status == StatusCode::NOT_FOUND || message.contains("not found") || message.contains("NotFound")
+    // OBP-40054 = no AMQP broker registered — absence, not failure (OBP-API
+    // reports it as 400).
+    if status == StatusCode::NOT_FOUND
+        || message.contains("not found")
+        || message.contains("NotFound")
+        || message.contains("OBP-40054")
     {
         return ("missing", message);
     }
@@ -659,7 +664,7 @@ async fn status(State(state): State<SetupState>, headers: HeaderMap) -> Response
             let (status_str, detail) = match state
                 .obp(
                     Method::GET,
-                    &format!("/obp/v7.0.0/banks/{b}/open-corridor/broker"),
+                    &format!("/obp/v7.0.0/banks/{b}/amqp-broker"),
                     Some(&token),
                     None,
                 )
@@ -689,10 +694,10 @@ async fn status(State(state): State<SetupState>, headers: HeaderMap) -> Response
             items.push(item(
                 format!("broker:{b}"),
                 "banks",
-                format!("Open Corridor broker ({b})"),
+                format!("AMQP broker ({b})"),
                 status_str,
                 detail,
-                (b, "CanConfigureOpenCorridorBroker"),
+                (b, "CanConfigureAmqpBankBroker"),
             ));
         }
 
@@ -1075,7 +1080,7 @@ async fn apply(
                 state
                     .obp(
                         Method::PUT,
-                        &format!("/obp/v7.0.0/banks/{bank_id}/open-corridor/broker"),
+                        &format!("/obp/v7.0.0/banks/{bank_id}/amqp-broker"),
                         Some(&token),
                         Some(broker),
                     )

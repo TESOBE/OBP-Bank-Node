@@ -268,7 +268,7 @@ fn obp_stub(base: String, captured: Arc<Mutex<Captured>>) -> Router {
             }),
         )
         .route(
-            "/obp/v7.0.0/banks/:bank_id/open-corridor/broker",
+            "/obp/v7.0.0/banks/:bank_id/amqp-broker",
             get(|| async {
                 Json(json!({
                     "bank_id": "rt.bank.a",

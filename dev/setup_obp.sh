@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Round-trip test: OBP-API data setup (idempotent — safe to re-run).
 # Creates: banks rt.bank.a / rt.bank.b, service users, settlement + customer
-# accounts, roles, and the per-bank Open Corridor broker registrations.
+# accounts, roles, and the per-bank AMQP broker registrations.
 # Writes DirectLogin tokens to env.sh for the node processes.
 set -uo pipefail
 
@@ -55,7 +55,7 @@ for B in "$BANK_A" "$BANK_B"; do
     "{\"id\":\"$B\",\"bank_code\":\"$B\",\"full_name\":\"Round-trip $B\",\"logo\":\"\",\"website\":\"\",\"bank_routings\":[]}" \
     | grep -qE '"id"|OBP-34000|already exists' && echo "  bank $B ok" || echo "  bank $B — check"
   grant "$SA_ID" "$B" CanCreateAccount
-  grant "$SA_ID" "$B" CanConfigureOpenCorridorBroker
+  grant "$SA_ID" "$B" CanConfigureAmqpBankBroker
   # Bank-scoped since 2026-08-07: the settle POST is addressed to a bank's URL
   # and the role must be held at that bank.
   grant "$SA_ID" "$B" CanSettleOpenCorridor
@@ -135,11 +135,11 @@ for B in "$BANK_A" "$BANK_B"; do
     | grep -q from_currency_code && echo "  fx KES->EUR @ $B ok" || echo "  fx KES->EUR @ $B — check"
 done
 
-echo "== registering Open Corridor brokers"
-api PUT "/obp/v7.0.0/banks/$BANK_A/open-corridor/broker" \
+echo "== registering AMQP brokers"
+api PUT "/obp/v7.0.0/banks/$BANK_A/amqp-broker" \
   "{\"host\":\"localhost\",\"port\":5672,\"virtual_host\":\"/bank.$BANK_A\",\"username\":\"bank_a_node\",\"password\":\"rtpass-a\",\"use_ssl\":false,\"settlement_address\":\"$ADDR_A\"}" \
   | grep -q '"bank_id"' && echo "  broker $BANK_A ok" || echo "  broker $BANK_A — check"
-api PUT "/obp/v7.0.0/banks/$BANK_B/open-corridor/broker" \
+api PUT "/obp/v7.0.0/banks/$BANK_B/amqp-broker" \
   "{\"host\":\"localhost\",\"port\":5672,\"virtual_host\":\"/bank.$BANK_B\",\"username\":\"bank_b_node\",\"password\":\"rtpass-b\",\"use_ssl\":false,\"settlement_address\":\"$ADDR_B\"}" \
   | grep -q '"bank_id"' && echo "  broker $BANK_B ok" || echo "  broker $BANK_B — check"
 
