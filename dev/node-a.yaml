@@ -1,4 +1,4 @@
-# Round-trip test — Bank Node A (debtor, rt.bank.a2, Cardano preprod).
+# Round-trip test — Bank Node A (debtor, rt.bank.a3, Cardano preprod).
 # Start from the repo root:
 #   source dev/env.sh
 #   OBP_BANK_NODE_CONFIG=dev/node-a.yaml \
@@ -8,7 +8,7 @@ server:
   bind: "0.0.0.0:8088"
 
 bank:
-  bank_id: "rt.bank.a2"
+  bank_id: "rt.bank.a3"
   account_id: "settlement-a"
 
 obp_api:
@@ -25,10 +25,10 @@ blockchain:
     query_timeout_secs: 90
 
 outbox:
-  path: "./dev/data/node-a2/outbox.db"
+  path: "./dev/data/node-a3/outbox.db"
 
 evidence:
-  path: "./dev/data/node-a2/evidence.db"
+  path: "./dev/data/node-a3/evidence.db"
 
 rabbitmq:
   enabled: true
@@ -36,7 +36,7 @@ rabbitmq:
   port: 5672
   username: "bank_a_node"
   password: "rtpass-a"
-  virtual_host: "/bank.rt.bank.a2"
+  virtual_host: "/bank.rt.bank.a3"
   request_queue: "obp_rpc_queue"
 
 cbs_delivery:
@@ -53,7 +53,7 @@ settlement:
   # Fast finality for the test run (2 blocks ≈ 40 s on preprod).
   finality_depth: 2
   finality_poll_secs: 10
-  store_path: "./dev/data/node-a2/settlements.db"
+  store_path: "./dev/data/node-a3/settlements.db"
   ada_rate_minor_per_whole_ada: 2122
 
 local_secret: "rt-local-secret"

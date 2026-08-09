@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Start Bank Node A (rt.bank.a2, :8088, Cardano preprod rail).
-# Prereqs: OBP-API on :8080, RabbitMQ with the /bank.rt.bank.a2 vhost
+# Start Bank Node A (rt.bank.a3, :8088, Cardano preprod rail).
+# Prereqs: OBP-API on :8080, RabbitMQ with the /bank.rt.bank.a3 vhost
 # (setup_rabbitmq.sh), cardano-node + Ogmios on :1337 (docker/), and a fresh
 # env.sh (setup_obp.sh writes the DirectLogin tokens).
 set -euo pipefail
