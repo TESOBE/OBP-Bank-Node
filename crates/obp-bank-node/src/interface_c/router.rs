@@ -64,6 +64,7 @@ impl Router {
     ) -> ReplyEnvelope {
         match message_id {
             message_id::CREDIT_NOTIFICATION => self.credit_notification(correlation_id, body).await,
+            message_id::SETTLEMENT_ADVICE => self.settlement_advice(correlation_id, body).await,
             message_id::SETTLEMENT_INSTRUCTION => {
                 self.settlement_instruction(correlation_id, body).await
             }
@@ -202,6 +203,54 @@ impl Router {
                     correlation_id,
                     error_code::CBS_DELIVERY_FAILED,
                     e.to_string(),
+                )
+            }
+        }
+    }
+
+    /// `obp_settlement_advice`: the promises this (beneficiary) node already
+    /// paid out against are covered by a netted settle — stamp the credits
+    /// settled. Idempotent: only unstamped rows are touched, so an at-least-once
+    /// redelivery preserves the original settled_at.
+    async fn settlement_advice(&self, correlation_id: &str, body: &[u8]) -> ReplyEnvelope {
+        let advice: SettlementAdvice = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(error = %e, "settlement_advice: malformed body");
+                return ReplyEnvelope::error(
+                    correlation_id,
+                    error_code::BAD_MESSAGE,
+                    format!("malformed settlement_advice: {e}"),
+                );
+            }
+        };
+        match self
+            .evidence
+            .mark_settled(&advice.covered_transaction_request_ids, &advice.settlement_id)
+            .await
+        {
+            Ok(stamped) => {
+                info!(
+                    bank_id = %self.bank_id,
+                    settlement_id = %advice.settlement_id,
+                    covered = advice.covered_transaction_request_ids.len(),
+                    stamped,
+                    "settlement_advice: credits stamped settled"
+                );
+                ReplyEnvelope::ok(
+                    correlation_id,
+                    serde_json::json!({
+                        "settlement_id": advice.settlement_id,
+                        "acknowledged": true,
+                    }),
+                )
+            }
+            Err(e) => {
+                warn!(error = %e, "settlement_advice: failed to stamp credits");
+                ReplyEnvelope::error(
+                    correlation_id,
+                    error_code::PLATFORM,
+                    "failed to stamp settled credits",
                 )
             }
         }
@@ -642,6 +691,63 @@ mod tests {
         assert!(!reply.is_ok());
         assert_eq!(reply.status.error_code, error_code::NOT_IMPLEMENTED);
         assert_eq!(reply.inbound_adapter_call_context.correlation_id, "corr-1");
+    }
+
+    #[tokio::test]
+    async fn settlement_advice_stamps_received_credits_settled() {
+        let r = router_with_cbs("http://127.0.0.1:1/credit").await;
+        for id in ["tr-s1", "tr-s2"] {
+            r.evidence
+                .upsert(crate::evidence::NewEvidence {
+                    transaction_request_id: id,
+                    promise_commitment: "c",
+                    promise_salt: "s",
+                    promise_preimage: "p",
+                    promise_id: None,
+                    promise_blockchain: None,
+                    verified: true,
+                    currency: Some("KES"),
+                    amount: Some("3.00"),
+                    originator_name: None,
+                    raw_message: "{}",
+                })
+                .await
+                .unwrap();
+        }
+
+        let body = serde_json::json!({
+            "settlement_id": "settle-77",
+            "currency": "KES",
+            "net_amount": "0.00",
+            "debtor_bank_id": "rt.bank.a",
+            "creditor_bank_id": "rt.bank.b",
+            "covered_transaction_request_ids": ["tr-s1", "tr-s2"],
+            "idempotency_key": "settle-77",
+        })
+        .to_string();
+        let reply = r
+            .handle(message_id::SETTLEMENT_ADVICE, "corr-adv", body.as_bytes())
+            .await;
+        assert!(reply.is_ok(), "expected ok, got {:?}", reply.status);
+        assert_eq!(reply.data["settlement_id"], "settle-77");
+        assert_eq!(reply.data["acknowledged"], true);
+
+        let rec = r.evidence.get("tr-s1").await.unwrap().unwrap();
+        assert_eq!(rec.settlement_id.as_deref(), Some("settle-77"));
+        assert!(rec.settled_at.is_some());
+
+        // Redelivery stays ok and does not re-stamp.
+        let reply = r
+            .handle(message_id::SETTLEMENT_ADVICE, "corr-adv-2", body.as_bytes())
+            .await;
+        assert!(reply.is_ok());
+
+        // Malformed body is refused, never panics.
+        let reply = r
+            .handle(message_id::SETTLEMENT_ADVICE, "corr-bad", b"not json")
+            .await;
+        assert!(!reply.is_ok());
+        assert_eq!(reply.status.error_code, error_code::BAD_MESSAGE);
     }
 
     #[tokio::test]

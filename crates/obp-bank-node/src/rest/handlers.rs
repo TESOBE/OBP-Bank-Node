@@ -402,6 +402,8 @@ fn evidence_view(rec: EvidenceRecord) -> EvidenceView {
         cbs_reference: rec.cbs_reference,
         cbs_recorded_at: rec.cbs_recorded_at,
         received_at: rec.received_at,
+        settlement_id: rec.settlement_id,
+        settled_at: rec.settled_at,
     }
 }
 

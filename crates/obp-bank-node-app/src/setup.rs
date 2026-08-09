@@ -1147,6 +1147,12 @@ struct TestAccountRequest {
     currency: String,
     #[serde(default)]
     owner_username: Option<String>,
+    /// Optional single routing pair (e.g. IBAN + address); OBP-family schemes
+    /// are implicit and refused by OBP-API.
+    #[serde(default)]
+    routing_scheme: Option<String>,
+    #[serde(default)]
+    routing_address: Option<String>,
 }
 
 /// Free-form test-account creation — for seeding demo customer accounts
@@ -1171,6 +1177,15 @@ async fn test_account(
             )
         }
     };
+    let routings: Vec<SetupRouting> = match (&req.routing_scheme, &req.routing_address) {
+        (Some(scheme), Some(address)) if !scheme.trim().is_empty() && !address.trim().is_empty() => {
+            vec![SetupRouting {
+                scheme: scheme.trim().to_string(),
+                address: address.trim().to_string(),
+            }]
+        }
+        _ => Vec::new(),
+    };
     match create_account(
         &state,
         &token,
@@ -1180,7 +1195,7 @@ async fn test_account(
         &req.label,
         &req.currency,
         req.owner_username.as_deref(),
-        &[],
+        &routings,
     )
     .await
     {

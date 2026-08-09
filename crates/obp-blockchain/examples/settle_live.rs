@@ -54,6 +54,7 @@ async fn main() {
         ogmios_url: url.to_string(),
         network: network.to_string(),
         wallet_skey_path: env_path("WALLET_SKEY").into(),
+        query_timeout_secs: 90,
     };
     let backend = CardanoBackend::new(config).await.unwrap_or_else(|e| {
         eprintln!("ERROR building backend: {e}");

@@ -184,6 +184,8 @@ pub struct EvidenceView {
     pub cbs_reference: Option<String>,
     pub cbs_recorded_at: Option<String>,
     pub received_at: String,
+    pub settlement_id: Option<String>,
+    pub settled_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

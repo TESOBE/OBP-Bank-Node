@@ -63,6 +63,12 @@
           <label>Owner username (optional)
             <input name="owner_username" placeholder="defaults to you">
           </label>
+          <label class="pair">Account routing (optional, scheme · address)
+            <span class="pair-inputs">
+              <input name="routing_scheme" class="scheme" placeholder="IBAN">
+              <input name="routing_address" placeholder="KE9300001234567890">
+            </span>
+          </label>
         </div>
         <button type="submit">Create account</button>
         <pre id="test-account-result" class="result" hidden></pre>

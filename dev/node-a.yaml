@@ -21,6 +21,8 @@ blockchain:
     ogmios_url: "ws://localhost:1337"
     network: "preprod"
     wallet_skey_path: "./secrets/cardano.skey"
+    # UTxO-by-address scans the whole preprod UTxO set (~35s here); 15s default kills it.
+    query_timeout_secs: 90
 
 outbox:
   path: "./dev/data/node-a/outbox.db"

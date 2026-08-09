@@ -733,6 +733,8 @@ async fn test_account_endpoint_creates_an_account_owned_by_me_by_default() {
                 "bank_id": "rt.bank.a",
                 "label": "Alice",
                 "currency": "KES",
+                "routing_scheme": "IBAN",
+                "routing_address": "KE9300001234567890",
             }),
         ))
         .await
@@ -746,4 +748,8 @@ async fn test_account_endpoint_creates_an_account_owned_by_me_by_default() {
     assert_eq!(bank_id, "rt.bank.a");
     assert_eq!(body["user_id"], "admin-user-id");
     assert_eq!(body["label"], "Alice");
+    assert_eq!(
+        body["account_routings"],
+        json!([{ "scheme": "IBAN", "address": "KE9300001234567890" }])
+    );
 }

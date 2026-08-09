@@ -53,6 +53,10 @@ pub struct CardanoConfig {
     /// Path to the signing key envelope (.skey). Treat as a secret.
     #[serde(default = "default_skey_path")]
     pub wallet_skey_path: PathBuf,
+    /// Per-call Ogmios deadline in seconds. UTxO-by-address queries scan the
+    /// node's whole UTxO set and routinely take ~30-60s on public testnets.
+    #[serde(default = "default_query_timeout_secs")]
+    pub query_timeout_secs: u64,
 }
 
 fn default_ogmios_url() -> String {
@@ -67,12 +71,17 @@ fn default_skey_path() -> PathBuf {
     "./secrets/cardano.skey".into()
 }
 
+fn default_query_timeout_secs() -> u64 {
+    90
+}
+
 impl Default for CardanoConfig {
     fn default() -> Self {
         CardanoConfig {
             ogmios_url: default_ogmios_url(),
             network: default_network(),
             wallet_skey_path: default_skey_path(),
+            query_timeout_secs: default_query_timeout_secs(),
         }
     }
 }
@@ -94,7 +103,10 @@ pub struct CardanoBackend {
 impl CardanoBackend {
     /// Connect to Ogmios and load the wallet from disk.
     pub async fn new(config: CardanoConfig) -> Result<Self> {
-        let ogmios = OgmiosClient::new(&config.ogmios_url);
+        let ogmios = OgmiosClient::with_timeout(
+            &config.ogmios_url,
+            std::time::Duration::from_secs(config.query_timeout_secs),
+        );
 
         // Probe the connection up-front so misconfigurations fail at startup
         // rather than on the first transaction.

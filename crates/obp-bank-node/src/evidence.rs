@@ -47,6 +47,10 @@ pub struct EvidenceRecord {
     /// The CBS's own reference for the posted credit, when it returned one.
     pub cbs_reference: Option<String>,
     pub cbs_recorded_at: Option<String>,
+    /// Stamped by `obp_settlement_advice` when the promise behind this credit
+    /// was covered by a netted settle. `None` while unsettled.
+    pub settlement_id: Option<String>,
+    pub settled_at: Option<String>,
 }
 
 /// Fields to record a newly-received credit notification.
@@ -118,20 +122,24 @@ impl EvidenceStore {
                 received_at            TEXT NOT NULL,
                 cbs_status             TEXT,
                 cbs_reference          TEXT,
-                cbs_recorded_at        TEXT
+                cbs_recorded_at        TEXT,
+                settlement_id          TEXT,
+                settled_at             TEXT
             )
             "#,
         )
         .execute(pool)
         .await?;
 
-        // Migration for databases created before the CBS-result columns
-        // existed. SQLite has no `ADD COLUMN IF NOT EXISTS`; a duplicate-column
-        // error means the column is already there, which is fine.
+        // Migration for databases created before the CBS-result / settlement
+        // columns existed. SQLite has no `ADD COLUMN IF NOT EXISTS`; a
+        // duplicate-column error means the column is already there, which is fine.
         for col in [
             "cbs_status TEXT",
             "cbs_reference TEXT",
             "cbs_recorded_at TEXT",
+            "settlement_id TEXT",
+            "settled_at TEXT",
         ] {
             if let Err(e) = sqlx::query(&format!("ALTER TABLE evidence ADD COLUMN {col}"))
                 .execute(pool)
@@ -209,6 +217,31 @@ impl EvidenceStore {
         Ok(())
     }
 
+    /// Stamp the credits covered by a settlement advice. Only unstamped rows
+    /// are touched — a redelivered advice preserves the original `settled_at`.
+    /// Returns the number of rows stamped.
+    pub async fn mark_settled(
+        &self,
+        transaction_request_ids: &[String],
+        settlement_id: &str,
+    ) -> Result<u64, OutboxError> {
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let mut stamped = 0u64;
+        for id in transaction_request_ids {
+            let result = sqlx::query(
+                "UPDATE evidence SET settlement_id = ?, settled_at = ? \
+                 WHERE transaction_request_id = ? AND settled_at IS NULL",
+            )
+            .bind(settlement_id)
+            .bind(&now)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+            stamped += result.rows_affected();
+        }
+        Ok(stamped)
+    }
+
     pub async fn get(&self, id: &str) -> Result<Option<EvidenceRecord>, OutboxError> {
         let rec = sqlx::query_as::<_, EvidenceRecord>(
             "SELECT * FROM evidence WHERE transaction_request_id = ?",
@@ -271,6 +304,26 @@ mod tests {
         let rec = store.get("tr-2").await.unwrap().unwrap();
         assert!(rec.verified, "the later delivery's value wins");
         assert_eq!(store.list(10).await.unwrap().len(), 1, "still one row");
+    }
+
+    #[tokio::test]
+    async fn mark_settled_stamps_only_unstamped_rows() {
+        let store = EvidenceStore::connect_in_memory().await.unwrap();
+        store.upsert(sample("tr-a", true)).await.unwrap();
+        store.upsert(sample("tr-b", true)).await.unwrap();
+
+        let covered = vec!["tr-a".to_string(), "tr-b".to_string(), "tr-ghost".to_string()];
+        let stamped = store.mark_settled(&covered, "settle-1").await.unwrap();
+        assert_eq!(stamped, 2, "ghost id stamps nothing");
+        let a = store.get("tr-a").await.unwrap().unwrap();
+        assert_eq!(a.settlement_id.as_deref(), Some("settle-1"));
+        let settled_at_first = a.settled_at.clone().expect("settled_at set");
+
+        // Redelivered advice: no re-stamp, original settled_at preserved.
+        let again = store.mark_settled(&covered, "settle-1").await.unwrap();
+        assert_eq!(again, 0);
+        let a = store.get("tr-a").await.unwrap().unwrap();
+        assert_eq!(a.settled_at.as_deref(), Some(settled_at_first.as_str()));
     }
 
     #[tokio::test]

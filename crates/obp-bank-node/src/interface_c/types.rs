@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 pub mod message_id {
     pub const CREDIT_NOTIFICATION: &str = "obp_credit_notification";
     pub const NETTING_SNAPSHOT: &str = "obp_netting_snapshot";
+    pub const SETTLEMENT_ADVICE: &str = "obp_settlement_advice";
     pub const SETTLEMENT_INSTRUCTION: &str = "obp_settlement_instruction";
     pub const STATUS_UPDATE: &str = "obp_status_update";
 }
@@ -135,6 +136,28 @@ pub struct CreditNotification {
     /// The exact canonical instruction bytes that were hashed (the preimage).
     #[serde(default)]
     pub promise_preimage: Option<String>,
+}
+
+/// `obp_settlement_advice` — "the promises you already paid out against are now
+/// covered". Purely reconciliatory: stamps the listed credits settled; no money
+/// moves on this message. Credit notifications themselves arrive at promise
+/// report-back time.
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub struct SettlementAdvice {
+    pub settlement_id: String,
+    #[serde(default)]
+    pub currency: Option<String>,
+    #[serde(default)]
+    pub net_amount: Option<String>,
+    #[serde(default)]
+    pub debtor_bank_id: Option<String>,
+    #[serde(default)]
+    pub creditor_bank_id: Option<String>,
+    #[serde(default)]
+    pub covered_transaction_request_ids: Vec<String>,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
 }
 
 /// `obp_settlement_instruction` — "settle this now". Most fields feed the

@@ -197,6 +197,8 @@ async function onTestAccount(e) {
     label: f.get("label"),
     currency: f.get("currency"),
     owner_username: f.get("owner_username") || null,
+    routing_scheme: f.get("routing_scheme") || null,
+    routing_address: f.get("routing_address") || null,
   });
   showResult($("#test-account-result"), r);
 }

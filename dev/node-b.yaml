@@ -1,6 +1,6 @@
-# Round-trip test — Bank Node B (creditor, rt.bank.b, mock chain — the
-# beneficiary side needs no chain access: commitment verification is pure
-# hashing and the ADA lands at B's address from A's transfer).
+# Round-trip test — Bank Node B (rt.bank.b, Cardano preprod rail — symmetric
+# with node A so B can also write promises and settle as debtor; wallet is
+# secrets/creditor.skey, address addr_test1vqn7sn79...).
 # Start from the repo root:
 #   source dev/env.sh
 #   OBP_BANK_NODE_CONFIG=dev/node-b.yaml \
@@ -17,7 +17,13 @@ obp_api:
   base_url: "http://localhost:8080"
 
 blockchain:
-  type: "mock"
+  type: "cardano"
+  cardano:
+    ogmios_url: "ws://localhost:1337"
+    network: "preprod"
+    wallet_skey_path: "./secrets/creditor.skey"
+    # UTxO-by-address scans the whole preprod UTxO set (~35s here); 15s default kills it.
+    query_timeout_secs: 90
 
 outbox:
   path: "./dev/data/node-b/outbox.db"

@@ -43,11 +43,25 @@ pub type Result<T> = std::result::Result<T, OgmiosError>;
 #[derive(Debug, Clone)]
 pub struct OgmiosClient {
     url: String,
+    /// Per-call deadline. UTxO-by-address queries scan cardano-node's entire
+    /// UTxO set and routinely take ~30-60s on public testnets, so callers that
+    /// build transactions should raise this well above the 15s default.
+    call_timeout: Duration,
 }
 
 impl OgmiosClient {
     pub fn new(url: impl Into<String>) -> Self {
-        Self { url: url.into() }
+        Self {
+            url: url.into(),
+            call_timeout: DEFAULT_TIMEOUT,
+        }
+    }
+
+    pub fn with_timeout(url: impl Into<String>, call_timeout: Duration) -> Self {
+        Self {
+            url: url.into(),
+            call_timeout,
+        }
     }
 
     /// Fire a single JSON-RPC call and return the `result` value.
@@ -88,9 +102,9 @@ impl OgmiosClient {
             Err(OgmiosError::Protocol("stream ended without response".into()))
         };
 
-        timeout(DEFAULT_TIMEOUT, fut)
+        timeout(self.call_timeout, fut)
             .await
-            .map_err(|_| OgmiosError::Timeout(DEFAULT_TIMEOUT))?
+            .map_err(|_| OgmiosError::Timeout(self.call_timeout))?
     }
 
     /// `queryNetwork/tip` — current chain tip.

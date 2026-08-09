@@ -200,11 +200,14 @@ async function renderEvidence() {
         <td>${ev.cbs_status ? chip(ev.cbs_status) : ""} ${esc(ev.cbs_reference || "")}</td>
         <td class="mono" title="${esc(ev.promise_commitment)}">${short(ev.promise_commitment, 16)}</td>
         <td>${esc(ev.received_at ? ev.received_at.slice(0, 19) : "")}</td>
+        <td title="${esc(ev.settlement_id || "")}">${ev.settled_at
+          ? `<span class="chip chip-verified">settled</span>`
+          : `<span class="chip chip-initiated">unsettled</span>`}</td>
       </tr>`).join("");
     return `<h3>${esc(n.name)}</h3>
       <table>
         <thead><tr><th>tr id</th><th>commitment check</th><th>amount</th>
-          <th>originator</th><th>CBS delivery</th><th>commitment</th><th>received</th></tr></thead>
+          <th>originator</th><th>CBS delivery</th><th>commitment</th><th>received</th><th>settlement</th></tr></thead>
         <tbody>${body}</tbody>
       </table>`;
   }));
