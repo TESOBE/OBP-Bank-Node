@@ -181,3 +181,6 @@ footer {
   color: var(--dim);
   font-size: .78rem;
 }
+
+/* Full business ids (transaction request / settlement): complete, just small. */
+.id-full { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .68rem; }

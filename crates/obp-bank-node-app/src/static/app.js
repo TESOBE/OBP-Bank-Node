@@ -49,14 +49,36 @@ function esc(s) {
 
 // ---- header: node health -------------------------------------------------
 
+// Per-node identity from /health (bank_id, account_id) — drives the
+// beneficiary-default swap when the sending node changes.
+const NODE_INFO = {};
+
 async function renderHealth() {
   const parts = await Promise.all(NODES.map(async (n) => {
     const r = await getJson(nodeUrl(n.name, "health"));
     const up = r.ok && r.body && r.body.status === "healthy";
+    if (up) NODE_INFO[n.name] = { bank_id: r.body.bank_id, account_id: r.body.account_id };
     const chain = up ? ` · ${esc(r.body.blockchain)}` : "";
     return `<span class="node-chip ${up ? "up" : "down"}">${esc(n.name)}${chain}</span>`;
   }));
   $("#node-health").innerHTML = parts.join("");
+}
+
+// A corridor is inter-bank: when the sender changes, point the beneficiary
+// fields at the first OTHER node's bank/account so the defaults never target
+// the sending bank itself.
+function swapBeneficiaryDefaults(senderName) {
+  const sender = NODE_INFO[senderName];
+  const other = NODES.map((n) => n.name)
+    .filter((name) => name !== senderName && NODE_INFO[name])
+    .map((name) => NODE_INFO[name])
+    .find((info) => !sender || info.bank_id !== sender.bank_id);
+  if (!other) return;
+  const send = $("#send-form").elements;
+  send.namedItem("other_bank").value = other.bank_id;
+  send.namedItem("other_account").value = other.account_id;
+  send.namedItem("beneficiary_name").value = `Beneficiary at ${other.bank_id}`;
+  $("#settle-form").elements.namedItem("other_bank_id").value = other.bank_id;
 }
 
 // ---- step 2: promises (outbox tables) ------------------------------------
@@ -78,17 +100,17 @@ function renderTrTables() {
     }
     const body = rows.map((tr) => `
       <tr>
-        <td title="${esc(tr.transaction_request_id)}">${short(tr.transaction_request_id)}</td>
+        <td class="id-full">${esc(tr.transaction_request_id)}</td>
         <td>${chip(tr.status)}</td>
         <td class="num">${esc(tr.value ? `${tr.value.amount} ${tr.value.currency}` : "")}</td>
         <td>${esc(tr.other_bank_id || "")}</td>
         <td>${tr.promise_id ? txLink(tr.promise_id) : ""}</td>
-        <td title="${esc(tr.settlement_id || "")}">${short(tr.settlement_id)}</td>
+        <td class="id-full">${esc(tr.settlement_id || "")}</td>
         <td>${esc(tr.settled_at ? tr.settled_at.slice(0, 19) : "")}</td>
       </tr>`).join("");
     return `<h3>${esc(n.name)}</h3>
       <table>
-        <thead><tr><th>id</th><th>status</th><th>value</th><th>to bank</th>
+        <thead><tr><th>transaction request id</th><th>status</th><th>value</th><th>to bank</th>
           <th>promise tx</th><th>settlement</th><th>settled at</th></tr></thead>
         <tbody>${body}</tbody>
       </table>`;
@@ -166,7 +188,7 @@ async function renderSettlements() {
     }
     const body = rows.map((s) => `
       <tr>
-        <td title="${esc(s.idempotency_key)}">${short(s.settlement_id || s.idempotency_key)}</td>
+        <td class="id-full" title="${esc(s.idempotency_key)}">${esc(s.settlement_id || s.idempotency_key)}</td>
         <td>${chip(s.status)}</td>
         <td class="num">${esc(fmtMinor(s.net_amount_minor))} ${esc(s.currency)}</td>
         <td class="num">${esc(fmtRail(s.asset_amount, s.asset))}</td>
@@ -178,7 +200,7 @@ async function renderSettlements() {
       </tr>`).join("");
     return `<h3>${esc(n.name)}</h3>
       <table>
-        <thead><tr><th>id</th><th>status</th><th>net</th><th>rail amount</th>
+        <thead><tr><th>settlement id</th><th>status</th><th>net</th><th>rail amount</th>
           <th>depth</th><th>tx</th><th>error</th><th></th></tr></thead>
         <tbody>${body}</tbody>
       </table>`;
@@ -205,7 +227,7 @@ async function renderEvidence() {
     }
     const body = rows.map((ev) => `
       <tr>
-        <td title="${esc(ev.transaction_request_id)}">${short(ev.transaction_request_id)}</td>
+        <td class="id-full">${esc(ev.transaction_request_id)}</td>
         <td>${ev.verified
           ? `<span class="chip chip-verified">verified</span>`
           : `<span class="chip chip-error">MISMATCH</span>`}</td>
@@ -220,7 +242,7 @@ async function renderEvidence() {
       </tr>`).join("");
     return `<h3>${esc(n.name)}</h3>
       <table>
-        <thead><tr><th>tr id</th><th>commitment check</th><th>amount</th>
+        <thead><tr><th>transaction request id</th><th>commitment check</th><th>amount</th>
           <th>originator</th><th>CBS delivery</th><th>commitment</th><th>received</th><th>settlement</th></tr></thead>
         <tbody>${body}</tbody>
       </table>`;
@@ -317,6 +339,8 @@ async function boot() {
   await applyUiDefaults();
   $("#send-form").addEventListener("submit", onSend);
   $("#settle-form").addEventListener("submit", onSettle);
+  $("#send-node").addEventListener("change", (e) => swapBeneficiaryDefaults(e.target.value));
+  $("#settle-node").addEventListener("change", (e) => swapBeneficiaryDefaults(e.target.value));
   document.addEventListener("click", (e) => {
     const btn = e.target.closest(".corridor-btn");
     if (btn) showCorridor(btn.dataset.node, btn.dataset.key);

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Round-trip test: OBP-API data setup (idempotent — safe to re-run).
-# Creates: banks rt.bank.a / rt.bank.b, service users, settlement + customer
+# Creates: banks rt.bank.a2 / rt.bank.b2, service users, settlement + customer
 # accounts, roles, and the per-bank AMQP broker registrations.
 # Writes DirectLogin tokens to env.sh for the node processes.
 set -uo pipefail
@@ -10,7 +10,7 @@ CK="rtkey6a33e2a63adba1658290ecac776ff155"   # consumer 'obp-bank-node-roundtrip
 SA_USER="TheSuperUserAForTesting"
 SA_PASS="alk24ahf8au98uropifa8aba"
 
-BANK_A="rt.bank.a"; BANK_B="rt.bank.b"
+BANK_A="rt.bank.a2"; BANK_B="rt.bank.b2"
 NODE_A_USER="rt.node.a"; NODE_B_USER="rt.node.b"; NODE_PASS="RtNodePass2026!"
 # Cardano addresses (preprod): A = bank wallet (funded), B = receive-only.
 ADDR_A="addr_test1vz233470pc30zzsceh9k2qmzkj4gvj7n976ulvdmed5w9mg0a37ns"
@@ -70,7 +70,7 @@ register_scheme() { # register_scheme <json-body> <name>
 }
 # The three allow-listed global (unprefixed) schemes; country must be INT.
 register_scheme '{"scheme":"OBP","country":"INT","category":"ACCOUNT",
-  "address_pattern":"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$","example_address":"rt.bank.b",
+  "address_pattern":"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$","example_address":"rt.bank.b2",
   "description":"OBP bank id or account id, as used in OBP account routings.",
   "downstream_rails":[],"status":"ACTIVE"}' OBP
 register_scheme '{"scheme":"IBAN","country":"INT","category":"ACCOUNT",

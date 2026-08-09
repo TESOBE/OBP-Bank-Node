@@ -19,17 +19,17 @@ for row in con.execute(sys.argv[2]):
 ' "$1" "$2" 2>/dev/null
 }
 
-echo "=== 1. POST payment to Node A (KES $AMOUNT, rt.bank.a -> rt.bank.b)"
+echo "=== 1. POST payment to Node A (KES $AMOUNT, rt.bank.a2 -> rt.bank.b2)"
 RESP=$(curl -s -X POST "$NODE_A/obp-bank-node/v5.1.0/transaction-requests" \
   -H 'Content-Type: application/json' -d @- <<EOF
 {
   "value": {"currency": "KES", "amount": "$AMOUNT"},
   "description": "Round-trip test payment",
   "to": {
-    "name": "Beneficiary at rt.bank.b",
-    "description": "settlement-b at rt.bank.b",
+    "name": "Beneficiary at rt.bank.b2",
+    "description": "settlement-b at rt.bank.b2",
     "other_bank_routing_scheme": "OBP",
-    "other_bank_routing_address": "rt.bank.b",
+    "other_bank_routing_address": "rt.bank.b2",
     "other_account_routing_scheme": "OBP",
     "other_account_routing_address": "settlement-b",
     "other_account_secondary_routing_scheme": "",
@@ -65,10 +65,10 @@ echo "Promise on-chain tx: $PROMISE_TX"
 echo "  https://preprod.cardanoscan.io/transaction/$PROMISE_TX"
 
 echo "=== 3. Settle the pair (admin, from bank A's side)"
-SETTLE=$(curl -s -X POST "$OBP/obp/v7.0.0/banks/rt.bank.a/open-corridor/settlements" \
+SETTLE=$(curl -s -X POST "$OBP/obp/v7.0.0/banks/rt.bank.a2/open-corridor/settlements" \
   -H "Authorization: DirectLogin token=\"$RT_ADMIN_TOKEN\"" \
   -H 'Content-Type: application/json' \
-  -d '{"other_bank_id":"rt.bank.b","currency":"KES"}')
+  -d '{"other_bank_id":"rt.bank.b2","currency":"KES"}')
 echo "$SETTLE" | python3 -m json.tool 2>/dev/null || echo "$SETTLE"
 SETTLEMENT_ID=$(echo "$SETTLE" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("settlement_id",""))')
 [ -n "$SETTLEMENT_ID" ] || { echo "FAILED — settle returned no settlement_id"; exit 1; }

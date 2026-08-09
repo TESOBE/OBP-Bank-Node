@@ -8,8 +8,8 @@ ADMIN="guest:guest"
 
 # vhost, user, password
 declare -a ROWS=(
-  "/bank.rt.bank.a bank_a_node rtpass-a"
-  "/bank.rt.bank.b bank_b_node rtpass-b"
+  "/bank.rt.bank.a2 bank_a_node rtpass-a"
+  "/bank.rt.bank.b2 bank_b_node rtpass-b"
 )
 
 for row in "${ROWS[@]}"; do

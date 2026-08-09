@@ -598,6 +598,8 @@ pub async fn root_health(State(state): State<BankNodeState>) -> Response {
         service: "OBP-Bank-Node",
         version: env!("CARGO_PKG_VERSION"),
         blockchain: state.blockchain_label,
+        bank_id: state.bank_id.clone(),
+        account_id: state.account_id.clone(),
         timestamp: Utc::now(),
     })
     .into_response()

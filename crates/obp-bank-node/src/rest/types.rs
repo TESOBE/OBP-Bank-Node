@@ -194,6 +194,10 @@ pub struct HealthBody {
     pub service: &'static str,
     pub version: &'static str,
     pub blockchain: &'static str,
+    /// This node's own bank and corridor account — lets UIs derive
+    /// per-node beneficiary defaults instead of hardcoding them.
+    pub bank_id: String,
+    pub account_id: String,
     pub timestamp: DateTime<Utc>,
 }
 

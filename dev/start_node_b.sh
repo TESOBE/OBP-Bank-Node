@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Start Bank Node B (rt.bank.b, :8089, mock rail — the creditor side).
-# Prereqs: OBP-API on :8080, RabbitMQ with the /bank.rt.bank.b vhost
+# Start Bank Node B (rt.bank.b2, :8089, mock rail — the creditor side).
+# Prereqs: OBP-API on :8080, RabbitMQ with the /bank.rt.bank.b2 vhost
 # (setup_rabbitmq.sh), cbs_stub.py on :9009, and a fresh env.sh
 # (setup_obp.sh writes the DirectLogin tokens).
 set -euo pipefail

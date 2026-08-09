@@ -1,4 +1,4 @@
-# Bank Node App for bank A — locked to its own node (rt.bank.a), exactly as
+# Bank Node App for bank A — locked to its own node (rt.bank.a2), exactly as
 # a bank client using Open Corridor would deploy it. The localhost demo runs
 # a second instance (app-b.yaml) so both banks' views sit side by side.
 # Start from the repo root:
@@ -15,10 +15,10 @@ nodes:
 # Out-of-band knowledge of the demo topology — the app never enumerates the
 # other bank's accounts.
 ui_defaults:
-  beneficiary_name: "Beneficiary at rt.bank.b"
-  other_bank: "rt.bank.b"
+  beneficiary_name: "Beneficiary at rt.bank.b2"
+  other_bank: "rt.bank.b2"
   other_account: "settlement-b"
-  other_bank_id: "rt.bank.b"
+  other_bank_id: "rt.bank.b2"
 
 # --- /setup operator page -------------------------------------------------
 # OBP-API + OIDC client for the setup page (the Portal's login scheme: the
@@ -49,7 +49,7 @@ setup:
       country: "INT"
       category: "ACCOUNT"
       address_pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
-      example_address: "rt.bank.b"
+      example_address: "rt.bank.b2"
       description: "OBP bank id or account id, as used in OBP account routings."
       downstream_rails: []
       status: "ACTIVE"
@@ -87,8 +87,8 @@ setup:
       status: "RESERVED"
 
   bank:
-    id: "rt.bank.a"
-    full_name: "Round-trip rt.bank.a"
+    id: "rt.bank.a2"
+    full_name: "Round-trip rt.bank.a2"
     accounts:
       - id: "settlement-a"
         label: "Node A corridor account"
@@ -108,7 +108,7 @@ setup:
     broker:
       host: "localhost"
       port: 5672
-      virtual_host: "/bank.rt.bank.a"
+      virtual_host: "/bank.rt.bank.a2"
       username: "bank_a_node"
       password: "rtpass-a"
       use_ssl: false
