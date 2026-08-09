@@ -26,7 +26,7 @@ use serde_json::{json, Value};
 use tracing::warn;
 
 use crate::oidc::{self, Oidc};
-use crate::{ObpApiConfig, SetupConfig};
+use crate::{ObpApiConfig, SetupConfig, SetupRouting};
 
 const SETUP_HTML: &str = include_str!("static/setup.html");
 const SETUP_JS: &str = include_str!("static/setup.js");
@@ -329,6 +329,16 @@ fn required_admin_roles(setup: &SetupConfig) -> Vec<(String, String)> {
         roles.push((String::new(), "CanCreateBank".to_string()));
         if !bank.accounts.is_empty() {
             roles.push((bank.id.clone(), "CanCreateAccount".to_string()));
+            // The account checks read the bank's account directory.
+            roles.push((
+                bank.id.clone(),
+                "CanGetAccountDirectoryAtOneBank".to_string(),
+            ));
+            // Routings on boot-provisioned accounts are attached via Update
+            // Account when the create refuses with already-exists.
+            if bank.accounts.iter().any(|a| !a.routings.is_empty()) {
+                roles.push((bank.id.clone(), "CanUpdateAccount".to_string()));
+            }
         }
         if !bank.fx.is_empty() {
             roles.push((bank.id.clone(), "CanCreateFxRate".to_string()));
@@ -529,36 +539,71 @@ async fn status(State(state): State<SetupState>, headers: HeaderMap) -> Response
             ("", "CanCreateBank"),
         ));
 
+        // One directory listing answers every account check. The per-account
+        // GETs need a view on the account, which the admin does not hold on
+        // accounts owned by the node service users; the directory endpoint is
+        // role-based (CanGetAccountDirectoryAtOneBank) and view-independent.
+        let directory = state
+            .obp(
+                Method::GET,
+                &format!("/obp/v6.0.0/banks/{b}/account-directory?limit=500"),
+                Some(&token),
+                None,
+            )
+            .await;
         for account in &bank.accounts {
             let a = &account.id;
-            let (status_str, detail) = match state
-                .obp(
-                    Method::GET,
-                    &format!("/obp/v5.1.0/banks/{b}/accounts/{a}/account"),
-                    Some(&token),
-                    None,
-                )
-                .await
-            {
-                Ok((status, body)) => {
-                    let (s, d) = classify(
-                        status,
-                        &body,
-                        format!("{}", body["balance"]["currency"].as_str().unwrap_or("")),
-                    );
-                    // The admin usually holds no view on accounts owned by the
-                    // node service users — an authorization refusal proves
-                    // nothing about existence either way.
-                    if s == "error" && status.as_u16() < 500 && !d.contains("not found") {
-                        (
-                            "unverified",
-                            format!("cannot read (no view access); Apply is idempotent — {d}"),
-                        )
-                    } else {
-                        (s, d)
+            let (status_str, detail) = match &directory {
+                Ok((status, body)) if status.is_success() => {
+                    let found = body["accounts"].as_array().and_then(|list| {
+                        list.iter()
+                            .find(|e| e["account_id"].as_str() == Some(a.as_str()))
+                    });
+                    match found {
+                        Some(entry) => {
+                            // Configured routings must all be present (the
+                            // directory also lists the implicit OBP one).
+                            let missing: Vec<String> = account
+                                .routings
+                                .iter()
+                                .filter(|r| {
+                                    !entry["account_routings"]
+                                        .as_array()
+                                        .map(|list| {
+                                            list.iter().any(|a| {
+                                                a["scheme"].as_str() == Some(r.scheme.as_str())
+                                                    && a["address"].as_str()
+                                                        == Some(r.address.as_str())
+                                            })
+                                        })
+                                        .unwrap_or(false)
+                                })
+                                .map(|r| r.scheme.clone())
+                                .collect();
+                            if missing.is_empty() {
+                                ("ok", entry["label"].as_str().unwrap_or("").to_string())
+                            } else {
+                                ("differs", format!("missing routing: {}", missing.join(", ")))
+                            }
+                        }
+                        None => ("missing", String::new()),
                     }
                 }
-                Err(e) => ("error", e),
+                Ok((_, body)) => {
+                    let message = body["message"].as_str().unwrap_or("").to_string();
+                    if message.contains("OBP-20006") {
+                        (
+                            "unverified",
+                            format!("cannot list accounts; Apply is idempotent — {message}"),
+                        )
+                    } else if message.contains("OBP-30001") {
+                        // Without the bank its accounts cannot exist either.
+                        ("missing", format!("bank {b} not created yet"))
+                    } else {
+                        ("error", message)
+                    }
+                }
+                Err(e) => ("error", e.clone()),
             };
             items.push(item(
                 format!("account:{b}/{a}"),
@@ -585,10 +630,17 @@ async fn status(State(state): State<SetupState>, headers: HeaderMap) -> Response
                     if status.is_success() {
                         ("ok", format!("rate {}", body["conversion_value"]))
                     } else {
-                        (
-                            "missing",
-                            body["message"].as_str().unwrap_or("").to_string(),
-                        )
+                        let message = body["message"].as_str().unwrap_or("").to_string();
+                        // OBP-10004 = no rate for this currency pair; OBP-30001
+                        // = no bank yet. Anything else (auth, scope) proves
+                        // nothing about the rate.
+                        if message.contains("OBP-10004") {
+                            ("missing", message)
+                        } else if message.contains("OBP-30001") {
+                            ("missing", format!("bank {b} not created yet"))
+                        } else {
+                            ("error", message)
+                        }
                     }
                 }
                 Err(e) => ("error", e),
@@ -745,24 +797,40 @@ async fn resolve_user_id(state: &SetupState, token: &str, username: &str) -> Res
         .ok_or_else(|| format!("no user_id in the response for {username}"))
 }
 
+/// With an `account_id` the account is created under that id (PUT — the
+/// configured corridor accounts have meaningful ids); without one OBP-API
+/// generates the id (POST) and returns it in the response. Both are the
+/// v7.0.0 Create Account, whose response carries the implicit OBP routing.
 async fn create_account(
     state: &SetupState,
     token: &str,
     me: &Me,
     bank_id: &str,
-    account_id: &str,
+    account_id: Option<&str>,
     label: &str,
     currency: &str,
     owner_username: Option<&str>,
+    routings: &[SetupRouting],
 ) -> Result<(StatusCode, Value), String> {
     let owner = match owner_username {
         Some(username) => resolve_user_id(state, token, username).await?,
         None => me.user_id.clone(),
     };
-    state
-        .obp(
+    let (method, path) = match account_id {
+        Some(a) => (
             Method::PUT,
-            &format!("/obp/v5.1.0/banks/{bank_id}/accounts/{account_id}"),
+            format!("/obp/v7.0.0/banks/{bank_id}/accounts/{a}"),
+        ),
+        None => (Method::POST, format!("/obp/v7.0.0/banks/{bank_id}/accounts")),
+    };
+    let routings_json: Vec<Value> = routings
+        .iter()
+        .map(|r| json!({ "scheme": r.scheme, "address": r.address }))
+        .collect();
+    let (status, body) = state
+        .obp(
+            method,
+            &path,
             Some(token),
             Some(&json!({
                 "user_id": owner,
@@ -770,10 +838,32 @@ async fn create_account(
                 "product_code": "OPEN_CORRIDOR",
                 "balance": { "currency": currency, "amount": "0" },
                 "branch_id": "",
-                "account_routings": [],
+                "account_routings": routings_json.clone(),
             })),
         )
-        .await
+        .await?;
+    // Boot-provisioned accounts (the OBP-* settlement pair) already exist, so
+    // the create refuses — attach the configured routings via Update Account
+    // instead. Only when routings are configured: the update replaces the
+    // account's routing list wholesale.
+    if !routings.is_empty() && body["message"].as_str().unwrap_or("").contains("OBP-30208") {
+        if let Some(a) = account_id {
+            return state
+                .obp(
+                    Method::PUT,
+                    &format!("/obp/v3.1.0/management/banks/{bank_id}/accounts/{a}"),
+                    Some(token),
+                    Some(&json!({
+                        "label": label,
+                        "type": "OPEN_CORRIDOR",
+                        "branch_id": "",
+                        "account_routings": routings_json,
+                    })),
+                )
+                .await;
+        }
+    }
+    Ok((status, body))
 }
 
 async fn grant_role(
@@ -837,12 +927,10 @@ async fn request_entitlement(
         )
         .await
     {
-        Ok((status, body)) => Json(json!({
-            "ok": status.is_success() || already_ok(&body),
-            "status_code": status.as_u16(),
-            "obp": body,
-        }))
-        .into_response(),
+        // OBP-API's status and body are relayed verbatim — no envelope. The UI
+        // decides how to present refusals (a duplicate pending request is a
+        // successful no-op there).
+        Ok((status, body)) => (status, Json(body)).into_response(),
         Err(e) => error(
             StatusCode::BAD_GATEWAY,
             "OBP-BANK-NODE-APP-SETUP-APPLY-001",
@@ -926,10 +1014,11 @@ async fn apply(
                             &token,
                             &me,
                             bank_id,
-                            account_id,
+                            Some(account_id),
                             &account.label,
                             &account.currency,
                             account.owner_username.as_deref(),
+                            &account.routings,
                         )
                         .await
                     }
@@ -1032,18 +1121,12 @@ async fn apply(
     };
 
     match result {
+        // OBP-API's status and body are relayed verbatim — no envelope.
         Ok((status, body)) => {
-            let ok = status.is_success() || already_ok(&body);
-            if !ok {
+            if !(status.is_success() || already_ok(&body)) {
                 warn!(id = %req.id, %status, "setup apply refused by OBP-API");
             }
-            Json(json!({
-                "id": req.id,
-                "ok": ok,
-                "status_code": status.as_u16(),
-                "obp": body,
-            }))
-            .into_response()
+            (status, Json(body)).into_response()
         }
         Err(e) => error(
             StatusCode::BAD_GATEWAY,
@@ -1059,7 +1142,6 @@ async fn apply(
 #[derive(Deserialize)]
 struct TestAccountRequest {
     bank_id: String,
-    account_id: String,
     #[serde(default)]
     label: String,
     currency: String,
@@ -1067,8 +1149,9 @@ struct TestAccountRequest {
     owner_username: Option<String>,
 }
 
-/// Free-form test-account creation (same call as the account apply) — for
-/// seeding demo customer accounts beyond the declared corridor accounts.
+/// Free-form test-account creation — for seeding demo customer accounts
+/// beyond the declared corridor accounts. OBP-API generates the account_id;
+/// the response carries it.
 async fn test_account(
     State(state): State<SetupState>,
     headers: HeaderMap,
@@ -1093,19 +1176,16 @@ async fn test_account(
         &token,
         &me,
         &req.bank_id,
-        &req.account_id,
+        None,
         &req.label,
         &req.currency,
         req.owner_username.as_deref(),
+        &[],
     )
     .await
     {
-        Ok((status, body)) => Json(json!({
-            "ok": status.is_success() || already_ok(&body),
-            "status_code": status.as_u16(),
-            "obp": body,
-        }))
-        .into_response(),
+        // OBP-API's status and body are relayed verbatim — no envelope.
+        Ok((status, body)) => (status, Json(body)).into_response(),
         Err(e) => error(
             StatusCode::BAD_GATEWAY,
             "OBP-BANK-NODE-APP-SETUP-APPLY-001",

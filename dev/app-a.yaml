@@ -69,6 +69,22 @@ setup:
       description: "ISO 9362 Business Identifier Code, 8 or 11 characters."
       downstream_rails: []
       status: "ACTIVE"
+    - scheme: "CARDANO"
+      country: "INT"
+      category: "ACCOUNT"
+      address_pattern: "^addr(_test)?1[a-z0-9]{20,120}$"
+      example_address: "addr_test1vqn7sn79x6k9a2353l458mk2gccmwqk7nza93zydpuvl7lquy6jcl"
+      description: "Cardano bech32 payment address. On OBP-INCOMING-SETTLEMENT-ACCOUNT it is the bank's Open Corridor settlement address."
+      downstream_rails: ["cardano"]
+      status: "ACTIVE"
+    - scheme: "ETHEREUM"
+      country: "INT"
+      category: "ACCOUNT"
+      address_pattern: "^0x[0-9a-fA-F]{40}$"
+      example_address: "0x71C7656EC7ab88b098defB751B7401B5f6d8976F"
+      description: "Ethereum EIP-55 address. Reserved for a future settlement rail."
+      downstream_rails: []
+      status: "RESERVED"
 
   bank:
     id: "rt.bank.a"
@@ -84,6 +100,8 @@ setup:
       - id: "OBP-INCOMING-SETTLEMENT-ACCOUNT"
         label: "OC incoming settlement"
         currency: "KES"
+        routings:
+          - { scheme: "CARDANO", address: "addr_test1vz233470pc30zzsceh9k2qmzkj4gvj7n976ulvdmed5w9mg0a37ns" }
     fx:
       - { from_currency: "EUR", to_currency: "KES", rate: 150.0, inverse_rate: 0.006667 }
       - { from_currency: "KES", to_currency: "EUR", rate: 0.006667, inverse_rate: 150.0 }
@@ -94,7 +112,6 @@ setup:
       username: "bank_a_node"
       password: "rtpass-a"
       use_ssl: false
-      settlement_address: "addr_test1vz233470pc30zzsceh9k2qmzkj4gvj7n976ulvdmed5w9mg0a37ns"
     role_grants:
       - { username: "rt.node.a", role: "CanAttachOpenCorridorPromise" }
       - { username: "rt.node.a", role: "CanSettleOpenCorridor" }

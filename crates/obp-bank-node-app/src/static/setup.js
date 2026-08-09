@@ -127,9 +127,26 @@ async function refresh() {
   await renderStatusJson();
 }
 
+// Apply/test-account responses are OBP-API's status + body relayed verbatim.
+// "Already exists" refusals make an apply a successful no-op — mirrors the
+// server's already_ok() (setup.rs), which is only used for logging there.
+const ALREADY_OK = [
+  "OBP-30515", "OBP-30216", "OBP-30208", "already exists",
+  "EntitlementRequestAlreadyExists", "Entitlement Request already exists",
+];
+
+function alreadyOk(body) {
+  const message = (body && body.message) || "";
+  return ALREADY_OK.some((code) => message.includes(code));
+}
+
+function applyOk(r) {
+  return r.ok || alreadyOk(r.body);
+}
+
 function showResult(el, r) {
   el.hidden = false;
-  el.className = "result " + (r.ok && (!r.body || r.body.ok !== false) ? "result-ok" : "result-err");
+  el.className = "result " + (applyOk(r) ? "result-ok" : "result-err");
   el.textContent = `HTTP ${r.status}\n` + JSON.stringify(r.body, null, 2);
 }
 
@@ -145,7 +162,7 @@ async function applyAllMissing() {
   // exist before its accounts; a role before the create it authorizes).
   for (const i of ITEMS.filter((i) => APPLYABLE.has(i.status))) {
     const r = await postJson("/api/setup/apply", { id: i.id });
-    out.push(`${i.id}: HTTP ${r.status} ${r.body && r.body.ok ? "ok" : "FAILED"}`);
+    out.push(`${i.id}: HTTP ${r.status} ${applyOk(r) ? "ok" : "FAILED"}`);
   }
   const el = $("#apply-result");
   el.hidden = false;
@@ -177,7 +194,6 @@ async function onTestAccount(e) {
   const f = new FormData(e.target);
   const r = await postJson("/api/setup/test-account", {
     bank_id: f.get("bank_id"),
-    account_id: f.get("account_id"),
     label: f.get("label"),
     currency: f.get("currency"),
     owner_username: f.get("owner_username") || null,

@@ -134,6 +134,17 @@ pub struct SetupAccount {
     /// admin. Looked up, never created.
     #[serde(default)]
     pub owner_username: Option<String>,
+    /// Account routings (scheme + address). The CARDANO routing on
+    /// OBP-INCOMING-SETTLEMENT-ACCOUNT is the bank's on-chain settlement
+    /// address — the broker block carries transport coordinates only.
+    #[serde(default)]
+    pub routings: Vec<SetupRouting>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SetupRouting {
+    pub scheme: String,
+    pub address: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

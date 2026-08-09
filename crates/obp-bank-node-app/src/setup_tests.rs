@@ -30,6 +30,7 @@ struct Captured {
     scheme_posts: Vec<Value>,
     entitlement_posts: Vec<(String, Value)>,
     account_puts: Vec<(String, Value)>,
+    account_posts: Vec<(String, Value)>,
     entitlement_requests: Vec<Value>,
 }
 
@@ -203,11 +204,32 @@ fn obp_stub(base: String, captured: Arc<Mutex<Captured>>) -> Router {
             }),
         )
         .route(
-            "/obp/v5.1.0/banks/:bank_id/accounts/:account_id/account",
-            get(|| async { Json(json!({ "balance": { "currency": "KES", "amount": "0" } })) }),
+            "/obp/v6.0.0/banks/:bank_id/account-directory",
+            get(|Path(bank_id): Path<String>| async move {
+                match bank_id.as_str() {
+                    "rt.bank.a" => Json(json!({
+                        "accounts": [
+                            {
+                                "account_id": "settlement-a",
+                                "label": "Node A corridor account",
+                                "account_routings": [
+                                    { "scheme": "OBP", "address": "settlement-a" },
+                                    { "scheme": "CARDANO", "address": "addr_test1aaa" },
+                                ],
+                            },
+                        ],
+                    }))
+                    .into_response(),
+                    _ => (
+                        StatusCode::NOT_FOUND,
+                        Json(json!({ "message": "OBP-30001: Bank not found" })),
+                    )
+                        .into_response(),
+                }
+            }),
         )
         .route(
-            "/obp/v5.1.0/banks/:bank_id/accounts/:account_id",
+            "/obp/v7.0.0/banks/:bank_id/accounts/:account_id",
             put(
                 |State(s): State<Stub>,
                  Path((bank_id, account_id)): Path<(String, String)>,
@@ -222,11 +244,26 @@ fn obp_stub(base: String, captured: Arc<Mutex<Captured>>) -> Router {
             ),
         )
         .route(
+            "/obp/v7.0.0/banks/:bank_id/accounts",
+            post(
+                |State(s): State<Stub>,
+                 Path(bank_id): Path<String>,
+                 Json(body): Json<Value>| async move {
+                    s.captured
+                        .lock()
+                        .unwrap()
+                        .account_posts
+                        .push((bank_id, body));
+                    Json(json!({ "account_id": "generated-account-id" }))
+                },
+            ),
+        )
+        .route(
             "/obp/v2.2.0/banks/:bank_id/fx/:from/:to",
             get(|| async {
                 (
                     StatusCode::NOT_FOUND,
-                    Json(json!({ "message": "OBP-10024: FX rate not found" })),
+                    Json(json!({ "message": "OBP-10004: ISO Currency code combination not supported for FX." })),
                 )
             }),
         )
@@ -240,7 +277,6 @@ fn obp_stub(base: String, captured: Arc<Mutex<Captured>>) -> Router {
                     "virtual_host": "/bank.rt.bank.a",
                     "username": "bank_a_node",
                     "use_ssl": false,
-                    "settlement_address": "addr_test1aaa",
                 }))
             }),
         )
@@ -271,6 +307,10 @@ fn setup_config() -> SetupConfig {
                 label: "Node A corridor account".into(),
                 currency: "KES".into(),
                 owner_username: Some("rt.node.a".into()),
+                routings: vec![crate::SetupRouting {
+                    scheme: "CARDANO".into(),
+                    address: "addr_test1aaa".into(),
+                }],
             }],
             fx: vec![crate::SetupFxRate {
                 from_currency: "EUR".into(),
@@ -285,7 +325,6 @@ fn setup_config() -> SetupConfig {
                 "username": "bank_a_node",
                 "password": "secret",
                 "use_ssl": false,
-                "settlement_address": "addr_test1aaa",
             })),
             role_grants: vec![
                 SetupRoleGrant {
@@ -559,16 +598,18 @@ async fn request_entitlement_files_a_request_and_treats_duplicates_as_ok() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    // OBP-API's response is relayed verbatim: status and body.
+    assert_eq!(resp.status(), StatusCode::CREATED);
     let v = body_json(resp).await;
-    assert_eq!(v["ok"], true);
+    assert_eq!(v["entitlement_request_id"], "er1");
     {
         let c = captured.lock().unwrap();
         assert_eq!(c.entitlement_requests[0]["bank_id"], "rt.bank.a");
         assert_eq!(c.entitlement_requests[0]["role_name"], "CanCreateAccount");
     }
 
-    // The stub refuses this one as a pending duplicate — still ok.
+    // The stub refuses this one as a pending duplicate — relayed as-is; the
+    // UI (alreadyOk in setup.js) treats the duplicate code as a no-op.
     let resp = app
         .oneshot(post_json_with_cookie(
             "/api/setup/request-entitlement",
@@ -577,9 +618,12 @@ async fn request_entitlement_files_a_request_and_treats_duplicates_as_ok() {
         ))
         .await
         .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let v = body_json(resp).await;
-    assert_eq!(v["ok"], true);
-    assert_eq!(v["status_code"], 400);
+    assert!(v["message"]
+        .as_str()
+        .unwrap()
+        .contains("EntitlementRequestAlreadyExists"));
 }
 
 #[tokio::test]
@@ -599,9 +643,10 @@ async fn apply_posts_the_configured_bodies_and_grants_roles() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    // OBP-API's 201 and body come back verbatim.
+    assert_eq!(resp.status(), StatusCode::CREATED);
     let v = body_json(resp).await;
-    assert_eq!(v["ok"], true);
+    assert_eq!(v["scheme"], "IBAN");
     {
         let c = captured.lock().unwrap();
         assert_eq!(c.scheme_posts.len(), 1);
@@ -619,8 +664,9 @@ async fn apply_posts_the_configured_bodies_and_grants_roles() {
         ))
         .await
         .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
     let v = body_json(resp).await;
-    assert_eq!(v["ok"], true);
+    assert_eq!(v["entitlement_id"], "e1");
     {
         let c = captured.lock().unwrap();
         let (user_id, body) = &c.entitlement_posts[0];
@@ -639,8 +685,9 @@ async fn apply_posts_the_configured_bodies_and_grants_roles() {
         ))
         .await
         .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
     let v = body_json(resp).await;
-    assert_eq!(v["ok"], true);
+    assert_eq!(v["account_id"], "settlement-a");
     {
         let c = captured.lock().unwrap();
         let (path, body) = &c.account_puts[0];
@@ -648,6 +695,10 @@ async fn apply_posts_the_configured_bodies_and_grants_roles() {
         assert_eq!(body["user_id"], "node-a-user-id");
         assert_eq!(body["balance"]["currency"], "KES");
         assert_eq!(body["product_code"], "OPEN_CORRIDOR");
+        assert_eq!(
+            body["account_routings"],
+            json!([{ "scheme": "CARDANO", "address": "addr_test1aaa" }])
+        );
     }
 
     // Grant for a non-existent user is refused — no registration path.
@@ -680,7 +731,6 @@ async fn test_account_endpoint_creates_an_account_owned_by_me_by_default() {
             &cookie,
             json!({
                 "bank_id": "rt.bank.a",
-                "account_id": "alice-demo",
                 "label": "Alice",
                 "currency": "KES",
             }),
@@ -689,10 +739,11 @@ async fn test_account_endpoint_creates_an_account_owned_by_me_by_default() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let v = body_json(resp).await;
-    assert_eq!(v["ok"], true);
+    // OBP-API generates the account id; its response is relayed verbatim.
+    assert_eq!(v["account_id"], "generated-account-id");
     let c = captured.lock().unwrap();
-    let (path, body) = &c.account_puts[0];
-    assert_eq!(path, "rt.bank.a/alice-demo");
+    let (bank_id, body) = &c.account_posts[0];
+    assert_eq!(bank_id, "rt.bank.a");
     assert_eq!(body["user_id"], "admin-user-id");
     assert_eq!(body["label"], "Alice");
 }
