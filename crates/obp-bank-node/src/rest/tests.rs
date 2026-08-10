@@ -44,6 +44,7 @@ async fn router_with_obp(obp_base_url: &str) -> (axum::Router, BankNodeState) {
         bank_id: "test.bank.id".into(),
         account_id: "test-account-id".into(),
         finality_depth: TEST_FINALITY_DEPTH,
+        interface_c: crate::interface_c::consumer::ConsumerStatus::new(),
     };
     (build_router(state.clone()), state)
 }
@@ -74,6 +75,9 @@ async fn root_health_returns_200_with_blockchain_label() {
     assert_eq!(v["status"], "healthy");
     assert_eq!(v["service"], "OBP-Bank-Node");
     assert_eq!(v["blockchain"], "mock");
+    // A node that cannot receive AMQP must be visible: the consumer state is
+    // part of health (this test state never connects, so "connecting").
+    assert_eq!(v["interface_c"], "connecting");
 }
 
 #[tokio::test]
@@ -504,6 +508,9 @@ async fn evidence_endpoints_serve_triplet_and_cbs_result() {
             currency: Some("KES"),
             amount: Some("500.00"),
             originator_name: Some("Acme Coffee Ltd"),
+            beneficiary_name: Some("Bea Beneficiary"),
+            beneficiary_account_routing_scheme: Some("OBP"),
+            beneficiary_account_routing_address: Some("acct-77"),
             raw_message: "{}",
         })
         .await
@@ -521,6 +528,9 @@ async fn evidence_endpoints_serve_triplet_and_cbs_result() {
     assert_eq!(v["verified"], true);
     assert_eq!(v["cbs_status"], "DELIVERED");
     assert_eq!(v["cbs_reference"], "CBS-77");
+    assert_eq!(v["beneficiary_name"], "Bea Beneficiary");
+    assert_eq!(v["beneficiary_account_routing_scheme"], "OBP");
+    assert_eq!(v["beneficiary_account_routing_address"], "acct-77");
 
     let (_, list) = get_json(app.clone(), "/obp-bank-node/v5.1.0/evidence").await;
     assert_eq!(list.as_array().unwrap().len(), 1);

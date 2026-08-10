@@ -23,8 +23,13 @@ pub mod error_code {
     pub const NOT_IMPLEMENTED: &str = "OBP-BANK-NODE-NOT-IMPLEMENTED";
     /// A credit notification whose revealed salt+preimage don't hash to the commitment.
     pub const COMMITMENT_MISMATCH: &str = "OBP-BANK-NODE-COMMITMENT-MISMATCH";
-    /// The credit could not be delivered to the bank's CBS.
+    /// The credit could not be delivered to the bank's CBS (transient:
+    /// transport error or CBS 5xx — OBP-API's outbox retries it).
     pub const CBS_DELIVERY_FAILED: &str = "OBP-BANK-NODE-CBS-DELIVERY-FAILED";
+    /// The CBS answered and refused the credit (4xx: unknown account, name
+    /// mismatch, …). Permanent — OBP-API parks the outbox row STICKY for an
+    /// operator instead of retrying.
+    pub const CBS_REJECTED: &str = "OBP-BANK-NODE-CBS-REJECTED";
     /// The message body could not be parsed.
     pub const BAD_MESSAGE: &str = "OBP-BANK-NODE-BAD-MESSAGE";
     /// A local persistence error while handling the message.
@@ -109,6 +114,19 @@ pub struct Originator {
     pub address: Option<String>,
 }
 
+/// The customer the beneficiary bank's CBS is asked to credit.
+#[derive(Debug, Deserialize)]
+pub struct Beneficiary {
+    pub name: String,
+    pub account_routing: BeneficiaryAccountRouting,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BeneficiaryAccountRouting {
+    pub scheme: String,
+    pub address: String,
+}
+
 /// `obp_credit_notification` — "credit your customer". Extended (vs the stock
 /// OBP shape) with the three evidence fields that carry the commit–reveal data
 /// to Bank B: `promise_commitment`, `promise_salt`, `promise_preimage`.
@@ -121,6 +139,10 @@ pub struct CreditNotification {
     pub description: Option<String>,
     #[serde(default)]
     pub originator: Option<Originator>,
+    /// The customer the CBS is asked to credit. `None` only for messages
+    /// predating the field (added 2026-08-10).
+    #[serde(default)]
+    pub beneficiary: Option<Beneficiary>,
     #[serde(default)]
     pub netting_snapshot_id: Option<String>,
     /// On-chain reference to Bank A's Promise (the tx id) and its chain.

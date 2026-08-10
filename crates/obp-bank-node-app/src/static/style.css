@@ -148,7 +148,7 @@ a:hover { text-decoration: underline; }
 .chip-submitted, .chip-settling { background: #fff4e0; color: var(--warn); }
 .chip-promise-written, .chip-delivered { background: #e7effc; color: var(--accent); }
 .chip-reported, .chip-final, .chip-verified { background: #eef7f0; color: var(--ok); }
-.chip-exception, .chip-error, .chip-failed { background: #fdf0ef; color: var(--err); }
+.chip-exception, .chip-error, .chip-failed, .chip-rejected { background: #fdf0ef; color: var(--err); }
 
 .page-nav { font-size: .82rem; }
 
@@ -173,6 +173,7 @@ td.actions { white-space: nowrap; }
 }
 .node-chip.up { border-color: #cfe8d6; background: #eef7f0; color: var(--ok); }
 .node-chip.down { border-color: #f1d0cd; background: #fdf0ef; color: var(--err); }
+.node-chip.warn { border-color: #f0e0c0; background: #fff4e0; color: var(--warn); }
 
 footer {
   max-width: 1100px;

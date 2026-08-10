@@ -3,6 +3,11 @@
 
 Accepts POST /credit-notifications with Bearer rt-local-secret, appends each
 body to data/cbs_received.jsonl, replies {"status": "...", "cbs_reference"}.
+
+Simulating a CBS refusal: a beneficiary whose name or account routing address
+contains "_invalid" is answered with 422 {"status": "REJECTED"} — the
+permanent-refusal path (node replies OBP-BANK-NODE-CBS-REJECTED, OBP-API
+parks the outbox row STICKY). Everything else books.
 """
 import json
 import os
@@ -28,6 +33,27 @@ class Handler(BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length).decode("utf-8", "replace")
+
+        # A real CBS validates the beneficiary before booking. "_invalid" in
+        # the name or account routing address simulates that refusal.
+        try:
+            beneficiary = json.loads(body).get("beneficiary") or {}
+        except ValueError:
+            beneficiary = {}
+        name = beneficiary.get("name") or ""
+        account = (beneficiary.get("account_routing") or {}).get("address") or ""
+        if "_invalid" in name or "_invalid" in account:
+            reason = ("unknown beneficiary account" if "_invalid" in account
+                      else "beneficiary name does not match account holder")
+            print(f"CBS stub: REJECTED ({reason}): name={name!r} account={account!r}", flush=True)
+            resp = json.dumps({"status": "REJECTED", "error": reason}).encode()
+            self.send_response(422)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+            return
+
         counter += 1
         ref = f"RT-CBS-{counter:04d}"
         os.makedirs(os.path.dirname(OUT), exist_ok=True)

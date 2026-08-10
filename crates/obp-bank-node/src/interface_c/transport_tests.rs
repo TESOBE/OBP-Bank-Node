@@ -83,13 +83,14 @@ async fn interface_c_transport_round_trips_all_message_types() {
     // own unit coverage in router.rs / settlement_store.rs / finality.rs.
     let router = Arc::new(Router::new("test-bank", evidence.clone(), cbs, None));
 
-    let consumer_task = tokio::spawn(consumer::run(
+    let consumer_task = tokio::spawn(consumer::run_supervised(
         ConsumerConfig {
             uri: uri.clone(),
             queue: rpc_queue.clone(),
             consumer_tag: format!("itest-{unique}"),
         },
         router,
+        consumer::ConsumerStatus::new(),
     ));
 
     // ---- test-side publisher + reply consumer.

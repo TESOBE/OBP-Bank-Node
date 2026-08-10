@@ -59,6 +59,13 @@ async function renderHealth() {
     const up = r.ok && r.body && r.body.status === "healthy";
     if (up) NODE_INFO[n.name] = { bank_id: r.body.bank_id, account_id: r.body.account_id };
     const chain = up ? ` · ${esc(r.body.blockchain)}` : "";
+    // "disabled" is a deliberate config; anything else non-connected means the
+    // node cannot receive settlement instructions or credit notifications.
+    const ifc = up && r.body.interface_c && !["connected", "disabled"].includes(r.body.interface_c);
+    if (ifc) {
+      return `<span class="node-chip warn" title="${esc(r.body.interface_c_detail || r.body.interface_c)}">
+        ${esc(n.name)}${chain} · AMQP ${esc(r.body.interface_c)}</span>`;
+    }
     return `<span class="node-chip ${up ? "up" : "down"}">${esc(n.name)}${chain}</span>`;
   }));
   $("#node-health").innerHTML = parts.join("");
@@ -233,7 +240,12 @@ async function renderEvidence() {
           : `<span class="chip chip-error">MISMATCH</span>`}</td>
         <td class="num">${esc(ev.amount ? `${ev.amount} ${ev.currency || ""}` : "")}</td>
         <td>${esc(ev.originator_name || "")}</td>
-        <td>${ev.cbs_status ? chip(ev.cbs_status) : ""} ${esc(ev.cbs_reference || "")}</td>
+        <td>${ev.cbs_status ? chip(ev.cbs_status) : ""} ${esc(ev.cbs_reference || "")}${
+          ev.beneficiary_name || ev.beneficiary_account_routing_address
+            ? `<div class="dim">→ ${esc(ev.beneficiary_name || "")}</div>
+               <div class="id-full">${esc([ev.beneficiary_account_routing_scheme,
+                 ev.beneficiary_account_routing_address].filter(Boolean).join(" · "))}</div>`
+            : ""}</td>
         <td class="mono" title="${esc(ev.promise_commitment)}">${short(ev.promise_commitment, 16)}</td>
         <td>${esc(ev.received_at ? ev.received_at.slice(0, 19) : "")}</td>
         <td title="${esc(ev.settlement_id || "")}">${ev.settled_at

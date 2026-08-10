@@ -180,6 +180,11 @@ pub struct EvidenceView {
     pub currency: Option<String>,
     pub amount: Option<String>,
     pub originator_name: Option<String>,
+    /// Whom the CBS was asked to credit; absent on rows predating the
+    /// notification's `beneficiary` block.
+    pub beneficiary_name: Option<String>,
+    pub beneficiary_account_routing_scheme: Option<String>,
+    pub beneficiary_account_routing_address: Option<String>,
     pub cbs_status: Option<String>,
     pub cbs_reference: Option<String>,
     pub cbs_recorded_at: Option<String>,
@@ -198,6 +203,12 @@ pub struct HealthBody {
     /// per-node beneficiary defaults instead of hardcoding them.
     pub bank_id: String,
     pub account_id: String,
+    /// Interface C consumer state: `connected` / `connecting` /
+    /// `reconnecting` / `disabled`. Anything but `connected` means the node
+    /// cannot receive settlement instructions or credit notifications.
+    pub interface_c: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interface_c_detail: Option<String>,
     pub timestamp: DateTime<Utc>,
 }
 

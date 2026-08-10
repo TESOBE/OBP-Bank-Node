@@ -398,6 +398,9 @@ fn evidence_view(rec: EvidenceRecord) -> EvidenceView {
         currency: rec.currency,
         amount: rec.amount,
         originator_name: rec.originator_name,
+        beneficiary_name: rec.beneficiary_name,
+        beneficiary_account_routing_scheme: rec.beneficiary_account_routing_scheme,
+        beneficiary_account_routing_address: rec.beneficiary_account_routing_address,
         cbs_status: rec.cbs_status,
         cbs_reference: rec.cbs_reference,
         cbs_recorded_at: rec.cbs_recorded_at,
@@ -593,6 +596,7 @@ pub async fn get_evidence(
 }
 
 pub async fn root_health(State(state): State<BankNodeState>) -> Response {
+    let (interface_c, interface_c_detail) = state.interface_c.snapshot();
     Json(HealthBody {
         status: "healthy",
         service: "OBP-Bank-Node",
@@ -600,6 +604,8 @@ pub async fn root_health(State(state): State<BankNodeState>) -> Response {
         blockchain: state.blockchain_label,
         bank_id: state.bank_id.clone(),
         account_id: state.account_id.clone(),
+        interface_c,
+        interface_c_detail,
         timestamp: Utc::now(),
     })
     .into_response()

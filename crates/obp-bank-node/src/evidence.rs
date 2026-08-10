@@ -38,6 +38,11 @@ pub struct EvidenceRecord {
     pub currency: Option<String>,
     pub amount: Option<String>,
     pub originator_name: Option<String>,
+    /// Whom the CBS was asked to credit (from the notification's
+    /// `beneficiary` block; absent on rows predating it).
+    pub beneficiary_name: Option<String>,
+    pub beneficiary_account_routing_scheme: Option<String>,
+    pub beneficiary_account_routing_address: Option<String>,
     /// The full credit-notification JSON, kept verbatim for audit.
     pub raw_message: String,
     pub received_at: String,
@@ -65,6 +70,9 @@ pub struct NewEvidence<'a> {
     pub currency: Option<&'a str>,
     pub amount: Option<&'a str>,
     pub originator_name: Option<&'a str>,
+    pub beneficiary_name: Option<&'a str>,
+    pub beneficiary_account_routing_scheme: Option<&'a str>,
+    pub beneficiary_account_routing_address: Option<&'a str>,
     pub raw_message: &'a str,
 }
 
@@ -118,6 +126,9 @@ impl EvidenceStore {
                 currency               TEXT,
                 amount                 TEXT,
                 originator_name        TEXT,
+                beneficiary_name       TEXT,
+                beneficiary_account_routing_scheme  TEXT,
+                beneficiary_account_routing_address TEXT,
                 raw_message            TEXT NOT NULL,
                 received_at            TEXT NOT NULL,
                 cbs_status             TEXT,
@@ -140,6 +151,9 @@ impl EvidenceStore {
             "cbs_recorded_at TEXT",
             "settlement_id TEXT",
             "settled_at TEXT",
+            "beneficiary_name TEXT",
+            "beneficiary_account_routing_scheme TEXT",
+            "beneficiary_account_routing_address TEXT",
         ] {
             if let Err(e) = sqlx::query(&format!("ALTER TABLE evidence ADD COLUMN {col}"))
                 .execute(pool)
@@ -162,8 +176,9 @@ impl EvidenceStore {
             "INSERT INTO evidence \
                 (transaction_request_id, promise_commitment, promise_salt, promise_preimage, \
                  promise_id, promise_blockchain, verified, currency, amount, originator_name, \
-                 raw_message, received_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 beneficiary_name, beneficiary_account_routing_scheme, \
+                 beneficiary_account_routing_address, raw_message, received_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(transaction_request_id) DO UPDATE SET \
                 promise_commitment = excluded.promise_commitment, \
                 promise_salt = excluded.promise_salt, \
@@ -174,6 +189,9 @@ impl EvidenceStore {
                 currency = excluded.currency, \
                 amount = excluded.amount, \
                 originator_name = excluded.originator_name, \
+                beneficiary_name = excluded.beneficiary_name, \
+                beneficiary_account_routing_scheme = excluded.beneficiary_account_routing_scheme, \
+                beneficiary_account_routing_address = excluded.beneficiary_account_routing_address, \
                 raw_message = excluded.raw_message, \
                 received_at = excluded.received_at",
         )
@@ -187,6 +205,9 @@ impl EvidenceStore {
         .bind(e.currency)
         .bind(e.amount)
         .bind(e.originator_name)
+        .bind(e.beneficiary_name)
+        .bind(e.beneficiary_account_routing_scheme)
+        .bind(e.beneficiary_account_routing_address)
         .bind(e.raw_message)
         .bind(&now)
         .execute(&self.pool)
@@ -279,6 +300,9 @@ mod tests {
             currency: Some("KES"),
             amount: Some("1500.00"),
             originator_name: Some("Acme Coffee Ltd"),
+            beneficiary_name: Some("Bea Beneficiary"),
+            beneficiary_account_routing_scheme: Some("OBP"),
+            beneficiary_account_routing_address: Some("acct-77"),
             raw_message: "{}",
         }
     }

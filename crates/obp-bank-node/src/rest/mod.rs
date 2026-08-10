@@ -47,6 +47,9 @@ pub struct BankNodeState {
     /// Depth at which this node's finality watcher promotes settlements to
     /// FINAL — surfaced on the settlement read endpoints.
     pub finality_depth: u32,
+    /// Interface C consumer state, surfaced on `/health` so a node that
+    /// cannot receive AMQP messages is visible instead of silently green.
+    pub interface_c: crate::interface_c::consumer::ConsumerStatus,
 }
 
 pub fn build_router(state: BankNodeState) -> Router {

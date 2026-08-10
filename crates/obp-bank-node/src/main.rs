@@ -414,6 +414,7 @@ async fn main() -> anyhow::Result<()> {
     // Interface C — inbound from OBP-API over RabbitMQ. Off by default; when on,
     // it consumes credit notifications (capturing the salt as evidence) and
     // delivers credits to the bank's CBS.
+    let interface_c_status = interface_c::consumer::ConsumerStatus::new();
     if config.rabbitmq.enabled {
         let cbs = CbsClient::new(
             config.cbs_delivery.webhook.url.clone(),
@@ -444,12 +445,15 @@ async fn main() -> anyhow::Result<()> {
             cbs = %config.cbs_delivery.webhook.url,
             "Interface C enabled — starting RabbitMQ consumer"
         );
-        tokio::spawn(async move {
-            if let Err(e) = interface_c::consumer::run(consumer_cfg, c_router).await {
-                tracing::error!(error = %e, "Interface C consumer exited with error");
-            }
-        });
+        // Supervised: reconnects with backoff forever. A consumer that stayed
+        // dead after one failure left the node deaf while HTTP looked healthy.
+        tokio::spawn(interface_c::consumer::run_supervised(
+            consumer_cfg,
+            c_router,
+            interface_c_status.clone(),
+        ));
     } else {
+        interface_c_status.set_disabled();
         info!("rabbitmq.enabled=false — Interface C consumer not started");
     }
 
@@ -476,6 +480,7 @@ async fn main() -> anyhow::Result<()> {
         bank_id: config.bank.bank_id.clone(),
         account_id: config.bank.account_id.clone(),
         finality_depth: config.settlement.finality_depth,
+        interface_c: interface_c_status,
     };
     let app = build_router(state);
 

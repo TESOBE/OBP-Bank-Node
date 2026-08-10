@@ -3,12 +3,16 @@
 //! Connects to the bank's RabbitMQ vhost, consumes `obp_rpc_queue`, hands each
 //! delivery to the [`Router`], and publishes the reply envelope to the AMQP
 //! `replyTo` queue (correlated by `correlationId`). All message *logic* lives in
-//! the router; this file is just connect → consume → reply → ack.
+//! the router; this file is just connect → consume → reply → ack, plus the
+//! supervisor that reconnects with backoff — a node whose consumer stays dead
+//! is deaf to settlement instructions and credit notifications while its HTTP
+//! side looks healthy (observed 2026-08-10).
 //!
-//! Runs against a real broker only, so it has no unit tests — the router it
-//! drives is exhaustively tested instead.
+//! The consume path runs against a real broker only, so it has no unit tests —
+//! the router it drives is exhaustively tested instead.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::Context;
 use futures_util::StreamExt;
@@ -29,9 +33,86 @@ pub struct ConsumerConfig {
     pub consumer_tag: String,
 }
 
-/// Connect and consume forever. Returns only on a fatal connection error or when
-/// the broker closes the stream; the caller decides whether to restart.
-pub async fn run(config: ConsumerConfig, router: Arc<Router>) -> anyhow::Result<()> {
+/// The consumer's connection state, shared with `/health` so a deaf node is
+/// visible instead of silently green.
+#[derive(Clone)]
+pub struct ConsumerStatus(Arc<Mutex<StatusInner>>);
+
+struct StatusInner {
+    state: &'static str,
+    detail: Option<String>,
+}
+
+impl ConsumerStatus {
+    /// Initial state before the first connect attempt.
+    pub fn new() -> Self {
+        ConsumerStatus(Arc::new(Mutex::new(StatusInner {
+            state: "connecting",
+            detail: None,
+        })))
+    }
+
+    /// `rabbitmq.enabled=false` — no consumer will ever run.
+    pub fn set_disabled(&self) {
+        self.set("disabled", None);
+    }
+
+    fn set(&self, state: &'static str, detail: Option<String>) {
+        let mut inner = self.0.lock().unwrap();
+        inner.state = state;
+        inner.detail = detail;
+    }
+
+    fn is_connected(&self) -> bool {
+        self.0.lock().unwrap().state == "connected"
+    }
+
+    /// `(state, detail)` for the health body: `connected` / `connecting` /
+    /// `reconnecting` (detail = last error) / `disabled`.
+    pub fn snapshot(&self) -> (&'static str, Option<String>) {
+        let inner = self.0.lock().unwrap();
+        (inner.state, inner.detail.clone())
+    }
+}
+
+/// Reconnect backoff: 1s doubling to a 30s cap.
+const BACKOFF_BASE: Duration = Duration::from_secs(1);
+const BACKOFF_MAX: Duration = Duration::from_secs(30);
+
+fn next_backoff(current: Duration) -> Duration {
+    (current * 2).min(BACKOFF_MAX)
+}
+
+/// Run the consumer forever, reconnecting with backoff whenever the connection
+/// fails or the broker ends the stream. The backoff resets after any session
+/// that actually reached the consuming state, so a stable broker that bounces
+/// once is retried quickly while a dead one is not hammered.
+pub async fn run_supervised(config: ConsumerConfig, router: Arc<Router>, status: ConsumerStatus) {
+    let mut backoff = BACKOFF_BASE;
+    loop {
+        let outcome = run(&config, Arc::clone(&router), &status).await;
+        let had_connected = status.is_connected();
+        let detail = match outcome {
+            Ok(()) => "consumer stream ended".to_string(),
+            Err(e) => format!("{e:#}"),
+        };
+        if had_connected {
+            backoff = BACKOFF_BASE;
+        }
+        error!(error = %detail, retry_in = ?backoff, "Interface C consumer down; reconnecting");
+        status.set("reconnecting", Some(detail));
+        tokio::time::sleep(backoff).await;
+        backoff = next_backoff(backoff);
+    }
+}
+
+/// Connect and consume until a fatal connection error or the broker closes the
+/// stream; `run_supervised` restarts it.
+async fn run(
+    config: &ConsumerConfig,
+    router: Arc<Router>,
+    status: &ConsumerStatus,
+) -> anyhow::Result<()> {
     // Drive lapin on the existing tokio runtime rather than its default executor.
     let props = ConnectionProperties::default()
         .with_executor(tokio_executor_trait::Tokio::current())
@@ -75,6 +156,7 @@ pub async fn run(config: ConsumerConfig, router: Arc<Router>) -> anyhow::Result<
         .with_context(|| format!("consuming from {}", config.queue))?;
 
     info!(queue = %config.queue, "Interface C consumer started");
+    status.set("connected", None);
 
     while let Some(delivery) = consumer.next().await {
         let delivery = match delivery {
@@ -121,6 +203,35 @@ pub async fn run(config: ConsumerConfig, router: Arc<Router>) -> anyhow::Result<
 
     warn!("Interface C consumer stream ended");
     Ok(())
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+
+    #[test]
+    fn backoff_doubles_to_the_cap() {
+        let mut b = BACKOFF_BASE;
+        let mut seen = Vec::new();
+        for _ in 0..7 {
+            seen.push(b.as_secs());
+            b = next_backoff(b);
+        }
+        assert_eq!(seen, vec![1, 2, 4, 8, 16, 30, 30]);
+    }
+
+    #[test]
+    fn status_transitions_and_snapshots() {
+        let s = ConsumerStatus::new();
+        assert_eq!(s.snapshot(), ("connecting", None));
+        s.set("connected", None);
+        assert!(s.is_connected());
+        s.set("reconnecting", Some("boom".into()));
+        assert_eq!(s.snapshot(), ("reconnecting", Some("boom".into())));
+        let d = ConsumerStatus::new();
+        d.set_disabled();
+        assert_eq!(d.snapshot().0, "disabled");
+    }
 }
 
 fn str_prop(prop: &Option<lapin::types::ShortString>) -> String {

@@ -141,7 +141,8 @@ reports — OBP-API must handle these (do **not** treat the payment as delivered
 | `errorCode` | Meaning |
 |---|---|
 | `OBP-BANK-NODE-COMMITMENT-MISMATCH` | salt+preimage did **not** hash to the commitment — bank refused to credit |
-| `OBP-BANK-NODE-CBS-DELIVERY-FAILED` | bank's CBS did not accept the credit |
+| `OBP-BANK-NODE-CBS-DELIVERY-FAILED` | credit did not reach the CBS (transport error / CBS 5xx) — transient, OBP-API retries |
+| `OBP-BANK-NODE-CBS-REJECTED` | CBS answered 4xx: it refuses this beneficiary (unknown account, name mismatch) — permanent, OBP-API parks the row STICKY |
 | `OBP-BANK-NODE-SETTLEMENT-FAILED` | on-chain settlement transfer failed |
 | `OBP-BANK-NODE-SETTLEMENT-NOT-CONFIGURED` | that node has no settlement rail |
 | `OBP-BANK-NODE-BAD-MESSAGE` | OBP-API sent a malformed body |
@@ -159,6 +160,10 @@ without Bank A's cooperation.
   "value": { "currency": "KES", "amount": "1500.00" },
   "description": "Invoice 4471",
   "originator": { "name": "Acme Coffee Ltd", "address": "Nairobi" },
+  "beneficiary": {
+    "name": "Bea Beneficiary",
+    "account_routing": { "scheme": "OBP", "address": "acct-77" }
+  },
   "netting_snapshot_id": "snap-1",
   "promise_id": "<cardano tx id of Bank A's Promise>",
   "promise_blockchain": "cardano",
@@ -172,6 +177,12 @@ Bank B recomputes `SHA-256(promise_salt ‖ promise_preimage)` and compares to
 `promise_commitment`. **On mismatch it returns `COMMITMENT-MISMATCH` and does not
 credit.** On success, reply `data` = `{ transaction_request_id, verified,
 cbs_reference }`.
+
+`beneficiary` names the customer + account the CBS is asked to credit (added
+2026-08-10; `Option` on both sides, so rows predating the field still parse).
+The node forwards the body to the CBS verbatim — the CBS validates the
+beneficiary and answers 4xx to refuse (→ `CBS-REJECTED`, permanent) or 5xx
+when it is broken (→ `CBS-DELIVERY-FAILED`, retried).
 
 > `promise_commitment`, `promise_salt`, `promise_preimage` are **opaque** to
 > OBP-API — it just relays what Bank A reported (§5.1). OBP-API does not need to

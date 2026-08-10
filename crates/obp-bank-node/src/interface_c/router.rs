@@ -118,6 +118,7 @@ impl Router {
         // Persist whatever arrived — durable possession is the point, even if
         // verification fails (the failed record is itself evidence of tampering).
         let originator_name = cn.originator.as_ref().map(|o| o.name.as_str());
+        let beneficiary = cn.beneficiary.as_ref();
         let store_result = self
             .evidence
             .upsert(NewEvidence {
@@ -131,6 +132,11 @@ impl Router {
                 currency: Some(cn.value.currency.as_str()),
                 amount: Some(cn.value.amount.as_str()),
                 originator_name,
+                beneficiary_name: beneficiary.map(|b| b.name.as_str()),
+                beneficiary_account_routing_scheme: beneficiary
+                    .map(|b| b.account_routing.scheme.as_str()),
+                beneficiary_account_routing_address: beneficiary
+                    .map(|b| b.account_routing.address.as_str()),
                 raw_message: &raw,
             })
             .await;
@@ -188,6 +194,25 @@ impl Router {
                         "verified": verified,
                         "cbs_reference": ack.cbs_reference,
                     }),
+                )
+            }
+            // A 4xx is the CBS itself refusing the credit (unknown account,
+            // name mismatch, …) — permanent, so REJECTED and a distinct error
+            // code that parks the outbox row instead of retrying forever.
+            // 5xx and transport errors stay FAILED: transient, retried.
+            Err(crate::cbs::CbsError::Rejected { status, body }) if status < 500 => {
+                warn!(status, %body, "credit_notification: CBS rejected the credit");
+                if let Err(se) = self
+                    .evidence
+                    .record_cbs_result(&cn.transaction_request_id, "REJECTED", None)
+                    .await
+                {
+                    warn!(error = %se, "credit_notification: failed to record CBS result");
+                }
+                ReplyEnvelope::error(
+                    correlation_id,
+                    error_code::CBS_REJECTED,
+                    format!("CBS rejected the credit ({status}): {body}"),
                 )
             }
             Err(e) => {
@@ -675,6 +700,10 @@ mod tests {
             "transaction_request_id": "tr-1",
             "value": { "currency": "KES", "amount": "1500.00" },
             "originator": { "name": "Acme Coffee Ltd" },
+            "beneficiary": {
+                "name": "Bea Beneficiary",
+                "account_routing": { "scheme": "OBP", "address": "acct-77" },
+            },
             "promise_id": "cardano-tx-abc",
             "promise_blockchain": "cardano",
             "promise_commitment": commitment,
@@ -709,6 +738,9 @@ mod tests {
                     currency: Some("KES"),
                     amount: Some("3.00"),
                     originator_name: None,
+                    beneficiary_name: None,
+                    beneficiary_account_routing_scheme: None,
+                    beneficiary_account_routing_address: None,
                     raw_message: "{}",
                 })
                 .await
@@ -765,12 +797,22 @@ mod tests {
         assert_eq!(reply.data["cbs_reference"], "CBS-1");
         assert_eq!(counter.load(Ordering::SeqCst), 1, "CBS delivered once");
 
-        // Evidence persisted, marked verified, CBS outcome recorded.
+        // Evidence persisted, marked verified, CBS outcome recorded — and the
+        // beneficiary (whom the CBS credited) surfaced for display.
         let rec = r.evidence.get(&id).await.unwrap().unwrap();
         assert!(rec.verified);
         assert_eq!(rec.promise_id.as_deref(), Some("cardano-tx-abc"));
         assert_eq!(rec.cbs_status.as_deref(), Some("DELIVERED"));
         assert_eq!(rec.cbs_reference.as_deref(), Some("CBS-1"));
+        assert_eq!(rec.beneficiary_name.as_deref(), Some("Bea Beneficiary"));
+        assert_eq!(
+            rec.beneficiary_account_routing_scheme.as_deref(),
+            Some("OBP")
+        );
+        assert_eq!(
+            rec.beneficiary_account_routing_address.as_deref(),
+            Some("acct-77")
+        );
     }
 
     #[tokio::test]
@@ -839,6 +881,53 @@ mod tests {
         let rec = r.evidence.get(&id).await.unwrap().unwrap();
         assert_eq!(rec.cbs_status.as_deref(), Some("FAILED"));
         assert!(rec.cbs_reference.is_none());
+    }
+
+    /// Spawn a CBS stub answering every credit with the given status + body.
+    async fn cbs_stub_fixed(status: axum::http::StatusCode, body: &'static str) -> String {
+        let router = AxumRouter::new().route("/credit", post(move || async move { (status, body) }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr: SocketAddr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        format!("http://{addr}/credit")
+    }
+
+    #[tokio::test]
+    async fn cbs_4xx_is_a_permanent_rejection() {
+        let url = cbs_stub_fixed(
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            r#"{"status":"REJECTED","error":"unknown beneficiary account"}"#,
+        )
+        .await;
+        let r = router_with_cbs(&url).await;
+        let (body, id) = credit_with_valid_commitment();
+        let reply = r
+            .handle(message_id::CREDIT_NOTIFICATION, "corr-7", body.as_bytes())
+            .await;
+        // Distinct error code: OBP-API parks the outbox row STICKY on it
+        // instead of redelivering a credit the CBS will refuse again.
+        assert_eq!(reply.status.error_code, error_code::CBS_REJECTED);
+        assert!(reply
+            .status
+            .backend_messages
+            .iter()
+            .any(|m| m.contains("422")));
+        let rec = r.evidence.get(&id).await.unwrap().unwrap();
+        assert_eq!(rec.cbs_status.as_deref(), Some("REJECTED"));
+        assert!(rec.cbs_reference.is_none());
+    }
+
+    #[tokio::test]
+    async fn cbs_5xx_stays_a_transient_failure() {
+        let url = cbs_stub_fixed(axum::http::StatusCode::SERVICE_UNAVAILABLE, "cbs down").await;
+        let r = router_with_cbs(&url).await;
+        let (body, id) = credit_with_valid_commitment();
+        let reply = r
+            .handle(message_id::CREDIT_NOTIFICATION, "corr-8", body.as_bytes())
+            .await;
+        assert_eq!(reply.status.error_code, error_code::CBS_DELIVERY_FAILED);
+        let rec = r.evidence.get(&id).await.unwrap().unwrap();
+        assert_eq!(rec.cbs_status.as_deref(), Some("FAILED"));
     }
 
     #[tokio::test]
