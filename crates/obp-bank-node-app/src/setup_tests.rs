@@ -410,6 +410,8 @@ async fn log_in(app: &Router, captured: &Arc<Mutex<Captured>>) -> String {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    // Without a `next` on the login the callback returns to /setup.
+    assert_eq!(resp.headers()[header::LOCATION], "/setup");
     let cookie = resp.headers()[header::SET_COOKIE]
         .to_str()
         .unwrap()
@@ -445,11 +447,19 @@ async fn setup_reports_not_configured_without_an_obp_api_block() {
     );
     let resp = app.clone().oneshot(get_req("/setup")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+    let resp = app.clone().oneshot(get_req("/accounts")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
 
-    let resp = app.oneshot(get_req("/api/setup/status")).await.unwrap();
+    let resp = app.clone().oneshot(get_req("/api/setup/status")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     let v = body_json(resp).await;
     assert_eq!(v["error_code"], "OBP-BANK-NODE-APP-SETUP-NOT-CONFIGURED");
+
+    let resp = app
+        .oneshot(get_req("/api/setup/account-directory"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -580,6 +590,81 @@ async fn status_classifies_present_missing_and_broken_items() {
     // The snapshot block the UI copies for other agents.
     assert!(v["generated_at"].as_str().is_some());
     assert_eq!(v["obp_api"]["oauth_provider"], "obp-oidc");
+}
+
+/// Start a login with the given query string and drive the callback,
+/// returning the callback's redirect target.
+async fn login_redirect_target(app: &Router, login_uri: &str) -> String {
+    let resp = app.clone().oneshot(get_req(login_uri)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+    let location = resp.headers()[header::LOCATION].to_str().unwrap();
+    let url = reqwest::Url::parse(location).unwrap();
+    let params: HashMap<String, String> = url.query_pairs().into_owned().collect();
+    let resp = app
+        .clone()
+        .oneshot(get_req(&format!(
+            "/setup/callback?code=test-code&state={}",
+            params["state"]
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    resp.headers()[header::LOCATION].to_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn login_next_returns_to_the_named_page_and_refuses_external_urls() {
+    let captured = Arc::new(Mutex::new(Captured::default()));
+    let base = spawn_obp_stub(captured).await;
+    let app = app_with_setup(&base);
+
+    // A same-app path comes back after the callback.
+    assert_eq!(
+        login_redirect_target(&app, "/setup/login?next=/accounts").await,
+        "/accounts"
+    );
+    // Anything that could leave the app falls back to /setup.
+    assert_eq!(
+        login_redirect_target(&app, "/setup/login?next=//evil.example/x").await,
+        "/setup"
+    );
+    assert_eq!(
+        login_redirect_target(&app, "/setup/login?next=https%3A%2F%2Fevil.example").await,
+        "/setup"
+    );
+}
+
+#[tokio::test]
+async fn account_directory_requires_login_and_relays_the_directory() {
+    let captured = Arc::new(Mutex::new(Captured::default()));
+    let base = spawn_obp_stub(captured.clone()).await;
+    let app = app_with_setup(&base);
+
+    let resp = app
+        .clone()
+        .oneshot(get_req("/api/setup/account-directory"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    let cookie = log_in(&app, &captured).await;
+    let resp = app
+        .oneshot(get_with_cookie("/api/setup/account-directory", &cookie))
+        .await
+        .unwrap();
+    // OBP-API's directory response is relayed verbatim, routings included.
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+    let accounts = v["accounts"].as_array().unwrap();
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts[0]["account_id"], "settlement-a");
+    assert_eq!(
+        accounts[0]["account_routings"],
+        json!([
+            { "scheme": "OBP", "address": "settlement-a" },
+            { "scheme": "CARDANO", "address": "addr_test1aaa" },
+        ])
+    );
 }
 
 #[tokio::test]

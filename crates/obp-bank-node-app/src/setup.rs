@@ -30,6 +30,8 @@ use crate::{ObpApiConfig, SetupConfig, SetupRouting};
 
 const SETUP_HTML: &str = include_str!("static/setup.html");
 const SETUP_JS: &str = include_str!("static/setup.js");
+const ACCOUNTS_HTML: &str = include_str!("static/accounts.html");
+const ACCOUNTS_JS: &str = include_str!("static/accounts.js");
 
 #[derive(Clone)]
 pub struct SetupState(Arc<Inner>);
@@ -101,11 +103,22 @@ pub fn router(state: Option<SetupState>) -> Router {
                     )
                 }),
             )
+            .route("/accounts", get(|| async { Html(ACCOUNTS_HTML) }))
+            .route(
+                "/accounts.js",
+                get(|| async {
+                    (
+                        [(header::CONTENT_TYPE, "application/javascript")],
+                        ACCOUNTS_JS,
+                    )
+                }),
+            )
             .route("/setup/login", get(login))
             .route("/setup/callback", get(callback))
             .route("/setup/logout", post(logout))
             .route("/api/setup/me", get(me))
             .route("/api/setup/status", get(status))
+            .route("/api/setup/account-directory", get(account_directory))
             .route("/api/setup/apply", post(apply))
             .route("/api/setup/request-entitlement", post(request_entitlement))
             .route("/api/setup/test-account", post(test_account))
@@ -131,8 +144,19 @@ pub fn router(state: Option<SetupState>) -> Router {
                         )
                     }),
                 )
+                .route(
+                    "/accounts",
+                    get(|| async {
+                        Html(
+                            "<h1>Accounts not configured</h1>\
+                             <p>Add an <code>obp_api</code> block to the app config \
+                             to enable this page.</p>",
+                        )
+                    }),
+                )
                 .route("/api/setup/me", get(not_configured))
                 .route("/api/setup/status", get(not_configured))
+                .route("/api/setup/account-directory", get(not_configured))
                 .route("/api/setup/apply", post(not_configured))
                 .route("/api/setup/test-account", post(not_configured))
         }
@@ -142,8 +166,21 @@ pub fn router(state: Option<SetupState>) -> Router {
 // ---------------------------------------------------------------------------
 // Login flow
 
-async fn login(State(state): State<SetupState>) -> Response {
-    match state.0.oidc.begin_login().await {
+#[derive(Deserialize)]
+struct LoginParams {
+    /// Same-app path to return to after the callback (`/setup`, `/accounts`).
+    #[serde(default)]
+    next: Option<String>,
+}
+
+async fn login(State(state): State<SetupState>, Query(params): Query<LoginParams>) -> Response {
+    // Only same-app absolute paths — the callback redirect must never leave
+    // the app ("//host" would).
+    let next = match params.next.as_deref() {
+        Some(p) if p.starts_with('/') && !p.starts_with("//") => p.to_string(),
+        _ => "/setup".to_string(),
+    };
+    match state.0.oidc.begin_login(next).await {
         Ok(url) => Redirect::temporary(&url).into_response(),
         Err(e) => error(
             StatusCode::BAD_GATEWAY,
@@ -187,9 +224,9 @@ async fn callback(
         );
     };
     match state.0.oidc.complete_login(&oauth_state, &code).await {
-        Ok(session_id) => (
+        Ok((session_id, next)) => (
             [(header::SET_COOKIE, oidc::session_cookie(&session_id))],
-            Redirect::to("/setup"),
+            Redirect::to(&next),
         )
             .into_response(),
         Err(e) => error(
@@ -222,7 +259,7 @@ async fn require_token(state: &SetupState, headers: &HeaderMap) -> Result<String
             StatusCode::UNAUTHORIZED,
             Json(json!({
                 "error_code": "OBP-BANK-NODE-APP-SETUP-LOGIN-REQUIRED",
-                "message": "log in to OBP-API to use the setup page",
+                "message": "log in to OBP-API to use this page",
                 "login_url": "/setup/login",
             })),
         )
@@ -770,6 +807,44 @@ async fn status(State(state): State<SetupState>, headers: HeaderMap) -> Response
         "items": items,
     }))
     .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Account directory
+
+/// `GET /api/setup/account-directory` — the configured bank's account
+/// directory, for the `/accounts` page. The directory endpoint is role-based
+/// (CanGetAccountDirectoryAtOneBank) and view-independent, so it lists
+/// accounts the admin holds no view on; OBP-API's status and body are
+/// relayed verbatim.
+async fn account_directory(State(state): State<SetupState>, headers: HeaderMap) -> Response {
+    let token = match require_token(&state, &headers).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    let Some(bank) = &state.0.setup.bank else {
+        return error(
+            StatusCode::NOT_FOUND,
+            "OBP-BANK-NODE-APP-SETUP-NO-BANK",
+            "add setup.bank to the app config to list its account directory".into(),
+        );
+    };
+    match state
+        .obp(
+            Method::GET,
+            &format!("/obp/v6.0.0/banks/{}/account-directory?limit=500", bank.id),
+            Some(&token),
+            None,
+        )
+        .await
+    {
+        Ok((status, body)) => (status, Json(body)).into_response(),
+        Err(e) => error(
+            StatusCode::BAD_GATEWAY,
+            "OBP-BANK-NODE-APP-SETUP-OBP-001",
+            e,
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------

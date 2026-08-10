@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OBP Bank Node — Accounts</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>Accounts — Account Directory</h1>
+    <nav class="page-nav"><a href="/">← storyline</a> · <a href="/setup">setup</a></nav>
+    <div id="session-box" class="node-health"></div>
+  </header>
+
+  <main>
+    <section id="login-section" hidden>
+      <h2>Log in</h2>
+      <p class="hint">Lists the bank's account directory from OBP-API. Log in with an
+        OBP user holding <code>CanGetAccountDirectoryAtOneBank</code> at the bank.</p>
+      <button id="login-btn">Log in with OBP</button>
+      <pre id="login-error" class="result result-err" hidden></pre>
+    </section>
+
+    <section id="accounts-section" hidden>
+      <h2>Account directory</h2>
+      <p class="hint"><code>GET /obp/v6.0.0/banks/{bank}/account-directory</code> —
+        every account at this instance's bank, with its routings.</p>
+      <div class="setup-toolbar">
+        <button id="refresh-btn" class="small">Refresh</button>
+        <span id="directory-info" class="dim"></span>
+      </div>
+      <div id="accounts-table"></div>
+      <pre id="directory-error" class="result result-err" hidden></pre>
+    </section>
+  </main>
+
+  <footer>
+    <p>Operator surface: reads OBP-API's account directory as the logged-in user.
+      The storyline pages talk only to Bank Nodes.</p>
+  </footer>
+
+  <script src="/accounts.js"></script>
+</body>
+</html>

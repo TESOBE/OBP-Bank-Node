@@ -63,6 +63,8 @@ struct TokenResponse {
 
 struct PendingLogin {
     code_verifier: String,
+    /// Same-app path the callback redirects to after login.
+    next: String,
     created: Instant,
 }
 
@@ -169,8 +171,9 @@ impl Oidc {
     }
 
     /// Mint state + PKCE for a new login and return the authorization URL to
-    /// redirect the browser to.
-    pub async fn begin_login(&self) -> anyhow::Result<String> {
+    /// redirect the browser to. `next` is the same-app path the callback
+    /// redirects to afterwards (the caller validates it).
+    pub async fn begin_login(&self, next: String) -> anyhow::Result<String> {
         let ep = self.endpoints().await?;
         let state = random_token();
         let code_verifier = random_token();
@@ -182,6 +185,7 @@ impl Oidc {
                 state.clone(),
                 PendingLogin {
                     code_verifier,
+                    next,
                     created: Instant::now(),
                 },
             );
@@ -200,8 +204,8 @@ impl Oidc {
     }
 
     /// Exchange the callback's code for tokens and open a session. Returns
-    /// the session id to set as the cookie value.
-    pub async fn complete_login(&self, state: &str, code: &str) -> anyhow::Result<String> {
+    /// the session id to set as the cookie value and the login's `next` path.
+    pub async fn complete_login(&self, state: &str, code: &str) -> anyhow::Result<(String, String)> {
         let Some(pending) = self.pending.lock().unwrap().remove(state) else {
             return Err(anyhow!("unknown or expired login state"));
         };
@@ -228,7 +232,7 @@ impl Oidc {
                 refresh_token: tokens.refresh_token,
             },
         );
-        Ok(session_id)
+        Ok((session_id, pending.next))
     }
 
     /// The session's access token, refreshed once if expired. `None` means
