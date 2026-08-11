@@ -81,7 +81,14 @@ async fn interface_c_transport_round_trips_all_message_types() {
     // No settlement rail on this router: the settlement_instruction case below
     // asserts the NOT_CONFIGURED reply. The idempotency/finality path has its
     // own unit coverage in router.rs / settlement_store.rs / finality.rs.
-    let router = Arc::new(Router::new("test-bank", evidence.clone(), cbs, None));
+    let router = Arc::new(Router::new(
+        "test-bank",
+        "test-account",
+        evidence.clone(),
+        cbs,
+        crate::outbox::OutboxStore::connect_in_memory().await.unwrap(),
+        None,
+    ));
 
     let consumer_task = tokio::spawn(consumer::run_supervised(
         ConsumerConfig {

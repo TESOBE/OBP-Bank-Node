@@ -143,6 +143,11 @@ pub struct CreditNotification {
     /// predating the field (added 2026-08-10).
     #[serde(default)]
     pub beneficiary: Option<Beneficiary>,
+    /// Set when this credit is a RETURN: the transaction_request_id of the
+    /// original outbound promise whose credit was refused. A refused return
+    /// is never returned again — it parks for an operator (one hop).
+    #[serde(default)]
+    pub return_of: Option<String>,
     #[serde(default)]
     pub netting_snapshot_id: Option<String>,
     /// On-chain reference to Bank A's Promise (the tx id) and its chain.

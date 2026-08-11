@@ -43,6 +43,11 @@ pub struct EvidenceRecord {
     pub beneficiary_name: Option<String>,
     pub beneficiary_account_routing_scheme: Option<String>,
     pub beneficiary_account_routing_address: Option<String>,
+    /// Set when this credit IS a return: the original promise it repays.
+    pub return_of_transaction_request_id: Option<String>,
+    /// Set when this credit was CBS-rejected and a return promise was
+    /// initiated: the return's transaction_request_id.
+    pub returned_by_transaction_request_id: Option<String>,
     /// The full credit-notification JSON, kept verbatim for audit.
     pub raw_message: String,
     pub received_at: String,
@@ -73,6 +78,7 @@ pub struct NewEvidence<'a> {
     pub beneficiary_name: Option<&'a str>,
     pub beneficiary_account_routing_scheme: Option<&'a str>,
     pub beneficiary_account_routing_address: Option<&'a str>,
+    pub return_of_transaction_request_id: Option<&'a str>,
     pub raw_message: &'a str,
 }
 
@@ -129,6 +135,8 @@ impl EvidenceStore {
                 beneficiary_name       TEXT,
                 beneficiary_account_routing_scheme  TEXT,
                 beneficiary_account_routing_address TEXT,
+                return_of_transaction_request_id    TEXT,
+                returned_by_transaction_request_id  TEXT,
                 raw_message            TEXT NOT NULL,
                 received_at            TEXT NOT NULL,
                 cbs_status             TEXT,
@@ -154,6 +162,8 @@ impl EvidenceStore {
             "beneficiary_name TEXT",
             "beneficiary_account_routing_scheme TEXT",
             "beneficiary_account_routing_address TEXT",
+            "return_of_transaction_request_id TEXT",
+            "returned_by_transaction_request_id TEXT",
         ] {
             if let Err(e) = sqlx::query(&format!("ALTER TABLE evidence ADD COLUMN {col}"))
                 .execute(pool)
@@ -177,8 +187,9 @@ impl EvidenceStore {
                 (transaction_request_id, promise_commitment, promise_salt, promise_preimage, \
                  promise_id, promise_blockchain, verified, currency, amount, originator_name, \
                  beneficiary_name, beneficiary_account_routing_scheme, \
-                 beneficiary_account_routing_address, raw_message, received_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 beneficiary_account_routing_address, return_of_transaction_request_id, \
+                 raw_message, received_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(transaction_request_id) DO UPDATE SET \
                 promise_commitment = excluded.promise_commitment, \
                 promise_salt = excluded.promise_salt, \
@@ -192,6 +203,7 @@ impl EvidenceStore {
                 beneficiary_name = excluded.beneficiary_name, \
                 beneficiary_account_routing_scheme = excluded.beneficiary_account_routing_scheme, \
                 beneficiary_account_routing_address = excluded.beneficiary_account_routing_address, \
+                return_of_transaction_request_id = excluded.return_of_transaction_request_id, \
                 raw_message = excluded.raw_message, \
                 received_at = excluded.received_at",
         )
@@ -208,6 +220,7 @@ impl EvidenceStore {
         .bind(e.beneficiary_name)
         .bind(e.beneficiary_account_routing_scheme)
         .bind(e.beneficiary_account_routing_address)
+        .bind(e.return_of_transaction_request_id)
         .bind(e.raw_message)
         .bind(&now)
         .execute(&self.pool)
@@ -232,6 +245,23 @@ impl EvidenceStore {
         .bind(status)
         .bind(cbs_reference)
         .bind(&now)
+        .bind(transaction_request_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Link a CBS-rejected credit to the return promise initiated for it.
+    pub async fn record_return(
+        &self,
+        transaction_request_id: &str,
+        return_transaction_request_id: &str,
+    ) -> Result<(), OutboxError> {
+        sqlx::query(
+            "UPDATE evidence SET returned_by_transaction_request_id = ? \
+             WHERE transaction_request_id = ?",
+        )
+        .bind(return_transaction_request_id)
         .bind(transaction_request_id)
         .execute(&self.pool)
         .await?;
@@ -303,6 +333,7 @@ mod tests {
             beneficiary_name: Some("Bea Beneficiary"),
             beneficiary_account_routing_scheme: Some("OBP"),
             beneficiary_account_routing_address: Some("acct-77"),
+            return_of_transaction_request_id: None,
             raw_message: "{}",
         }
     }

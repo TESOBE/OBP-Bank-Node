@@ -511,6 +511,7 @@ async fn evidence_endpoints_serve_triplet_and_cbs_result() {
             beneficiary_name: Some("Bea Beneficiary"),
             beneficiary_account_routing_scheme: Some("OBP"),
             beneficiary_account_routing_address: Some("acct-77"),
+            return_of_transaction_request_id: None,
             raw_message: "{}",
         })
         .await

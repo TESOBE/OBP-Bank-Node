@@ -114,3 +114,6 @@ setup:
       use_ssl: false
     role_grants:
       - { username: "rt.node.b", role: "CanSettleOpenCorridor" }
+      # The return flow makes node B a SENDER: its return promises need the
+      # report-back role, like node A has always had.
+      - { username: "rt.node.b", role: "CanAttachOpenCorridorPromise" }

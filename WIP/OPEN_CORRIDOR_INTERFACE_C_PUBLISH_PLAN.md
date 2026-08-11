@@ -184,6 +184,15 @@ The node forwards the body to the CBS verbatim — the CBS validates the
 beneficiary and answers 4xx to refuse (→ `CBS-REJECTED`, permanent) or 5xx
 when it is broken (→ `CBS-DELIVERY-FAILED`, retried).
 
+`return_of` (added 2026-08-10) marks a RETURN: the credit repays the
+originator of an earlier refused promise, named by its transaction_request_id.
+On a CBS 4xx refusal of a normal credit, the beneficiary node initiates a
+return promise in the opposite direction (same amount/currency, beneficiary =
+the original originator, `return_of` = the original id) and replies success —
+the original promise settles normally and the return nets against it, zero
+net when both land in the same cycle. A refused RETURN is never returned
+again: the node replies `CBS-REJECTED` and the row parks STICKY (one hop).
+
 > `promise_commitment`, `promise_salt`, `promise_preimage` are **opaque** to
 > OBP-API — it just relays what Bank A reported (§5.1). OBP-API does not need to
 > know the preimage format. Treat them as strings.

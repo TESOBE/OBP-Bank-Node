@@ -32,8 +32,15 @@ pub struct SettlementService {
 
 pub struct Router {
     pub bank_id: String,
+    /// This node's corridor account — the institutional originator of return
+    /// promises.
+    account_id: String,
     evidence: EvidenceStore,
     cbs: CbsClient,
+    /// The node's own outbound pipeline: a CBS-rejected credit is answered
+    /// with a RETURN promise inserted here, which the dispatcher then drives
+    /// exactly like an A1.1-initiated payment.
+    outbox: crate::outbox::OutboxStore,
     /// `None` when this node has no settlement rail configured (e.g. the mock
     /// blockchain backend).
     settlement: Option<SettlementService>,
@@ -42,14 +49,18 @@ pub struct Router {
 impl Router {
     pub fn new(
         bank_id: impl Into<String>,
+        account_id: impl Into<String>,
         evidence: EvidenceStore,
         cbs: CbsClient,
+        outbox: crate::outbox::OutboxStore,
         settlement: Option<SettlementService>,
     ) -> Self {
         Self {
             bank_id: bank_id.into(),
+            account_id: account_id.into(),
             evidence,
             cbs,
+            outbox,
             settlement,
         }
     }
@@ -137,6 +148,7 @@ impl Router {
                     .map(|b| b.account_routing.scheme.as_str()),
                 beneficiary_account_routing_address: beneficiary
                     .map(|b| b.account_routing.address.as_str()),
+                return_of_transaction_request_id: cn.return_of.as_deref(),
                 raw_message: &raw,
             })
             .await;
@@ -197,8 +209,13 @@ impl Router {
                 )
             }
             // A 4xx is the CBS itself refusing the credit (unknown account,
-            // name mismatch, …) — permanent, so REJECTED and a distinct error
-            // code that parks the outbox row instead of retrying forever.
+            // name mismatch, …) — permanent. The answer is a RETURN promise in
+            // the opposite direction: the original promise settles normally
+            // and the return nets against it, so the originator is repaid
+            // through the same corridor machinery. One hop only — a refused
+            // RETURN is never returned again; it parks STICKY for an operator
+            // via CBS_REJECTED, as does a credit whose preimage is missing
+            // (no return beneficiary derivable).
             // 5xx and transport errors stay FAILED: transient, retried.
             Err(crate::cbs::CbsError::Rejected { status, body }) if status < 500 => {
                 warn!(status, %body, "credit_notification: CBS rejected the credit");
@@ -209,11 +226,46 @@ impl Router {
                 {
                     warn!(error = %se, "credit_notification: failed to record CBS result");
                 }
-                ReplyEnvelope::error(
-                    correlation_id,
-                    error_code::CBS_REJECTED,
-                    format!("CBS rejected the credit ({status}): {body}"),
-                )
+                if cn.return_of.is_some() {
+                    return ReplyEnvelope::error(
+                        correlation_id,
+                        error_code::CBS_REJECTED,
+                        format!(
+                            "CBS rejected a RETURN credit ({status}): {body} — not returning a return"
+                        ),
+                    );
+                }
+                match self.initiate_return(&cn, &body).await {
+                    Ok(return_id) => {
+                        if let Err(e) = self
+                            .evidence
+                            .record_return(&cn.transaction_request_id, &return_id)
+                            .await
+                        {
+                            warn!(error = %e, "credit_notification: failed to record return linkage");
+                        }
+                        info!(
+                            transaction_request_id = %cn.transaction_request_id,
+                            return_transaction_request_id = %return_id,
+                            "credit_notification: CBS rejected — return promise initiated"
+                        );
+                        ReplyEnvelope::ok(
+                            correlation_id,
+                            serde_json::json!({
+                                "transaction_request_id": cn.transaction_request_id,
+                                "verified": verified,
+                                "cbs_reference": null,
+                                "cbs_status": "REJECTED",
+                                "return_transaction_request_id": return_id,
+                            }),
+                        )
+                    }
+                    Err(reason) => ReplyEnvelope::error(
+                        correlation_id,
+                        error_code::CBS_REJECTED,
+                        format!("CBS rejected the credit ({status}): {body}; no return initiated: {reason}"),
+                    ),
+                }
             }
             Err(e) => {
                 warn!(error = %e, "credit_notification: CBS delivery failed");
@@ -231,6 +283,87 @@ impl Router {
                 )
             }
         }
+    }
+
+    /// Build and enqueue the RETURN promise for a CBS-rejected credit: same
+    /// amount and currency back to the ORIGINAL ORIGINATOR, whose identity and
+    /// account routing come out of the promise preimage (the canonical A1.1
+    /// instruction Bank A hashed). Enters this node's normal outbound pipeline
+    /// — outbox, dispatcher, OBP submit, on-chain promise — like any payment.
+    async fn initiate_return(
+        &self,
+        cn: &CreditNotification,
+        reason: &str,
+    ) -> Result<String, String> {
+        use crate::rest::types as a1;
+
+        let preimage = cn
+            .promise_preimage
+            .as_deref()
+            .ok_or("no preimage on the credit — cannot derive the return beneficiary")?;
+        let preimage: serde_json::Value = serde_json::from_str(preimage)
+            .map_err(|e| format!("preimage is not JSON: {e}"))?;
+        let originating_bank_id = preimage["originating_bank_id"]
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
+            .ok_or("preimage has no originating_bank_id")?;
+        let orig = &preimage["instruction"]["originator"];
+        let orig_name = orig["name"].as_str().unwrap_or_default();
+        let orig_scheme = orig["account_routing"]["scheme"].as_str().unwrap_or_default();
+        let orig_address = orig["account_routing"]["address"].as_str().unwrap_or_default();
+        if orig_scheme.trim().is_empty() || orig_address.trim().is_empty() {
+            return Err("preimage originator has no account routing".into());
+        }
+
+        let reason = reason.chars().take(120).collect::<String>();
+        let request = a1::InitiateRequest {
+            value: a1::MoneyValue {
+                currency: cn.value.currency.clone(),
+                amount: cn.value.amount.clone(),
+            },
+            description: format!("Return of {}: {}", cn.transaction_request_id, reason),
+            to: a1::BeneficiaryRouting {
+                name: orig_name.to_string(),
+                description: format!("Return to originator of {}", cn.transaction_request_id),
+                other_bank_routing_scheme: "OBP".into(),
+                other_bank_routing_address: originating_bank_id.to_string(),
+                other_account_routing_scheme: orig_scheme.to_string(),
+                other_account_routing_address: orig_address.to_string(),
+                other_account_secondary_routing_scheme: String::new(),
+                other_account_secondary_routing_address: String::new(),
+                other_branch_routing_scheme: String::new(),
+                other_branch_routing_address: String::new(),
+            },
+            // The bank itself is the Travel Rule originator of a return — the
+            // rejected credit never reached a customer.
+            originator: a1::Originator {
+                name: format!("Bank {} (return)", self.bank_id),
+                address: format!("Settlement account {} at {}", self.account_id, self.bank_id),
+                account_routing: a1::AccountRouting {
+                    scheme: "OBP".into(),
+                    address: self.account_id.clone(),
+                },
+                source: None,
+            },
+            charge_policy: "SHARED".into(),
+            return_of: Some(cn.transaction_request_id.clone()),
+        };
+        let payload =
+            serde_json::to_string(&request).map_err(|e| format!("serializing return: {e}"))?;
+
+        let return_id = uuid::Uuid::new_v4().to_string();
+        let salt = uuid::Uuid::new_v4().simple().to_string();
+        self.outbox
+            .insert(crate::outbox::NewEntry {
+                transaction_request_id: &return_id,
+                bank_id: &self.bank_id,
+                account_id: &self.account_id,
+                request_payload: &payload,
+                commitment_salt: &salt,
+            })
+            .await
+            .map_err(|e| format!("persisting return to outbox: {e}"))?;
+        Ok(return_id)
     }
 
     /// `obp_settlement_advice`: the promises this (beneficiary) node already
@@ -645,7 +778,13 @@ mod tests {
             }
             None => (None, None),
         };
-        (Router::new("ke.01.kcs", evidence, cbs, service), store)
+        let outbox = crate::outbox::OutboxStore::connect_in_memory()
+            .await
+            .unwrap();
+        (
+            Router::new("ke.01.kcs", "settlement-ke", evidence, cbs, outbox, service),
+            store,
+        )
     }
 
     /// A settlement backend test double: records calls and returns a canned tx.
@@ -741,6 +880,7 @@ mod tests {
                     beneficiary_name: None,
                     beneficiary_account_routing_scheme: None,
                     beneficiary_account_routing_address: None,
+                    return_of_transaction_request_id: None,
                     raw_message: "{}",
                 })
                 .await
@@ -915,6 +1055,126 @@ mod tests {
         let rec = r.evidence.get(&id).await.unwrap().unwrap();
         assert_eq!(rec.cbs_status.as_deref(), Some("REJECTED"));
         assert!(rec.cbs_reference.is_none());
+    }
+
+    /// A credit whose preimage is the full canonical instruction — enough to
+    /// derive the return beneficiary. `return_of` marks it as itself a return.
+    fn credit_returnable(return_of: Option<&str>) -> (String, String) {
+        let instruction = serde_json::json!({
+            "value": {"currency": "KES", "amount": "250.00"},
+            "description": "Original payment",
+            "to": {
+                "name": "Bea Beneficiary", "description": "",
+                "other_bank_routing_scheme": "OBP", "other_bank_routing_address": "ke.01.kcs",
+                "other_account_routing_scheme": "OBP", "other_account_routing_address": "no-such-acct",
+                "other_account_secondary_routing_scheme": "", "other_account_secondary_routing_address": "",
+                "other_branch_routing_scheme": "", "other_branch_routing_address": ""
+            },
+            "originator": {
+                "name": "Alice Sender", "address": "1 Sender Street",
+                "account_routing": {"scheme": "IBAN", "address": "KE93 0000 1234"}
+            },
+            "charge_policy": "SHARED",
+        });
+        let preimage = serde_json::json!({
+            "transaction_request_id": "tr-orig-9",
+            "originating_bank_id": "rt.bank.a",
+            "originating_account_id": "settlement-a",
+            "instruction": instruction,
+        })
+        .to_string();
+        let salt = "00112233445566778899aabbccddeeff";
+        let commitment = PromiseRecord::compute_commitment(preimage.as_bytes(), salt.as_bytes());
+        let mut body = serde_json::json!({
+            "transaction_request_id": "tr-orig-9",
+            "value": {"currency": "KES", "amount": "250.00"},
+            "originator": {"name": "Alice Sender"},
+            "beneficiary": {
+                "name": "Bea Beneficiary",
+                "account_routing": {"scheme": "OBP", "address": "no-such-acct"},
+            },
+            "promise_id": "tx-9", "promise_blockchain": "cardano",
+            "promise_commitment": commitment, "promise_salt": salt, "promise_preimage": preimage,
+        });
+        if let Some(r) = return_of {
+            body["return_of"] = serde_json::json!(r);
+        }
+        (body.to_string(), "tr-orig-9".into())
+    }
+
+    #[tokio::test]
+    async fn cbs_rejection_initiates_a_return_promise() {
+        let url = cbs_stub_fixed(
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            r#"{"status":"REJECTED","error":"unknown beneficiary account"}"#,
+        )
+        .await;
+        let r = router_with_cbs(&url).await;
+        let (body, id) = credit_returnable(None);
+        let reply = r
+            .handle(message_id::CREDIT_NOTIFICATION, "corr-9", body.as_bytes())
+            .await;
+        // The rejection is answered with a RETURN, so the message itself is
+        // handled — success reply carrying the return's id.
+        assert!(reply.is_ok(), "expected ok, got {:?}", reply.status);
+        assert_eq!(reply.data["cbs_status"], "REJECTED");
+        let return_id = reply.data["return_transaction_request_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // The return entered this node's outbound pipeline: same value, back
+        // to the ORIGINAL ORIGINATOR's routing, linked via return_of.
+        let rows = r.outbox.list(10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].transaction_request_id, return_id);
+        assert_eq!(rows[0].bank_id, "ke.01.kcs");
+        assert_eq!(rows[0].account_id, "settlement-ke");
+        let payload: serde_json::Value = serde_json::from_str(&rows[0].request_payload).unwrap();
+        assert_eq!(payload["return_of"], id);
+        assert_eq!(payload["value"]["amount"], "250.00");
+        assert_eq!(payload["value"]["currency"], "KES");
+        assert_eq!(payload["to"]["name"], "Alice Sender");
+        assert_eq!(payload["to"]["other_bank_routing_scheme"], "OBP");
+        assert_eq!(payload["to"]["other_bank_routing_address"], "rt.bank.a");
+        assert_eq!(payload["to"]["other_account_routing_scheme"], "IBAN");
+        assert_eq!(payload["to"]["other_account_routing_address"], "KE93 0000 1234");
+        assert_eq!(payload["originator"]["account_routing"]["address"], "settlement-ke");
+
+        // Rejection + linkage recorded on the evidence row.
+        let rec = r.evidence.get(&id).await.unwrap().unwrap();
+        assert_eq!(rec.cbs_status.as_deref(), Some("REJECTED"));
+        assert_eq!(
+            rec.returned_by_transaction_request_id.as_deref(),
+            Some(return_id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_return_is_never_returned_again() {
+        let url = cbs_stub_fixed(
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            r#"{"status":"REJECTED","error":"originator account closed"}"#,
+        )
+        .await;
+        let r = router_with_cbs(&url).await;
+        let (body, id) = credit_returnable(Some("tr-original-0"));
+        let reply = r
+            .handle(message_id::CREDIT_NOTIFICATION, "corr-10", body.as_bytes())
+            .await;
+        // One hop: the refused RETURN parks STICKY at OBP-API, no ping-pong.
+        assert_eq!(reply.status.error_code, error_code::CBS_REJECTED);
+        assert!(
+            r.outbox.list(10).await.unwrap().is_empty(),
+            "must not create a return-of-return"
+        );
+        let rec = r.evidence.get(&id).await.unwrap().unwrap();
+        assert_eq!(rec.cbs_status.as_deref(), Some("REJECTED"));
+        assert_eq!(
+            rec.return_of_transaction_request_id.as_deref(),
+            Some("tr-original-0")
+        );
+        assert!(rec.returned_by_transaction_request_id.is_none());
     }
 
     #[tokio::test]

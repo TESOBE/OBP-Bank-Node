@@ -430,8 +430,10 @@ async fn main() -> anyhow::Result<()> {
             });
         let c_router = Arc::new(interface_c::Router::new(
             config.bank.bank_id.clone(),
+            config.bank.account_id.clone(),
             evidence.clone(),
             cbs,
+            outbox.clone(),
             settlement_service,
         ));
         let consumer_cfg = interface_c::consumer::ConsumerConfig {

@@ -234,7 +234,11 @@ async function renderEvidence() {
     }
     const body = rows.map((ev) => `
       <tr>
-        <td class="id-full">${esc(ev.transaction_request_id)}</td>
+        <td class="id-full">${esc(ev.transaction_request_id)}${
+          ev.return_of_transaction_request_id
+            ? `<div class="dim">↩ return of ${esc(short(ev.return_of_transaction_request_id, 8))}</div>` : ""}${
+          ev.returned_by_transaction_request_id
+            ? `<div class="dim">↩ returned by ${esc(short(ev.returned_by_transaction_request_id, 8))}</div>` : ""}</td>
         <td>${ev.verified
           ? `<span class="chip chip-verified">verified</span>`
           : `<span class="chip chip-error">MISMATCH</span>`}</td>

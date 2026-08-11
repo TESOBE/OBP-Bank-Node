@@ -21,6 +21,11 @@ pub struct InitiateRequest {
     /// wire body; defaults to `SHARED` when the A1.1 caller omits it.
     #[serde(default = "default_charge_policy")]
     pub charge_policy: String,
+    /// Set when this payment is a RETURN of an earlier inbound promise whose
+    /// credit this bank's CBS refused: the original transaction_request_id.
+    /// Omitted from the wire when absent so ordinary payloads are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_of: Option<String>,
 }
 
 fn default_charge_policy() -> String {
@@ -185,6 +190,10 @@ pub struct EvidenceView {
     pub beneficiary_name: Option<String>,
     pub beneficiary_account_routing_scheme: Option<String>,
     pub beneficiary_account_routing_address: Option<String>,
+    /// Set when this credit IS a return (the original promise it repays) /
+    /// when this credit was rejected and a return was initiated for it.
+    pub return_of_transaction_request_id: Option<String>,
+    pub returned_by_transaction_request_id: Option<String>,
     pub cbs_status: Option<String>,
     pub cbs_reference: Option<String>,
     pub cbs_recorded_at: Option<String>,

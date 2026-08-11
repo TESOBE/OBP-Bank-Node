@@ -401,6 +401,8 @@ fn evidence_view(rec: EvidenceRecord) -> EvidenceView {
         beneficiary_name: rec.beneficiary_name,
         beneficiary_account_routing_scheme: rec.beneficiary_account_routing_scheme,
         beneficiary_account_routing_address: rec.beneficiary_account_routing_address,
+        return_of_transaction_request_id: rec.return_of_transaction_request_id,
+        returned_by_transaction_request_id: rec.returned_by_transaction_request_id,
         cbs_status: rec.cbs_status,
         cbs_reference: rec.cbs_reference,
         cbs_recorded_at: rec.cbs_recorded_at,
