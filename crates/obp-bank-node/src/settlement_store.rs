@@ -57,6 +57,13 @@ pub struct SettlementRow {
     pub blockchain: Option<String>,
     pub asset: Option<String>,
     pub asset_amount: Option<String>,
+    /// The settle-time FX quote the transfer was sized with: minor units of
+    /// `currency` per whole `asset` (u128 as text), the source label, and the
+    /// quote timestamp. NULL on rows predating the columns or when the rail
+    /// needed no conversion.
+    pub fx_minor_per_whole_asset: Option<String>,
+    pub fx_source: Option<String>,
+    pub fx_as_of: Option<String>,
     /// Last confirmation depth observed by the finality watcher.
     pub last_depth: i64,
     pub error_reason: Option<String>,
@@ -135,6 +142,9 @@ impl SettlementStore {
                 blockchain        TEXT,
                 asset             TEXT,
                 asset_amount      TEXT,
+                fx_minor_per_whole_asset TEXT,
+                fx_source         TEXT,
+                fx_as_of          TEXT,
                 last_depth        INTEGER NOT NULL DEFAULT 0,
                 error_reason      TEXT,
                 retryable         INTEGER NOT NULL DEFAULT 0,
@@ -145,6 +155,20 @@ impl SettlementStore {
         )
         .execute(pool)
         .await?;
+
+        // Migration for databases created before the FX columns. SQLite has no
+        // `ADD COLUMN IF NOT EXISTS`; a duplicate-column error means the
+        // column is already there, which is fine.
+        for col in ["fx_minor_per_whole_asset TEXT", "fx_source TEXT", "fx_as_of TEXT"] {
+            if let Err(e) = sqlx::query(&format!("ALTER TABLE settlements ADD COLUMN {col}"))
+                .execute(pool)
+                .await
+            {
+                if !e.to_string().contains("duplicate column name") {
+                    return Err(e.into());
+                }
+            }
+        }
         Ok(())
     }
 
@@ -206,16 +230,21 @@ impl SettlementStore {
         blockchain: &str,
         asset: &str,
         asset_amount: &str,
+        fx: Option<&obp_blockchain::settlement::FxQuote>,
     ) -> Result<(), OutboxError> {
         sqlx::query(
             "UPDATE settlements SET status = ?, tx_id = ?, blockchain = ?, asset = ?, \
-             asset_amount = ?, updated_at = ? WHERE idempotency_key = ?",
+             asset_amount = ?, fx_minor_per_whole_asset = ?, fx_source = ?, fx_as_of = ?, \
+             updated_at = ? WHERE idempotency_key = ?",
         )
         .bind(status::SUBMITTED)
         .bind(tx_id)
         .bind(blockchain)
         .bind(asset)
         .bind(asset_amount)
+        .bind(fx.map(|q| q.minor_per_whole_asset.to_string()))
+        .bind(fx.map(|q| q.source.as_str()))
+        .bind(fx.map(|q| q.as_of.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)))
         .bind(now())
         .bind(idempotency_key)
         .execute(&self.pool)
@@ -359,11 +388,22 @@ mod tests {
     async fn full_lifecycle_settling_submitted_final() {
         let s = SettlementStore::connect_in_memory().await.unwrap();
         s.claim(claim_fields("k1")).await.unwrap();
-        s.mark_submitted("k1", "tx-1", "cardano", "ADA", "10000000")
+        let quote = obp_blockchain::settlement::FxQuote {
+            asset: "ADA".into(),
+            currency: "KES".into(),
+            minor_per_whole_asset: 7998,
+            as_of: chrono::Utc::now(),
+            source: "coingecko×er-api".into(),
+        };
+        s.mark_submitted("k1", "tx-1", "cardano", "ADA", "10000000", Some(&quote))
             .await
             .unwrap();
         let row = s.get("k1").await.unwrap().unwrap();
         assert_eq!(row.status, status::SUBMITTED);
+        // The settle-time rate is part of the audit row.
+        assert_eq!(row.fx_minor_per_whole_asset.as_deref(), Some("7998"));
+        assert_eq!(row.fx_source.as_deref(), Some("coingecko×er-api"));
+        assert!(row.fx_as_of.is_some());
         assert_eq!(row.tx_id.as_deref(), Some("tx-1"));
 
         s.record_depth("k1", 3).await.unwrap();
@@ -436,10 +476,10 @@ mod tests {
         for k in ["a", "b", "c"] {
             s.claim(claim_fields(k)).await.unwrap();
         }
-        s.mark_submitted("a", "tx-a", "cardano", "ADA", "1")
+        s.mark_submitted("a", "tx-a", "cardano", "ADA", "1", None)
             .await
             .unwrap();
-        s.mark_submitted("b", "tx-b", "cardano", "ADA", "1")
+        s.mark_submitted("b", "tx-b", "cardano", "ADA", "1", None)
             .await
             .unwrap();
         s.mark_final("b", 20).await.unwrap();

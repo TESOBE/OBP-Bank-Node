@@ -577,6 +577,7 @@ impl Router {
                         &outcome.tx.chain,
                         &outcome.asset,
                         &outcome.asset_amount,
+                        outcome.fx.as_ref(),
                     )
                     .await
                 {

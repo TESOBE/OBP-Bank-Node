@@ -181,7 +181,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .mark_submitted(key, "tx-1", "cardano", "ADA", "10")
+            .mark_submitted(key, "tx-1", "cardano", "ADA", "10", None)
             .await
             .unwrap();
     }

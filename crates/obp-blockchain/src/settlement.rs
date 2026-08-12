@@ -86,6 +86,10 @@ pub struct FxQuote {
     pub currency: String,
     pub minor_per_whole_asset: u128,
     pub as_of: DateTime<Utc>,
+    /// Where the rate came from, for the audit trail and UI (e.g.
+    /// `"coingecko"`, `"coingecko×er-api"`, `"api3×er-api"`, `"stub"`).
+    #[serde(default)]
+    pub source: String,
 }
 
 /// Source of settle-time FX rates. Kept off-chain deliberately (see module
@@ -138,6 +142,7 @@ impl FxSource for StubFxSource {
             currency: currency.to_string(),
             minor_per_whole_asset: self.minor_per_whole_asset,
             as_of: Utc::now(),
+            source: "stub".into(),
         })
     }
 }

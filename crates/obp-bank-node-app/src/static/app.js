@@ -179,6 +179,15 @@ function fmtMinor(minor) {
 }
 
 // The rail reports on-chain base units; ADA has 6 decimals (lovelace).
+// Settle-time rate cell: "1 ADA = 79.98 KES" plus source · quote-time.
+function fmtFx(s) {
+  if (!s.fx_minor_per_whole_asset) return "";
+  const rate = (Number(s.fx_minor_per_whole_asset) / 100).toFixed(2);
+  const when = s.fx_as_of ? s.fx_as_of.slice(11, 19) : "";
+  return `<span class="num">1 ${esc(s.asset || "")} = ${esc(rate)} ${esc(s.currency)}</span>
+    <div class="dim">${esc(s.fx_source || "")}${when ? ` · ${esc(when)}Z` : ""}</div>`;
+}
+
 function fmtRail(amount, asset) {
   if (!amount) return "";
   const n = Number(amount);
@@ -199,6 +208,7 @@ async function renderSettlements() {
         <td>${chip(s.status)}</td>
         <td class="num">${esc(fmtMinor(s.net_amount_minor))} ${esc(s.currency)}</td>
         <td class="num">${esc(fmtRail(s.asset_amount, s.asset))}</td>
+        <td>${fmtFx(s)}</td>
         <td class="num">${s.depth}/${s.finality_depth}</td>
         <td>${txLink(s.tx_id)}</td>
         <td>${esc(s.error_reason || "")}</td>
@@ -208,7 +218,7 @@ async function renderSettlements() {
     return `<h3>${esc(n.name)}</h3>
       <table>
         <thead><tr><th>settlement id</th><th>status</th><th>net</th><th>rail amount</th>
-          <th>depth</th><th>tx</th><th>error</th><th></th></tr></thead>
+          <th>rate</th><th>depth</th><th>tx</th><th>error</th><th></th></tr></thead>
         <tbody>${body}</tbody>
       </table>`;
   }));

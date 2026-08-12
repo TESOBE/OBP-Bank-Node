@@ -468,7 +468,20 @@ async fn settlement_row_is_readable_by_key_or_settlement_id() {
         .unwrap();
     state
         .settlements
-        .mark_submitted("idem-9", "tx-9", "cardano", "ADA", "47125000")
+        .mark_submitted(
+            "idem-9",
+            "tx-9",
+            "cardano",
+            "ADA",
+            "47125000",
+            Some(&obp_blockchain::settlement::FxQuote {
+                asset: "ADA".into(),
+                currency: "KES".into(),
+                minor_per_whole_asset: 2122,
+                as_of: chrono::Utc::now(),
+                source: "stub".into(),
+            }),
+        )
         .await
         .unwrap();
     state.settlements.record_depth("idem-9", 2).await.unwrap();
@@ -480,6 +493,10 @@ async fn settlement_row_is_readable_by_key_or_settlement_id() {
     assert_eq!(v["depth"], 2);
     assert_eq!(v["finality_depth"], TEST_FINALITY_DEPTH);
     assert_eq!(v["net_amount_minor"], "100000");
+    // The settle-time rate is surfaced for the UI's rate column.
+    assert_eq!(v["fx_minor_per_whole_asset"], "2122");
+    assert_eq!(v["fx_source"], "stub");
+    assert!(v["fx_as_of"].as_str().is_some());
 
     // Same row via settlement_id, and present in the list.
     let (status, by_sid) =

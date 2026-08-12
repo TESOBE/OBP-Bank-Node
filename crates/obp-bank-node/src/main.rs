@@ -92,6 +92,18 @@ struct SettlementConfig {
     fx_base_url: String,
     #[serde(default = "default_fx_timeout_secs")]
     fx_timeout_secs: u64,
+    /// Cross-rate crypto leg (`coingecko` / `api3`).
+    #[serde(default)]
+    fx_crypto_leg: FxCryptoLeg,
+    /// Cross-rate fiat leg base URL (USD table with the corridor fiats).
+    #[serde(default = "default_fx_fiat_base_url")]
+    fx_fiat_base_url: String,
+    /// EVM JSON-RPC endpoint for the API3 leg.
+    #[serde(default)]
+    fx_api3_rpc_url: String,
+    /// `Api3ReaderProxyV1` address of the ADA/USD feed (API3 Market).
+    #[serde(default)]
+    fx_api3_proxy_address: String,
     /// Stub-source rate: minor units of the book currency per 1 whole ADA
     /// (e.g. 3542 = 1 ADA ≈ 35.42 KES). `u64` because figment's value model
     /// cannot round-trip `u128`; widened at the `StubFxSource` boundary.
@@ -121,6 +133,9 @@ fn default_settlement_store_path() -> PathBuf {
 fn default_fx_base_url() -> String {
     "https://api.coingecko.com".to_string()
 }
+fn default_fx_fiat_base_url() -> String {
+    "https://open.er-api.com".to_string()
+}
 fn default_fx_timeout_secs() -> u64 {
     10
 }
@@ -128,9 +143,25 @@ fn default_fx_timeout_secs() -> u64 {
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum FxSourceKind {
+    /// Direct asset/fiat quote — only for fiats CoinGecko's `vs_currencies`
+    /// still carries (KES is not among them since 2026-07).
+    Coingecko,
+    /// asset/USD × USD/fiat. The crypto leg is `fx_crypto_leg`; the fiat leg
+    /// is `fx_fiat_base_url` (open.er-api.com). Default: the corridor fiats
+    /// need it and it degrades to nothing when CoinGecko carries the fiat.
+    #[default]
+    Cross,
+    Stub,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum FxCryptoLeg {
     #[default]
     Coingecko,
-    Stub,
+    /// API3 dAPI via `Api3ReaderProxyV1.read()` — needs `fx_api3_rpc_url` and
+    /// `fx_api3_proxy_address` (from the API3 Market, per feed and chain).
+    Api3,
 }
 
 impl Default for SettlementConfig {
@@ -139,6 +170,10 @@ impl Default for SettlementConfig {
             fx_source: FxSourceKind::default(),
             fx_base_url: default_fx_base_url(),
             fx_timeout_secs: default_fx_timeout_secs(),
+            fx_crypto_leg: FxCryptoLeg::default(),
+            fx_fiat_base_url: default_fx_fiat_base_url(),
+            fx_api3_rpc_url: String::new(),
+            fx_api3_proxy_address: String::new(),
             ada_rate_minor_per_whole_ada: 3542,
             finality_depth: default_finality_depth(),
             finality_poll_secs: default_finality_poll_secs(),
@@ -598,6 +633,37 @@ async fn build_backend(config: &Config) -> anyhow::Result<Backends> {
                             config.settlement.fx_timeout_secs,
                         )
                         .context("failed to build CoinGecko FX source")?,
+                    )
+                }
+                FxSourceKind::Cross => {
+                    let crypto = match config.settlement.fx_crypto_leg {
+                        FxCryptoLeg::Coingecko => crate::fx::CryptoUsdLeg::CoinGecko {
+                            base_url: config.settlement.fx_base_url.clone(),
+                        },
+                        FxCryptoLeg::Api3 => {
+                            anyhow::ensure!(
+                                !config.settlement.fx_api3_rpc_url.trim().is_empty()
+                                    && !config.settlement.fx_api3_proxy_address.trim().is_empty(),
+                                "fx_crypto_leg=api3 needs fx_api3_rpc_url and fx_api3_proxy_address"
+                            );
+                            crate::fx::CryptoUsdLeg::Api3 {
+                                rpc_url: config.settlement.fx_api3_rpc_url.clone(),
+                                proxy_address: config.settlement.fx_api3_proxy_address.clone(),
+                            }
+                        }
+                    };
+                    info!(
+                        crypto_leg = ?config.settlement.fx_crypto_leg,
+                        fiat = %config.settlement.fx_fiat_base_url,
+                        "FX source: cross rate (asset/USD × USD/fiat)"
+                    );
+                    Arc::new(
+                        crate::fx::CrossRateFxSource::new(
+                            crypto,
+                            config.settlement.fx_fiat_base_url.clone(),
+                            config.settlement.fx_timeout_secs,
+                        )
+                        .context("failed to build cross-rate FX source")?,
                     )
                 }
                 FxSourceKind::Stub => {

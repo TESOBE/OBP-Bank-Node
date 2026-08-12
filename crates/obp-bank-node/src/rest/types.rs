@@ -159,6 +159,11 @@ pub struct SettlementView {
     pub blockchain: Option<String>,
     pub asset: Option<String>,
     pub asset_amount: Option<String>,
+    /// The settle-time rate the transfer was sized with: minor units of
+    /// `currency` per whole `asset`, the source label, and the quote time.
+    pub fx_minor_per_whole_asset: Option<String>,
+    pub fx_source: Option<String>,
+    pub fx_as_of: Option<String>,
     /// Last confirmation depth observed by the finality watcher.
     pub depth: i64,
     /// Depth at which this node promotes a settlement to `FINAL`.
