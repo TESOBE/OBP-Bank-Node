@@ -164,6 +164,8 @@ pub struct SettlementView {
     pub fx_minor_per_whole_asset: Option<String>,
     pub fx_source: Option<String>,
     pub fx_as_of: Option<String>,
+    /// `PLATFORM_FEE` for fee-sweep settlements; absent = corridor settlement.
+    pub purpose: Option<String>,
     /// Last confirmation depth observed by the finality watcher.
     pub depth: i64,
     /// Depth at which this node promotes a settlement to `FINAL`.

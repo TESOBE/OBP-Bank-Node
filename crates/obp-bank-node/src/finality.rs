@@ -177,6 +177,7 @@ mod tests {
                 currency: "KES",
                 net_amount_minor: 1_000,
                 creditor_address: "addr_test1creditor",
+                purpose: None,
             })
             .await
             .unwrap();

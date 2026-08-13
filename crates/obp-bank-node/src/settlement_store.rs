@@ -71,6 +71,8 @@ pub struct SettlementRow {
     pub created_at: String,
     pub updated_at: String,
     pub finalized_at: Option<String>,
+    /// `PLATFORM_FEE` for fee-sweep settlements; NULL = corridor settlement.
+    pub purpose: Option<String>,
 }
 
 /// Fields captured at claim time (from the inbound instruction).
@@ -81,6 +83,7 @@ pub struct NewClaim<'a> {
     pub currency: &'a str,
     pub net_amount_minor: u128,
     pub creditor_address: &'a str,
+    pub purpose: Option<&'a str>,
 }
 
 /// Result of a claim attempt.
@@ -150,7 +153,8 @@ impl SettlementStore {
                 retryable         INTEGER NOT NULL DEFAULT 0,
                 created_at        TEXT NOT NULL,
                 updated_at        TEXT NOT NULL,
-                finalized_at      TEXT
+                finalized_at      TEXT,
+                purpose           TEXT
             )",
         )
         .execute(pool)
@@ -159,7 +163,12 @@ impl SettlementStore {
         // Migration for databases created before the FX columns. SQLite has no
         // `ADD COLUMN IF NOT EXISTS`; a duplicate-column error means the
         // column is already there, which is fine.
-        for col in ["fx_minor_per_whole_asset TEXT", "fx_source TEXT", "fx_as_of TEXT"] {
+        for col in [
+            "fx_minor_per_whole_asset TEXT",
+            "fx_source TEXT",
+            "fx_as_of TEXT",
+            "purpose TEXT",
+        ] {
             if let Err(e) = sqlx::query(&format!("ALTER TABLE settlements ADD COLUMN {col}"))
                 .execute(pool)
                 .await
@@ -180,8 +189,8 @@ impl SettlementStore {
         let inserted = sqlx::query(
             "INSERT OR IGNORE INTO settlements \
                 (idempotency_key, settlement_id, snapshot_id, currency, net_amount_minor, \
-                 creditor_address, status, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 creditor_address, purpose, status, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(c.idempotency_key)
         .bind(c.settlement_id)
@@ -189,6 +198,7 @@ impl SettlementStore {
         .bind(c.currency)
         .bind(c.net_amount_minor.to_string())
         .bind(c.creditor_address)
+        .bind(c.purpose)
         .bind(status::SETTLING)
         .bind(&now)
         .bind(&now)
@@ -365,6 +375,7 @@ mod tests {
             currency: "KES",
             net_amount_minor: 2_500_000,
             creditor_address: "addr_test1creditor",
+            purpose: Some("PLATFORM_FEE"),
         }
     }
 

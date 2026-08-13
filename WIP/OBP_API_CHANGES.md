@@ -327,3 +327,35 @@ The order to land changes in OBP-API:
 
 Steps 1–6 give you the Promise creation path working. 7 onwards turn it into the
 netting platform.
+
+## 2026-08-13 — uncommitted OBP-API working-tree changes (Claude session, paused)
+
+Handoff note: another agent is active in OBP-API; these changes from this
+session are IN THE WORKING TREE, uncommitted. The fee-sweep endpoint has NOT
+been compiled or tested yet. Verified-green earlier: everything up to and
+including the return_of test fix (152/153 run; the one failure was the test's
+own role grant, since fixed, full rerun still pending).
+
+- `code/opencorridorfees/OpenCorridorFeeAccrual.scala` (NEW) — fee accrual
+  mapper (`open_corridor_fee_accrual`), originator-pays, returns exempt,
+  idempotent per TR id.
+- `code/opencorridorfees/OpenCorridorFees.scala` (NEW) — fee sweep: sums
+  unswept accruals, enqueues obp_settlement_instruction purpose=PLATFORM_FEE,
+  creditor = platform bank's incoming settlement account (props
+  `open_corridor.platform_bank_id`).
+- `OpenCorridorSettlement.scala` — accrual hook in executeSettle.
+- `Boot.scala` — OpenCorridorFeeAccrual in ToSchemify.
+- `OpenCorridorInterfaceC.scala` (obp-commons) — `purpose` on
+  OutBoundOpenCorridorSettlementInstruction; earlier: `beneficiary` +
+  `return_of` on OutBoundOpenCorridorCreditNotification.
+- `JSONFactory7.0.0.scala` — PostOpenCorridorFeeSettlementJsonV700; earlier:
+  `return_of` on TransactionRequestBodyOpenCorridorJsonV700.
+- `Http4s700.scala` — fee-settlements endpoint + ResourceDoc (route
+  registration beyond the ResourceDoc NOT yet verified); earlier: settle
+  same-bank guard split (Simon's own edit).
+- `OpenCorridorProcessor.scala`, `MessageOutboxRelay.scala`,
+  `RabbitMQConnector_vOct2024.scala`, `Http4s700RoutesTest.scala` — earlier
+  beneficiary/return/CBS-REJECTED work (tested except final suite rerun).
+
+Bank-Node side of the fee feature is complete and green (purpose field:
+wire → store → REST → App).

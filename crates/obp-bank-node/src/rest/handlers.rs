@@ -379,6 +379,7 @@ fn settlement_view(row: SettlementRow, finality_depth: u32) -> SettlementView {
         fx_minor_per_whole_asset: row.fx_minor_per_whole_asset,
         fx_source: row.fx_source,
         fx_as_of: row.fx_as_of,
+        purpose: row.purpose,
         depth: row.last_depth,
         finality_depth,
         error_reason: row.error_reason,

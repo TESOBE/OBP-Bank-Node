@@ -51,10 +51,37 @@ collected nor displayed.
    settled promise value plus a corridor-membership / hosted-node fee,
    invoiced monthly from those records. This is how existing schemes
    (SWIFT, card networks) bill members: fees do not ride inside payments.
-2. **On-ledger fee accrual (later, if wanted).** Extend the pair-settle so
-   each netting cycle also accrues the platform's bps into a fee position
-   per bank, settled as its own periodic leg. Auditable in the same
-   ledger; real build effort.
+2. **Fees collected in ADA via a dedicated periodic fee settlement
+   (chosen design, 2026-08-12, Simon).** Basis: bps × promise value,
+   accrued per bank in the ledger, due when the promise is covered by a
+   netting cycle. Collection is DECOUPLED from the corridor's settlement
+   rail: a periodic (monthly / threshold) fee-settlement instruction per
+   bank over the existing `obp_settlement_instruction` machinery,
+   `settlement_system: cardano-ada`, creditor = the platform's Cardano
+   address, KES→ADA at the settle-time rate (persisted + displayed like
+   any settlement). Rationale:
+   - Corridor settlement is meant to be rail-optional (stablecoin /
+     traditional rail = new `SettlementBackend` impl + routing scheme);
+     fees must not depend on the rail choice.
+   - Every bank node already runs a funded ADA wallet for PROMISE
+     commitments regardless of settlement rail — ADA fee collection adds
+     zero new requirements, and aligns platform and banks on the same
+     asset ("good enough for the platform ⇒ good enough for the banks").
+   - Piggybacking fees as an extra output on ADA settlement txs stays
+     available later as an optimization for ADA-settled corridors only.
+
+   Fee policy (2026-08-12, Simon):
+   - **Originator pays.** Fees are owed by the bank that ORIGINATES a
+     promise; a creditor-only bank owes nothing per-transaction, by
+     design. (Bank B doing work for bank A's customer is an argument for
+     an interchange-style A→B component someday — the ledger can compute
+     it — not for B paying the platform.)
+   - **Returns are fee-exempt.** Promises with `return_of` set are
+     involuntary corridor housekeeping originated by the beneficiary
+     bank; they accrue no platform fee. The accrual query must exclude
+     them.
+   - The flat corridor-membership fee (invoiced) is what creditor-heavy
+     banks contribute; both sides benefit from reachability.
 3. **Rejected: FX spread capture at settlement.** Would contradict the
    per-settlement rate transparency (rate + source + timestamp now
    persisted and displayed); worth more with banks than the spread.

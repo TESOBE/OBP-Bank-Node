@@ -509,6 +509,7 @@ impl Router {
                 currency: si.currency.as_deref().unwrap_or_default(),
                 net_amount_minor,
                 creditor_address: &creditor_address,
+                purpose: si.purpose.as_deref(),
             })
             .await;
         match claim {

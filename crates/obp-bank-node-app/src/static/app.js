@@ -204,7 +204,8 @@ async function renderSettlements() {
     }
     const body = rows.map((s) => `
       <tr>
-        <td class="id-full" title="${esc(s.idempotency_key)}">${esc(s.settlement_id || s.idempotency_key)}</td>
+        <td class="id-full" title="${esc(s.idempotency_key)}">${esc(s.settlement_id || s.idempotency_key)}${
+          s.purpose === "PLATFORM_FEE" ? `<div class="dim">platform fee</div>` : ""}</td>
         <td>${chip(s.status)}</td>
         <td class="num">${esc(fmtMinor(s.net_amount_minor))} ${esc(s.currency)}</td>
         <td class="num">${esc(fmtRail(s.asset_amount, s.asset))}</td>
@@ -213,7 +214,8 @@ async function renderSettlements() {
         <td>${txLink(s.tx_id)}</td>
         <td>${esc(s.error_reason || "")}</td>
         <td><button class="small corridor-btn" data-node="${esc(n.name)}"
-              data-key="${esc(s.settlement_id || s.idempotency_key)}">corridor</button></td>
+              data-key="${esc(s.settlement_id || s.idempotency_key)}"
+              title="OBP-API's authoritative settlement view — covered promises from both banks; also reconciles this node's linkage">corridor view</button></td>
       </tr>`).join("");
     return `<h3>${esc(n.name)}</h3>
       <table>

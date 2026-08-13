@@ -463,6 +463,7 @@ async fn settlement_row_is_readable_by_key_or_settlement_id() {
             currency: "KES",
             net_amount_minor: 100_000,
             creditor_address: "addr_test1creditor",
+            purpose: Some("PLATFORM_FEE"),
         })
         .await
         .unwrap();
@@ -497,6 +498,8 @@ async fn settlement_row_is_readable_by_key_or_settlement_id() {
     assert_eq!(v["fx_minor_per_whole_asset"], "2122");
     assert_eq!(v["fx_source"], "stub");
     assert!(v["fx_as_of"].as_str().is_some());
+    // Fee-sweep settlements are labeled for the UI.
+    assert_eq!(v["purpose"], "PLATFORM_FEE");
 
     // Same row via settlement_id, and present in the list.
     let (status, by_sid) =

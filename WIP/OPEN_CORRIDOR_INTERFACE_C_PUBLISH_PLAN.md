@@ -208,13 +208,20 @@ again: the node replies `CBS-REJECTED` and the row parks STICKY (one hop).
   "amount": "1500.00",
   "creditor_bank_id": "gh.29.uk",
   "creditor_address": "<Bank B's Cardano bech32 address>",
-  "idempotency_key": "settle-1"
+  "idempotency_key": "settle-1",
+  "purpose": null
 }
 ```
 
 `amount` is **major units** (the Bank Node parses to minor units itself, assuming
 2 decimals — a documented limitation to revisit for non-2-exponent currencies).
 The debtor node settles from its own wallet.
+
+`purpose` (added 2026-08-12, optional): absent/null = corridor net
+settlement; `"PLATFORM_FEE"` = the periodic platform fee sweep — creditor is
+the PLATFORM's settlement account, amount is the bank's accrued fees.
+Execution semantics are identical (same idempotency, FX, finality); the node
+stores and surfaces the label so fee rows are distinguishable in UIs.
 
 **Idempotency + finality semantics (Bank Node behaviour as of 2026-07-18):**
 

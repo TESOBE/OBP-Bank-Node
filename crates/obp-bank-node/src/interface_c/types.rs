@@ -210,6 +210,10 @@ pub struct SettlementInstruction {
     pub creditor_address: Option<String>,
     #[serde(default)]
     pub idempotency_key: Option<String>,
+    /// Absent = corridor net settlement; `PLATFORM_FEE` = the platform fee
+    /// sweep. Execution is identical; stored for display/audit.
+    #[serde(default)]
+    pub purpose: Option<String>,
 }
 
 /// `obp_status_update` — a Transaction Request's status changed.
