@@ -330,11 +330,13 @@ netting platform.
 
 ## 2026-08-13 — uncommitted OBP-API working-tree changes (Claude session, paused)
 
-Handoff note: another agent is active in OBP-API; these changes from this
-session are IN THE WORKING TREE, uncommitted. The fee-sweep endpoint has NOT
-been compiled or tested yet. Verified-green earlier: everything up to and
-including the return_of test fix (152/153 run; the one failure was the test's
-own role grant, since fixed, full rerun still pending).
+Handoff note: these changes are IN THE WORKING TREE, uncommitted.
+Verified 2026-08-13: obp-commons + obp-api compile; `Http4s700RoutesTest`
+passes 153/153 (needs `mvn install -pl obp-commons -DskipTests` first —
+`mvn test -pl obp-api` resolves obp-commons from ~/.m2, not the reactor).
+The suite exercises the fee path end-to-end over HTTP: accrual on settle
+(originator pays, returns exempt), sweep endpoint (route registers),
+PLATFORM_FEE instruction in the outbox, swept-row stamping, re-sweep no-op.
 
 - `code/opencorridorfees/OpenCorridorFeeAccrual.scala` (NEW) — fee accrual
   mapper (`open_corridor_fee_accrual`), originator-pays, returns exempt,
@@ -351,8 +353,9 @@ own role grant, since fixed, full rerun still pending).
 - `JSONFactory7.0.0.scala` — PostOpenCorridorFeeSettlementJsonV700; earlier:
   `return_of` on TransactionRequestBodyOpenCorridorJsonV700.
 - `Http4s700.scala` — fee-settlements endpoint + ResourceDoc (route
-  registration beyond the ResourceDoc NOT yet verified); earlier: settle
-  same-bank guard split (Simon's own edit).
+  registration verified: `allRoutes` builds the chain from each ResourceDoc's
+  `http4sPartialFunction`, and the test hits the endpoint over HTTP); earlier:
+  settle same-bank guard split (Simon's own edit).
 - `OpenCorridorProcessor.scala`, `MessageOutboxRelay.scala`,
   `RabbitMQConnector_vOct2024.scala`, `Http4s700RoutesTest.scala` — earlier
   beneficiary/return/CBS-REJECTED work (tested except final suite rerun).

@@ -64,9 +64,9 @@ async function renderHealth() {
     const ifc = up && r.body.interface_c && !["connected", "disabled"].includes(r.body.interface_c);
     if (ifc) {
       return `<span class="node-chip warn" title="${esc(r.body.interface_c_detail || r.body.interface_c)}">
-        ${esc(n.name)}${chain} · AMQP ${esc(r.body.interface_c)}</span>`;
+        ${esc(n.name)} · up${chain} · AMQP ${esc(r.body.interface_c)}</span>`;
     }
-    return `<span class="node-chip ${up ? "up" : "down"}">${esc(n.name)}${chain}</span>`;
+    return `<span class="node-chip ${up ? "up" : "down"}">${esc(n.name)} · ${up ? "up" : "down"}${chain}</span>`;
   }));
   $("#node-health").innerHTML = parts.join("");
 }
