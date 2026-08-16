@@ -15,7 +15,8 @@
 
   <main>
     <section id="send">
-      <h2><span class="step">1</span> Send</h2>
+      <details id="send-details">
+      <summary><h2><span class="step">1</span> Send</h2></summary>
       <p class="hint">POST an <code>OPEN_CORRIDOR</code> A1.1 request to a node's south-side API.</p>
       <form id="send-form">
         <div class="grid">
@@ -62,34 +63,42 @@
         <button type="submit">Send payment</button>
         <pre id="send-result" class="result" hidden></pre>
       </form>
+      </details>
     </section>
 
     <section id="promise">
-      <h2><span class="step">2</span> Promise</h2>
+      <details id="promise-details" open>
+      <summary><h2><span class="step">2</span> Promise</h2></summary>
       <p class="hint">Each node's outbox: <code>INITIATED → SUBMITTED → PROMISE_WRITTEN → REPORTED</code>.
         The on-chain promise is a salted SHA-256 commitment — hash only; cleartext and salt stay with the banks.</p>
       <div id="tr-tables"></div>
+      </details>
     </section>
 
     <section id="credit">
-      <h2><span class="step">3</span> Credit</h2>
+      <details id="credit-details" open>
+      <summary><h2><span class="step">3</span> Credit</h2></summary>
       <p class="hint">Beneficiary-side evidence, delivered at promise time: the commit–reveal triplet, whether
         <code>SHA-256(salt ‖ preimage)</code> matched the on-chain commitment, the CBS delivery result,
         and the settlement stamp once an <code>obp_settlement_advice</code> covers it.</p>
       <div id="evidence-tables"></div>
+      </details>
     </section>
 
     <section id="position">
-      <h2><span class="step">4</span> Position</h2>
+      <details id="position-details" open>
+      <summary><h2><span class="step">4</span> Position</h2></summary>
       <p class="hint">This bank's unsettled outbound exposure per corridor
         (<code>SUBMITTED</code>/<code>PROMISE_WRITTEN</code>/<code>REPORTED</code>, not yet covered by a settlement).
         A node only knows its own outbound legs — the authoritative bilateral net is computed by
         OBP-API at settle time (see the corridor view in step 5).</p>
       <div id="position-view"></div>
+      </details>
     </section>
 
     <section id="settle">
-      <h2><span class="step">5</span> Settle</h2>
+      <details id="settle-details" open>
+      <summary><h2><span class="step">5</span> Settle</h2></summary>
       <p class="hint">Ask a node to trigger bilateral settlement: it calls OBP-API's settlement resource over
         Interface B; the net moves later on the rail (<code>SETTLING → SUBMITTED → FINAL</code>).</p>
       <form id="settle-form">
@@ -109,6 +118,7 @@
       </form>
       <div id="settlement-tables"></div>
       <pre id="corridor-view" class="result" hidden></pre>
+      </details>
     </section>
 
   </main>

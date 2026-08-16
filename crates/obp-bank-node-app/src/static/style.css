@@ -44,6 +44,10 @@ section {
   margin-top: 1.25rem;
 }
 
+details > summary { cursor: pointer; }
+details > summary h2 { display: inline; }
+details[open] > summary { margin-bottom: .25rem; }
+
 .step {
   display: inline-block;
   width: 1.5rem; height: 1.5rem;

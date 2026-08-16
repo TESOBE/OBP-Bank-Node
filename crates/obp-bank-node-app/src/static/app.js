@@ -360,7 +360,18 @@ async function refresh() {
   await Promise.all([renderHealth(), renderSettlements(), renderEvidence()]);
 }
 
+// Restore each section's collapsed/open state from localStorage and persist toggles.
+function initSectionFolds() {
+  for (const d of document.querySelectorAll("main section > details")) {
+    const key = `fold:${d.id}`;
+    const saved = localStorage.getItem(key);
+    if (saved !== null) d.open = saved === "open";
+    d.addEventListener("toggle", () => localStorage.setItem(key, d.open ? "open" : "closed"));
+  }
+}
+
 async function boot() {
+  initSectionFolds();
   const r = await getJson("/api/nodes");
   NODES = r.ok && Array.isArray(r.body) ? r.body : [];
   fillNodeSelects();
