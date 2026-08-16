@@ -9,7 +9,7 @@
 <body>
   <header>
     <h1>OBP Bank Node — Open Corridor</h1>
-    <nav class="page-nav"><a href="/accounts">accounts</a> · <a href="/setup">setup</a></nav>
+    <nav class="page-nav"><a href="/promises">promises</a> · <a href="/credits">credits</a> · <a href="/settlements">settlements</a> · <a href="/accounts">accounts</a> · <a href="/setup">setup</a></nav>
     <div id="node-health" class="node-health"></div>
   </header>
 
@@ -71,7 +71,7 @@
       <summary><h2><span class="step">2</span> Promise</h2></summary>
       <p class="hint">Each node's outbox: <code>INITIATED → SUBMITTED → PROMISE_WRITTEN → REPORTED</code>.
         The on-chain promise is a salted SHA-256 commitment — hash only; cleartext and salt stay with the banks.</p>
-      <div id="tr-tables"></div>
+      <div id="tr-tables" data-limit="5"></div>
       </details>
     </section>
 
@@ -81,7 +81,7 @@
       <p class="hint">Beneficiary-side evidence, delivered at promise time: the commit–reveal triplet, whether
         <code>SHA-256(salt ‖ preimage)</code> matched the on-chain commitment, the CBS delivery result,
         and the settlement stamp once an <code>obp_settlement_advice</code> covers it.</p>
-      <div id="evidence-tables"></div>
+      <div id="evidence-tables" data-limit="5"></div>
       </details>
     </section>
 
@@ -116,7 +116,7 @@
         <button type="submit">Trigger settlement</button>
         <pre id="settle-result" class="result" hidden></pre>
       </form>
-      <div id="settlement-tables"></div>
+      <div id="settlement-tables" data-limit="5"></div>
       <pre id="corridor-view" class="result" hidden></pre>
       </details>
     </section>

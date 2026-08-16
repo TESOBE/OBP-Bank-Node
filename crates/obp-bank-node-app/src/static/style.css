@@ -44,6 +44,8 @@ section {
   margin-top: 1.25rem;
 }
 
+.more { color: var(--dim); font-size: .8rem; margin: .35rem 0 0; }
+
 details > summary { cursor: pointer; }
 details > summary h2 { display: inline; }
 details[open] > summary { margin-bottom: .25rem; }

@@ -165,10 +165,12 @@ pub struct CreditNotification {
     pub promise_preimage: Option<String>,
 }
 
-/// `obp_settlement_advice` — "the promises you already paid out against are now
-/// covered". Purely reconciliatory: stamps the listed credits settled; no money
-/// moves on this message. Credit notifications themselves arrive at promise
-/// report-back time.
+/// `obp_settlement_advice` — sent to BOTH party banks: "these promises are now
+/// covered". `covered_transaction_request_ids` is the pair's FULL covered list
+/// (both directions); this node stamps whatever matches its own records —
+/// credits it paid out (evidence) and its own outbound promises (outbox).
+/// Purely reconciliatory: no money moves on this message. Credit notifications
+/// themselves arrive at promise report-back time.
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct SettlementAdvice {

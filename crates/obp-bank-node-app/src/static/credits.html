@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OBP Bank Node — Credits</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>OBP Bank Node — Credits</h1>
+    <nav class="page-nav"><a href="/">overview</a> · <a href="/promises">promises</a> · <a href="/settlements">settlements</a> · <a href="/accounts">accounts</a> · <a href="/setup">setup</a></nav>
+    <div id="node-health" class="node-health"></div>
+  </header>
+
+  <main>
+    <section id="credit">
+      <h2>Credits</h2>
+      <p class="hint">Beneficiary-side evidence, delivered at promise time: the commit–reveal triplet, whether
+        <code>SHA-256(salt ‖ preimage)</code> matched the on-chain commitment, the CBS delivery result,
+        and the settlement stamp once an <code>obp_settlement_advice</code> covers it.</p>
+      <div id="evidence-tables"></div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

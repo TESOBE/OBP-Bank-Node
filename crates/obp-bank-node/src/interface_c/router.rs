@@ -366,10 +366,14 @@ impl Router {
         Ok(return_id)
     }
 
-    /// `obp_settlement_advice`: the promises this (beneficiary) node already
-    /// paid out against are covered by a netted settle — stamp the credits
-    /// settled. Idempotent: only unstamped rows are touched, so an at-least-once
-    /// redelivery preserves the original settled_at.
+    /// `obp_settlement_advice`: a netted settle covered promises of this node's
+    /// corridor. The covered list is the pair's FULL list (both directions), so
+    /// stamp both sides of this node's records: the credits it already paid out
+    /// (evidence store) and its own outbound promises (outbox) — ids belonging
+    /// to the counterparty's records match nothing and are ignored. This is how
+    /// a node that did not trigger the settle learns of the coverage. Idempotent:
+    /// only unstamped rows are touched, so an at-least-once redelivery preserves
+    /// the original settled_at.
     async fn settlement_advice(&self, correlation_id: &str, body: &[u8]) -> ReplyEnvelope {
         let advice: SettlementAdvice = match serde_json::from_slice(body) {
             Ok(v) => v,
@@ -382,18 +386,23 @@ impl Router {
                 );
             }
         };
-        match self
+        let credits = self
             .evidence
             .mark_settled(&advice.covered_transaction_request_ids, &advice.settlement_id)
-            .await
-        {
-            Ok(stamped) => {
+            .await;
+        let promises = self
+            .outbox
+            .mark_settled(&advice.covered_transaction_request_ids, &advice.settlement_id)
+            .await;
+        match (credits, promises) {
+            (Ok(credits_stamped), Ok(promises_stamped)) => {
                 info!(
                     bank_id = %self.bank_id,
                     settlement_id = %advice.settlement_id,
                     covered = advice.covered_transaction_request_ids.len(),
-                    stamped,
-                    "settlement_advice: credits stamped settled"
+                    credits_stamped,
+                    promises_stamped,
+                    "settlement_advice: credits and promises stamped settled"
                 );
                 ReplyEnvelope::ok(
                     correlation_id,
@@ -403,12 +412,17 @@ impl Router {
                     }),
                 )
             }
-            Err(e) => {
-                warn!(error = %e, "settlement_advice: failed to stamp credits");
+            (credits, promises) => {
+                if let Err(e) = &credits {
+                    warn!(error = %e, "settlement_advice: failed to stamp credits");
+                }
+                if let Err(e) = &promises {
+                    warn!(error = %e, "settlement_advice: failed to stamp promises");
+                }
                 ReplyEnvelope::error(
                     correlation_id,
                     error_code::PLATFORM,
-                    "failed to stamp settled credits",
+                    "failed to stamp settled rows",
                 )
             }
         }
@@ -864,7 +878,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn settlement_advice_stamps_received_credits_settled() {
+    async fn settlement_advice_stamps_credits_and_own_promises_settled() {
         let r = router_with_cbs("http://127.0.0.1:1/credit").await;
         for id in ["tr-s1", "tr-s2"] {
             r.evidence
@@ -889,13 +903,32 @@ mod tests {
                 .unwrap();
         }
 
+        // Two of this node's own outbound promises: one covered by the settle
+        // (matched via its OBP TR id), one outside it.
+        for (local_id, obp_id) in [("local-1", "tr-mine"), ("local-2", "tr-other")] {
+            r.outbox
+                .insert(crate::outbox::NewEntry {
+                    transaction_request_id: local_id,
+                    bank_id: "ke.01.kcs",
+                    account_id: "settlement-ke",
+                    request_payload: "{}",
+                    commitment_salt: "salt",
+                })
+                .await
+                .unwrap();
+            r.outbox.mark_submitted(local_id, Some(obp_id)).await.unwrap();
+        }
+
+        // The covered list is the pair's FULL list: this node's received
+        // credits, its own outbound promise, and a counterparty id that
+        // matches nothing here.
         let body = serde_json::json!({
             "settlement_id": "settle-77",
             "currency": "KES",
             "net_amount": "0.00",
             "debtor_bank_id": "rt.bank.a",
             "creditor_bank_id": "rt.bank.b",
-            "covered_transaction_request_ids": ["tr-s1", "tr-s2"],
+            "covered_transaction_request_ids": ["tr-s1", "tr-s2", "tr-mine", "tr-theirs"],
             "idempotency_key": "settle-77",
         })
         .to_string();
@@ -909,6 +942,13 @@ mod tests {
         let rec = r.evidence.get("tr-s1").await.unwrap().unwrap();
         assert_eq!(rec.settlement_id.as_deref(), Some("settle-77"));
         assert!(rec.settled_at.is_some());
+
+        // The node's own covered promise is stamped; the uncovered one is not.
+        let mine = r.outbox.get("local-1").await.unwrap().unwrap();
+        assert_eq!(mine.settlement_id.as_deref(), Some("settle-77"));
+        assert!(mine.settled_at.is_some());
+        let other = r.outbox.get("local-2").await.unwrap().unwrap();
+        assert!(other.settlement_id.is_none());
 
         // Redelivery stays ok and does not re-stamp.
         let reply = r

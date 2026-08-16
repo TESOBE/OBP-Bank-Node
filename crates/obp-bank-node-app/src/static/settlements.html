@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OBP Bank Node — Settlements</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>OBP Bank Node — Settlements</h1>
+    <nav class="page-nav"><a href="/">overview</a> · <a href="/promises">promises</a> · <a href="/credits">credits</a> · <a href="/accounts">accounts</a> · <a href="/setup">setup</a></nav>
+    <div id="node-health" class="node-health"></div>
+  </header>
+
+  <main>
+    <section id="settle">
+      <h2>Settlements</h2>
+      <p class="hint">Each node's settlement record: ledger net via OBP-API, value on the rail
+        (<code>SETTLING → SUBMITTED → FINAL</code>).</p>
+      <div id="settlement-tables"></div>
+      <pre id="corridor-view" class="result" hidden></pre>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

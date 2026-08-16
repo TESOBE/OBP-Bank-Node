@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OBP Bank Node — Promises</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>OBP Bank Node — Promises</h1>
+    <nav class="page-nav"><a href="/">overview</a> · <a href="/credits">credits</a> · <a href="/settlements">settlements</a> · <a href="/accounts">accounts</a> · <a href="/setup">setup</a></nav>
+    <div id="node-health" class="node-health"></div>
+  </header>
+
+  <main>
+    <section id="promise">
+      <h2>Promises</h2>
+      <p class="hint">Each node's outbox: <code>INITIATED → SUBMITTED → PROMISE_WRITTEN → REPORTED</code>.
+        The on-chain promise is a salted SHA-256 commitment — hash only; cleartext and salt stay with the banks.</p>
+      <div id="tr-tables"></div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

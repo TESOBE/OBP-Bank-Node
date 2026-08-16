@@ -47,6 +47,19 @@ function esc(s) {
   })[c]);
 }
 
+// A container's `data-limit` caps how many rows its tables show (the index
+// shows the most recent few; the dedicated pages omit the attribute and show
+// everything). Rows arrive from the node APIs newest first.
+function rowLimit(el) {
+  const n = Number(el.dataset.limit);
+  return Number.isFinite(n) && n > 0 ? n : Infinity;
+}
+
+function moreLink(total, shown, href, what) {
+  if (total <= shown) return "";
+  return `<p class="more">showing ${shown} of ${total} · <a href="${href}">all ${what}</a></p>`;
+}
+
 // ---- header: node health -------------------------------------------------
 
 // Per-node identity from /health (bank_id, account_id) — drives the
@@ -100,12 +113,15 @@ async function fetchTrs() {
 }
 
 function renderTrTables() {
+  const el = $("#tr-tables");
+  if (!el) return;
   const html = NODES.map((n) => {
     const rows = TRS[n.name] || [];
     if (rows.length === 0) {
       return `<h3>${esc(n.name)}</h3><p class="empty">no outbound transaction requests</p>`;
     }
-    const body = rows.map((tr) => `
+    const shown = rows.slice(0, rowLimit(el));
+    const body = shown.map((tr) => `
       <tr>
         <td class="id-full">${esc(tr.transaction_request_id)}</td>
         <td>${chip(tr.status)}</td>
@@ -120,9 +136,10 @@ function renderTrTables() {
         <thead><tr><th>transaction request id</th><th>status</th><th>value</th><th>to bank</th>
           <th>promise tx</th><th>settlement</th><th>settled at</th></tr></thead>
         <tbody>${body}</tbody>
-      </table>`;
+      </table>
+      ${moreLink(rows.length, shown.length, "/promises", "promises")}`;
   }).join("");
-  $("#tr-tables").innerHTML = html;
+  el.innerHTML = html;
 }
 
 // ---- step 3: position (this bank's outbound exposure) --------------------
@@ -149,6 +166,8 @@ function outboundExposure(rows) {
 }
 
 function renderPosition() {
+  const el = $("#position-view");
+  if (!el) return;
   const html = NODES.map((n) => {
     const corridors = outboundExposure(TRS[n.name] || []);
     if (corridors.length === 0) {
@@ -167,7 +186,7 @@ function renderPosition() {
         <tbody>${rows}</tbody>
       </table>`;
   }).join("");
-  $("#position-view").innerHTML = html;
+  el.innerHTML = html;
 }
 
 // ---- step 4: settlements -------------------------------------------------
@@ -196,13 +215,16 @@ function fmtRail(amount, asset) {
 }
 
 async function renderSettlements() {
+  const el = $("#settlement-tables");
+  if (!el) return;
   const parts = await Promise.all(NODES.map(async (n) => {
     const r = await getJson(nodeUrl(n.name, "settlements"));
     const rows = r.ok && Array.isArray(r.body) ? r.body : [];
     if (rows.length === 0) {
       return `<h3>${esc(n.name)}</h3><p class="empty">no settlements</p>`;
     }
-    const body = rows.map((s) => `
+    const shown = rows.slice(0, rowLimit(el));
+    const body = shown.map((s) => `
       <tr>
         <td class="id-full" title="${esc(s.idempotency_key)}">${esc(s.settlement_id || s.idempotency_key)}${
           s.purpose === "PLATFORM_FEE" ? `<div class="dim">platform fee</div>` : ""}</td>
@@ -222,9 +244,10 @@ async function renderSettlements() {
         <thead><tr><th>settlement id</th><th>status</th><th>net</th><th>rail amount</th>
           <th>rate</th><th>depth</th><th>tx</th><th>error</th><th></th></tr></thead>
         <tbody>${body}</tbody>
-      </table>`;
+      </table>
+      ${moreLink(rows.length, shown.length, "/settlements", "settlements")}`;
   }));
-  $("#settlement-tables").innerHTML = parts.join("");
+  el.innerHTML = parts.join("");
 }
 
 async function showCorridor(node, key) {
@@ -238,13 +261,16 @@ async function showCorridor(node, key) {
 // ---- step 5: credit evidence ---------------------------------------------
 
 async function renderEvidence() {
+  const el = $("#evidence-tables");
+  if (!el) return;
   const parts = await Promise.all(NODES.map(async (n) => {
     const r = await getJson(nodeUrl(n.name, "evidence"));
     const rows = r.ok && Array.isArray(r.body) ? r.body : [];
     if (rows.length === 0) {
       return `<h3>${esc(n.name)}</h3><p class="empty">no received credits</p>`;
     }
-    const body = rows.map((ev) => `
+    const shown = rows.slice(0, rowLimit(el));
+    const body = shown.map((ev) => `
       <tr>
         <td class="id-full">${esc(ev.transaction_request_id)}${
           ev.return_of_transaction_request_id
@@ -273,9 +299,10 @@ async function renderEvidence() {
         <thead><tr><th>transaction request id</th><th>commitment check</th><th>amount</th>
           <th>originator</th><th>CBS delivery</th><th>commitment</th><th>received</th><th>settlement</th></tr></thead>
         <tbody>${body}</tbody>
-      </table>`;
+      </table>
+      ${moreLink(rows.length, shown.length, "/credits", "credits")}`;
   }));
-  $("#evidence-tables").innerHTML = parts.join("");
+  el.innerHTML = parts.join("");
 }
 
 // ---- forms ---------------------------------------------------------------
@@ -336,27 +363,33 @@ async function onSettle(e) {
 
 function fillNodeSelects() {
   for (const sel of [$("#send-node"), $("#settle-node")]) {
-    sel.innerHTML = NODES.map((n) => `<option>${esc(n.name)}</option>`).join("");
+    if (sel) sel.innerHTML = NODES.map((n) => `<option>${esc(n.name)}</option>`).join("");
   }
 }
 
 // Apply the instance's configured prefill (/api/ui-defaults) to any Send or
 // Settle input whose name matches a key. Config wins over the HTML defaults.
 async function applyUiDefaults() {
+  const forms = [$("#send-form"), $("#settle-form")].filter(Boolean);
+  if (forms.length === 0) return;
   const r = await getJson("/api/ui-defaults");
   if (!r.ok || typeof r.body !== "object" || r.body === null) return;
   for (const [name, value] of Object.entries(r.body)) {
-    for (const form of [$("#send-form"), $("#settle-form")]) {
+    for (const form of forms) {
       const field = form.elements.namedItem(name);
       if (field && field.tagName === "INPUT") field.value = value;
     }
   }
 }
 
+// One app.js serves every page: each renderer no-ops when its container is
+// absent, so refresh() only fetches what the current page shows.
 async function refresh() {
-  await fetchTrs();
-  renderTrTables();
-  renderPosition();
+  if ($("#tr-tables") || $("#position-view")) {
+    await fetchTrs();
+    renderTrTables();
+    renderPosition();
+  }
   await Promise.all([renderHealth(), renderSettlements(), renderEvidence()]);
 }
 
@@ -376,10 +409,10 @@ async function boot() {
   NODES = r.ok && Array.isArray(r.body) ? r.body : [];
   fillNodeSelects();
   await applyUiDefaults();
-  $("#send-form").addEventListener("submit", onSend);
-  $("#settle-form").addEventListener("submit", onSettle);
-  $("#send-node").addEventListener("change", (e) => swapBeneficiaryDefaults(e.target.value));
-  $("#settle-node").addEventListener("change", (e) => swapBeneficiaryDefaults(e.target.value));
+  $("#send-form")?.addEventListener("submit", onSend);
+  $("#settle-form")?.addEventListener("submit", onSettle);
+  $("#send-node")?.addEventListener("change", (e) => swapBeneficiaryDefaults(e.target.value));
+  $("#settle-node")?.addEventListener("change", (e) => swapBeneficiaryDefaults(e.target.value));
   document.addEventListener("click", (e) => {
     const btn = e.target.closest(".corridor-btn");
     if (btn) showCorridor(btn.dataset.node, btn.dataset.key);

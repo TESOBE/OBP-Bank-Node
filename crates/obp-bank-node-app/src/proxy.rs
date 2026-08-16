@@ -21,6 +21,9 @@ use tracing::warn;
 use crate::NodeConfig;
 
 const INDEX_HTML: &str = include_str!("static/index.html");
+const PROMISES_HTML: &str = include_str!("static/promises.html");
+const CREDITS_HTML: &str = include_str!("static/credits.html");
+const SETTLEMENTS_HTML: &str = include_str!("static/settlements.html");
 const APP_JS: &str = include_str!("static/app.js");
 const STYLE_CSS: &str = include_str!("static/style.css");
 
@@ -64,6 +67,9 @@ impl AppState {
 pub fn build_router(state: AppState, setup: Option<crate::setup::SetupState>) -> Router {
     Router::new()
         .route("/", get(index))
+        .route("/promises", get(|| async { Html(PROMISES_HTML) }))
+        .route("/credits", get(|| async { Html(CREDITS_HTML) }))
+        .route("/settlements", get(|| async { Html(SETTLEMENTS_HTML) }))
         .route("/app.js", get(app_js))
         .route("/style.css", get(style_css))
         .route("/api/nodes", get(list_nodes))
