@@ -92,12 +92,23 @@ struct SettlementConfig {
     fx_base_url: String,
     #[serde(default = "default_fx_timeout_secs")]
     fx_timeout_secs: u64,
-    /// Cross-rate crypto leg (`coingecko` / `api3`).
+    /// Cross-rate crypto leg (`coingecko` / `api3` / `pyth`).
     #[serde(default)]
     fx_crypto_leg: FxCryptoLeg,
-    /// Cross-rate fiat leg base URL (USD table with the corridor fiats).
+    /// Cross-rate fiat leg (`er-api` / `pyth`).
+    #[serde(default)]
+    fx_fiat_leg: FxFiatLeg,
+    /// Cross-rate er-api fiat leg base URL (USD table with the corridor fiats).
     #[serde(default = "default_fx_fiat_base_url")]
     fx_fiat_base_url: String,
+    /// Pyth Hermes base URL for the `pyth` legs.
+    #[serde(default = "default_fx_hermes_base_url")]
+    fx_hermes_base_url: String,
+    /// Refuse a Pyth price published longer ago than this, seconds. Pyth FX
+    /// feeds pause outside forex market hours, so the default spans a
+    /// weekend.
+    #[serde(default = "default_fx_pyth_max_stale_secs")]
+    fx_pyth_max_stale_secs: u64,
     /// EVM JSON-RPC endpoint for the API3 leg.
     #[serde(default)]
     fx_api3_rpc_url: String,
@@ -136,6 +147,12 @@ fn default_fx_base_url() -> String {
 fn default_fx_fiat_base_url() -> String {
     "https://open.er-api.com".to_string()
 }
+fn default_fx_hermes_base_url() -> String {
+    "https://hermes.pyth.network".to_string()
+}
+fn default_fx_pyth_max_stale_secs() -> u64 {
+    259_200 // 72h: Friday close → Monday open
+}
 fn default_fx_timeout_secs() -> u64 {
     10
 }
@@ -162,6 +179,21 @@ enum FxCryptoLeg {
     /// API3 dAPI via `Api3ReaderProxyV1.read()` — needs `fx_api3_rpc_url` and
     /// `fx_api3_proxy_address` (from the API3 Market, per feed and chain).
     Api3,
+    /// Pyth `Crypto.ADA/USD` via the Hermes endpoint (`fx_hermes_base_url`).
+    Pyth,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, Default, PartialEq, Eq)]
+enum FxFiatLeg {
+    /// open.er-api.com's daily USD table (`fx_fiat_base_url`).
+    #[default]
+    #[serde(rename = "er-api")]
+    ErApi,
+    /// Pyth `FX.USD/*` via Hermes. Only for fiats whose feed actually
+    /// publishes — as of 2026-08 that is ZAR alone of the corridor set; the
+    /// others are listed `coming_soon` and are refused at quote time.
+    #[serde(rename = "pyth")]
+    Pyth,
 }
 
 impl Default for SettlementConfig {
@@ -171,7 +203,10 @@ impl Default for SettlementConfig {
             fx_base_url: default_fx_base_url(),
             fx_timeout_secs: default_fx_timeout_secs(),
             fx_crypto_leg: FxCryptoLeg::default(),
+            fx_fiat_leg: FxFiatLeg::default(),
             fx_fiat_base_url: default_fx_fiat_base_url(),
+            fx_hermes_base_url: default_fx_hermes_base_url(),
+            fx_pyth_max_stale_secs: default_fx_pyth_max_stale_secs(),
             fx_api3_rpc_url: String::new(),
             fx_api3_proxy_address: String::new(),
             ada_rate_minor_per_whole_ada: 3542,
@@ -651,17 +686,29 @@ async fn build_backend(config: &Config) -> anyhow::Result<Backends> {
                                 proxy_address: config.settlement.fx_api3_proxy_address.clone(),
                             }
                         }
+                        FxCryptoLeg::Pyth => crate::fx::CryptoUsdLeg::Pyth {
+                            hermes_url: config.settlement.fx_hermes_base_url.clone(),
+                        },
+                    };
+                    let fiat = match config.settlement.fx_fiat_leg {
+                        FxFiatLeg::ErApi => crate::fx::FiatUsdLeg::ErApi {
+                            base_url: config.settlement.fx_fiat_base_url.clone(),
+                        },
+                        FxFiatLeg::Pyth => crate::fx::FiatUsdLeg::Pyth {
+                            hermes_url: config.settlement.fx_hermes_base_url.clone(),
+                        },
                     };
                     info!(
                         crypto_leg = ?config.settlement.fx_crypto_leg,
-                        fiat = %config.settlement.fx_fiat_base_url,
+                        fiat_leg = ?config.settlement.fx_fiat_leg,
                         "FX source: cross rate (asset/USD × USD/fiat)"
                     );
                     Arc::new(
                         crate::fx::CrossRateFxSource::new(
                             crypto,
-                            config.settlement.fx_fiat_base_url.clone(),
+                            fiat,
                             config.settlement.fx_timeout_secs,
+                            config.settlement.fx_pyth_max_stale_secs,
                         )
                         .context("failed to build cross-rate FX source")?,
                     )

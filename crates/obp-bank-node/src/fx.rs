@@ -7,11 +7,18 @@
 //!   `vs_currencies`; KES was dropped from that list (found 2026-07-31), so
 //!   direct quoting broke for the demo corridor.
 //! - [`CrossRateFxSource`] — `asset/USD × USD/fiat`. The crypto leg is
-//!   CoinGecko or an **API3 dAPI** (`Api3ReaderProxyV1.read()` via a raw
+//!   CoinGecko, an **API3 dAPI** (`Api3ReaderProxyV1.read()` via a raw
 //!   `eth_call` — API3 feeds live on EVM chains, there is no REST API; the
-//!   proxy address per feed comes from the API3 Market). The fiat leg is
-//!   open.er-api.com (free, keyless, carries KES). API3 has no KES forex
-//!   feed, so the fiat cross-leg stays necessary under either crypto leg.
+//!   proxy address per feed comes from the API3 Market), or **Pyth**
+//!   (`Crypto.ADA/USD` from the public Hermes endpoint — the same feed the
+//!   Pyth Lazer Cardano integration serves on-chain). The fiat leg is
+//!   open.er-api.com (free, keyless, carries KES) or Pyth's `FX.USD/*`
+//!   feeds. Pyth lists the corridor fiats (NGN, GHS, KES, TZS, …) but as
+//!   of 2026-08 only USD/ZAR of those publishes — the rest are
+//!   `coming_soon` — so er-api stays the fiat default; a Pyth fiat leg
+//!   rejects a feed that has never published. Pyth FX feeds also pause
+//!   outside forex market hours, hence the staleness allowance sized to
+//!   span a weekend.
 //!
 //! **Error mapping is deliberate:** every failure here returns
 //! [`BlockchainError::Rejected`], because a quote failure happens *before any
@@ -140,23 +147,67 @@ pub enum CryptoUsdLeg {
     /// An API3 dAPI (e.g. ADA/USD) read through its `Api3ReaderProxyV1` on an
     /// EVM chain. `proxy_address` comes from the API3 Market for the feed.
     Api3 { rpc_url: String, proxy_address: String },
+    /// Pyth `Crypto.ADA/USD` from a Hermes endpoint (normally
+    /// `https://hermes.pyth.network`).
+    Pyth { hermes_url: String },
 }
 
-/// `asset/fiat = asset/USD × USD/fiat`. The fiat leg is open.er-api.com's
-/// daily USD table, which carries currencies CoinGecko's `vs_currencies`
-/// dropped (KES) and everything API3 has no forex feed for.
+/// Where the `USD/fiat` half of a cross rate comes from.
+pub enum FiatUsdLeg {
+    /// open.er-api.com's daily USD table.
+    ErApi { base_url: String },
+    /// Pyth `FX.USD/<fiat>` from a Hermes endpoint. Only usable once Pyth
+    /// actually publishes the pair (see module docs).
+    Pyth { hermes_url: String },
+}
+
+/// Pyth Hermes feed id (hex) of `Crypto.ADA/USD`.
+const PYTH_ADA_USD: &str = "2a01deaec9e51a579277b34b122399984d0bbf57e2458a7e42fecd2829867a0d";
+
+/// Pyth Hermes feed id of `FX.USD/<currency>`, for the fiats Pyth lists.
+/// Listed ≠ publishing: a `coming_soon` feed answers with a never-published
+/// price, which [`CrossRateFxSource::pyth_price`] rejects.
+fn pyth_usd_fiat_id(currency: &str) -> Option<&'static str> {
+    Some(match currency.to_ascii_uppercase().as_str() {
+        "AOA" => "d4bd2c4174efaef9f9d54a62ac2753ce24a4e9144149417e09bab4ee764a17c3",
+        "BWP" => "ba7898c34e6b7ffc472bad521a67efd11ca9a046562fe63c4059c7de2bcbd590",
+        "EGP" => "b6b6addd0750cb48e816234b7630f358e8aa290190fb4eb5166a38c4542952f8",
+        "GHS" => "cdbc5039dad626cc503512321a527f18a1d8d2a168dc248ee4f487be93139272",
+        "KES" => "33cc660971b0e63062d2f67b7183ba17f67b246d4a7170788649979258f7d007",
+        "MAD" => "d23d9dd73b502074685a8c0b6692723805a9a847d760b2534ab667ca80eb6798",
+        "MUR" => "6887223d3d6c8c737cbe66ffe2d38006cb76eea0d7c7db418b6c83f75cece7d2",
+        "MWK" => "e7c1c00d4fda3005c14eb31b781c9d9e4581ace53a2577ee23066988b8d8b46b",
+        "MZN" => "c27ec5e190f7daa21bd1ca76aad9248f2b3a605ac27af09024c4f2525b2693d2",
+        "NGN" => "2f1601cdfed62c03d39fce4720f5d53e8517af244915fbd24ce8175bb25ab318",
+        "RWF" => "2f425f5904e2a110eed99894f228e047a483baa6bd7bfb9f4501629b60a98e83",
+        "TND" => "7e4f6ce047acde1f5c03951f49bf8a57c6b0b1e1e2e07252a2b570e258eff3d6",
+        "TZS" => "abfb0c861c25124c54a818ec7bb9b02243bff01e9014ecf3e50808f5736f8f8e",
+        "UGX" => "1f946ee84ce82dbbaa0fec69cdd4cb9e911076788c77c6f36d42a3491a284ce1",
+        "XOF" => "78ce64c90dff33ef2f48e999eb4638ec44da416d5dd99dc6ddd7aeaffec64f0c",
+        "ZAR" => "389d889017db82bf42141f23b61b8de938a4e2d156e36312175bebf797f493f1",
+        "ZMW" => "e6ee7f0254857de0602c124de8cc8c91e3db17928125454e691c03763239dede",
+        _ => return None,
+    })
+}
+
+/// `asset/fiat = asset/USD × USD/fiat`, each leg from its configured source.
 pub struct CrossRateFxSource {
     http: reqwest::Client,
     crypto: CryptoUsdLeg,
-    /// Normally `https://open.er-api.com`; overridable for tests.
-    fiat_base_url: String,
+    fiat: FiatUsdLeg,
+    /// Refuse a Pyth price published longer ago than this. Pyth FX feeds
+    /// pause outside forex market hours, so a workable allowance spans a
+    /// weekend; crypto feeds publish continuously and sit far under any
+    /// sane value.
+    max_stale_secs: u64,
 }
 
 impl CrossRateFxSource {
     pub fn new(
         crypto: CryptoUsdLeg,
-        fiat_base_url: impl Into<String>,
+        fiat: FiatUsdLeg,
         timeout_secs: u64,
+        max_stale_secs: u64,
     ) -> Result<Self> {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(timeout_secs.max(1)))
@@ -166,8 +217,73 @@ impl CrossRateFxSource {
         Ok(Self {
             http,
             crypto,
-            fiat_base_url: fiat_base_url.into().trim_end_matches('/').to_string(),
+            fiat,
+            max_stale_secs,
         })
+    }
+
+    /// Latest price of one Pyth feed via Hermes: `price × 10^expo`. Rejects
+    /// a feed that has never published (`coming_soon` in Pyth's catalogue),
+    /// a non-positive price, and a price older than `max_stale_secs`.
+    async fn pyth_price(&self, hermes_url: &str, feed_id: &str, what: &str) -> Result<f64> {
+        let url = format!(
+            "{}/v2/updates/price/latest?ids[]={feed_id}&parsed=true",
+            hermes_url.trim_end_matches('/')
+        );
+        debug!(%url, what, "fetching pyth leg (hermes)");
+        let body: serde_json::Value = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| BlockchainError::Rejected(format!("fx: pyth request failed: {e}")))?
+            .error_for_status()
+            .map_err(|e| BlockchainError::Rejected(format!("fx: pyth: {e}")))?
+            .json()
+            .await
+            .map_err(|e| BlockchainError::Rejected(format!("fx: pyth bad body: {e}")))?;
+        let price_obj = body
+            .get("parsed")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|a| a.first())
+            .and_then(|f| f.get("price"))
+            .ok_or_else(|| {
+                BlockchainError::Rejected(format!("fx: pyth reply has no parsed {what} price"))
+            })?;
+        // Hermes serialises the fixed-point mantissa as a string.
+        let raw: f64 = match price_obj.get("price") {
+            Some(serde_json::Value::String(s)) => s.parse().ok(),
+            Some(v) => v.as_f64(),
+            None => None,
+        }
+        .ok_or_else(|| BlockchainError::Rejected(format!("fx: pyth {what} price unreadable")))?;
+        let expo = price_obj
+            .get("expo")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or_else(|| BlockchainError::Rejected(format!("fx: pyth {what} expo missing")))?;
+        let publish_time = price_obj
+            .get("publish_time")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
+        if publish_time <= 0 {
+            return Err(BlockchainError::Rejected(format!(
+                "fx: pyth {what} feed has never published (coming soon)"
+            )));
+        }
+        let age = Utc::now().timestamp().saturating_sub(publish_time);
+        if age > self.max_stale_secs as i64 {
+            return Err(BlockchainError::Rejected(format!(
+                "fx: pyth {what} price is {age}s old (max {})",
+                self.max_stale_secs
+            )));
+        }
+        let price = raw * 10f64.powi(expo as i32);
+        if !price.is_finite() || price <= 0.0 {
+            return Err(BlockchainError::Rejected(format!(
+                "fx: pyth {what} price unusable: {price}"
+            )));
+        }
+        Ok(price)
     }
 
     /// USD per one whole `asset`, from the configured crypto leg.
@@ -245,38 +361,68 @@ impl CrossRateFxSource {
                 decode_api3_read(result)
                     .map_err(|e| BlockchainError::Rejected(format!("fx: api3: {e}")))
             }
+            CryptoUsdLeg::Pyth { hermes_url } => {
+                // The wired feed IS Crypto.ADA/USD; refuse to price some
+                // other asset off it.
+                if !asset.eq_ignore_ascii_case("ADA") {
+                    return Err(BlockchainError::Rejected(format!(
+                        "fx: pyth crypto leg is Crypto.ADA/USD, cannot price {asset}"
+                    )));
+                }
+                self.pyth_price(hermes_url, PYTH_ADA_USD, "ADA/USD").await
+            }
         }
     }
 
-    /// `USD → currency` multiplier from the fiat table.
+    /// `USD → currency` multiplier from the configured fiat leg.
     async fn usd_to_fiat(&self, currency: &str) -> Result<f64> {
-        let url = format!("{}/v6/latest/USD", self.fiat_base_url);
-        debug!(%url, "fetching USD/fiat leg (er-api)");
-        let body: serde_json::Value = self
-            .http
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| BlockchainError::Rejected(format!("fx: fiat request failed: {e}")))?
-            .error_for_status()
-            .map_err(|e| BlockchainError::Rejected(format!("fx: fiat: {e}")))?
-            .json()
-            .await
-            .map_err(|e| BlockchainError::Rejected(format!("fx: fiat bad body: {e}")))?;
-        body.get("rates")
-            .and_then(|r| r.get(currency.to_ascii_uppercase().as_str()))
-            .and_then(serde_json::Value::as_f64)
-            .filter(|r| r.is_finite() && *r > 0.0)
-            .ok_or_else(|| {
-                BlockchainError::Rejected(format!("fx: no USD/{currency} rate in fiat table"))
-            })
+        match &self.fiat {
+            FiatUsdLeg::ErApi { base_url } => {
+                let url = format!("{}/v6/latest/USD", base_url.trim_end_matches('/'));
+                debug!(%url, "fetching USD/fiat leg (er-api)");
+                let body: serde_json::Value = self
+                    .http
+                    .get(&url)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        BlockchainError::Rejected(format!("fx: fiat request failed: {e}"))
+                    })?
+                    .error_for_status()
+                    .map_err(|e| BlockchainError::Rejected(format!("fx: fiat: {e}")))?
+                    .json()
+                    .await
+                    .map_err(|e| BlockchainError::Rejected(format!("fx: fiat bad body: {e}")))?;
+                body.get("rates")
+                    .and_then(|r| r.get(currency.to_ascii_uppercase().as_str()))
+                    .and_then(serde_json::Value::as_f64)
+                    .filter(|r| r.is_finite() && *r > 0.0)
+                    .ok_or_else(|| {
+                        BlockchainError::Rejected(format!(
+                            "fx: no USD/{currency} rate in fiat table"
+                        ))
+                    })
+            }
+            FiatUsdLeg::Pyth { hermes_url } => {
+                let id = pyth_usd_fiat_id(currency).ok_or_else(|| {
+                    BlockchainError::Rejected(format!("fx: pyth lists no FX.USD/{currency} feed"))
+                })?;
+                self.pyth_price(hermes_url, id, &format!("USD/{currency}")).await
+            }
+        }
     }
 
-    fn source_label(&self) -> &'static str {
-        match self.crypto {
-            CryptoUsdLeg::CoinGecko { .. } => "coingecko×er-api",
-            CryptoUsdLeg::Api3 { .. } => "api3×er-api",
-        }
+    fn source_label(&self) -> String {
+        let crypto = match self.crypto {
+            CryptoUsdLeg::CoinGecko { .. } => "coingecko",
+            CryptoUsdLeg::Api3 { .. } => "api3",
+            CryptoUsdLeg::Pyth { .. } => "pyth",
+        };
+        let fiat = match self.fiat {
+            FiatUsdLeg::ErApi { .. } => "er-api",
+            FiatUsdLeg::Pyth { .. } => "pyth",
+        };
+        format!("{crypto}×{fiat}")
     }
 }
 
@@ -315,7 +461,7 @@ impl FxSource for CrossRateFxSource {
             fiat,
             price,
             minor_per_whole_asset,
-            source = self.source_label(),
+            source = %self.source_label(),
             "settle-time FX quote (cross)"
         );
         Ok(FxQuote {
@@ -323,7 +469,7 @@ impl FxSource for CrossRateFxSource {
             currency: currency.to_ascii_uppercase(),
             minor_per_whole_asset,
             as_of: Utc::now(),
-            source: self.source_label().into(),
+            source: self.source_label(),
         })
     }
 }
@@ -475,8 +621,9 @@ mod tests {
         let base = cross_stub(0.62, serde_json::json!({ "KES": 129.0 }), 0).await;
         let fx = CrossRateFxSource::new(
             CryptoUsdLeg::CoinGecko { base_url: base.clone() },
-            &base,
+            FiatUsdLeg::ErApi { base_url: base.clone() },
             5,
+            259_200,
         )
         .unwrap();
         let q = fx.quote("ADA", "KES").await.unwrap();
@@ -494,8 +641,9 @@ mod tests {
                 rpc_url: format!("{base}/rpc"),
                 proxy_address: "0x0000000000000000000000000000000000000001".into(),
             },
-            &base,
+            FiatUsdLeg::ErApi { base_url: base.clone() },
             5,
+            259_200,
         )
         .unwrap();
         let q = fx.quote("ADA", "KES").await.unwrap();
@@ -510,8 +658,9 @@ mod tests {
         let base = cross_stub(0.62, serde_json::json!({ "EUR": 0.9 }), 0).await;
         let fx = CrossRateFxSource::new(
             CryptoUsdLeg::CoinGecko { base_url: base.clone() },
-            &base,
+            FiatUsdLeg::ErApi { base_url: base.clone() },
             5,
+            259_200,
         )
         .unwrap();
         assert!(matches!(
@@ -537,12 +686,178 @@ mod tests {
     async fn live_cross_rate_quotes_ada_kes() {
         let fx = CrossRateFxSource::new(
             CryptoUsdLeg::CoinGecko { base_url: "https://api.coingecko.com".into() },
-            "https://open.er-api.com",
+            FiatUsdLeg::ErApi { base_url: "https://open.er-api.com".into() },
             10,
+            259_200,
         )
         .unwrap();
         let q = fx.quote("ADA", "KES").await.unwrap();
         assert!(q.minor_per_whole_asset > 0);
         println!("live cross ADA/KES: {} minor per ADA ({})", q.minor_per_whole_asset, q.source);
+    }
+
+    // ---- pyth legs ---------------------------------------------------------
+
+    /// A Hermes stub: serves `/v2/updates/price/latest`, picking the entry
+    /// whose feed id appears in the query string. Prices are Hermes-style
+    /// `(mantissa-as-string, expo, publish_time)`.
+    async fn hermes_stub(entries: Vec<(&'static str, i64, i64, i64)>) -> String {
+        use axum::extract::RawQuery;
+        let app = Router::new().route(
+            "/v2/updates/price/latest",
+            get(move |RawQuery(q): RawQuery| {
+                let q = q.unwrap_or_default();
+                let hit = entries.iter().find(|(id, ..)| q.contains(id)).copied();
+                async move {
+                    match hit {
+                        Some((id, mantissa, expo, publish_time)) => Json(serde_json::json!({
+                            "binary": { "encoding": "hex", "data": ["deadbeef"] },
+                            "parsed": [{
+                                "id": id,
+                                "price": {
+                                    "price": mantissa.to_string(),
+                                    "conf": "1",
+                                    "expo": expo,
+                                    "publish_time": publish_time,
+                                },
+                            }],
+                        })),
+                        None => Json(serde_json::json!({ "parsed": [] })),
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    const ZAR_ID: &str = "389d889017db82bf42141f23b61b8de938a4e2d156e36312175bebf797f493f1";
+
+    #[tokio::test]
+    async fn cross_rate_pyth_crypto_leg_with_erapi_fiat() {
+        let now = Utc::now().timestamp();
+        let hermes = hermes_stub(vec![(PYTH_ADA_USD, 62_000_000, -8, now)]).await;
+        let fiat = cross_stub(0.0, serde_json::json!({ "KES": 129.0 }), 0).await;
+        let fx = CrossRateFxSource::new(
+            CryptoUsdLeg::Pyth { hermes_url: hermes },
+            FiatUsdLeg::ErApi { base_url: fiat },
+            5,
+            259_200,
+        )
+        .unwrap();
+        let q = fx.quote("ADA", "KES").await.unwrap();
+        assert_eq!(q.minor_per_whole_asset, 7998);
+        assert_eq!(q.source, "pyth×er-api");
+        // The wired feed is ADA/USD — other assets refused.
+        assert!(fx.quote("BTC", "KES").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn cross_rate_full_pyth_quotes_both_legs() {
+        let now = Utc::now().timestamp();
+        let hermes = hermes_stub(vec![
+            (PYTH_ADA_USD, 62_000_000, -8, now),
+            (ZAR_ID, 1_800_000, -5, now), // 18.00 ZAR per USD
+        ])
+        .await;
+        let fx = CrossRateFxSource::new(
+            CryptoUsdLeg::Pyth { hermes_url: hermes.clone() },
+            FiatUsdLeg::Pyth { hermes_url: hermes },
+            5,
+            259_200,
+        )
+        .unwrap();
+        let q = fx.quote("ADA", "ZAR").await.unwrap();
+        // 0.62 USD/ADA × 18 ZAR/USD = 11.16 ZAR/ADA = 1116 minor.
+        assert_eq!(q.minor_per_whole_asset, 1116);
+        assert_eq!(q.source, "pyth×pyth");
+    }
+
+    #[tokio::test]
+    async fn pyth_never_published_feed_is_rejected() {
+        let now = Utc::now().timestamp();
+        let hermes = hermes_stub(vec![
+            (PYTH_ADA_USD, 62_000_000, -8, now),
+            (ZAR_ID, 0, -5, 0), // coming_soon: price 0, never published
+        ])
+        .await;
+        let fx = CrossRateFxSource::new(
+            CryptoUsdLeg::Pyth { hermes_url: hermes.clone() },
+            FiatUsdLeg::Pyth { hermes_url: hermes },
+            5,
+            259_200,
+        )
+        .unwrap();
+        let err = fx.quote("ADA", "ZAR").await.unwrap_err();
+        assert!(matches!(err, BlockchainError::Rejected(_)));
+        assert!(err.to_string().contains("never published"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn pyth_stale_price_is_rejected() {
+        let old = Utc::now().timestamp() - 10_000;
+        let hermes = hermes_stub(vec![(PYTH_ADA_USD, 62_000_000, -8, old)]).await;
+        let fiat = cross_stub(0.0, serde_json::json!({ "KES": 129.0 }), 0).await;
+        let fx = CrossRateFxSource::new(
+            CryptoUsdLeg::Pyth { hermes_url: hermes },
+            FiatUsdLeg::ErApi { base_url: fiat },
+            5,
+            60, // far tighter than the 10_000s-old price
+        )
+        .unwrap();
+        let err = fx.quote("ADA", "KES").await.unwrap_err();
+        assert!(matches!(err, BlockchainError::Rejected(_)));
+        assert!(err.to_string().contains("old"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn pyth_unlisted_fiat_is_rejected_without_a_request() {
+        let fx = CrossRateFxSource::new(
+            CryptoUsdLeg::CoinGecko { base_url: "http://127.0.0.1:1".into() },
+            FiatUsdLeg::Pyth { hermes_url: "http://127.0.0.1:1".into() },
+            2,
+            259_200,
+        )
+        .unwrap();
+        // CHF has no FX.USD/* entry in the corridor table; the crypto leg is
+        // consulted first, so use the fiat-leg helper's error directly.
+        let err = fx.usd_to_fiat("CHF").await.unwrap_err();
+        assert!(err.to_string().contains("lists no FX.USD/CHF"), "{err}");
+    }
+
+    /// Live check: Pyth ADA/USD (Hermes) × er-api KES.
+    #[tokio::test]
+    #[ignore = "hits real Pyth Hermes + er-api APIs"]
+    async fn live_pyth_cross_quotes_ada_kes() {
+        let fx = CrossRateFxSource::new(
+            CryptoUsdLeg::Pyth { hermes_url: "https://hermes.pyth.network".into() },
+            FiatUsdLeg::ErApi { base_url: "https://open.er-api.com".into() },
+            10,
+            259_200,
+        )
+        .unwrap();
+        let q = fx.quote("ADA", "KES").await.unwrap();
+        assert!(q.minor_per_whole_asset > 0);
+        println!("live pyth×er-api ADA/KES: {} minor per ADA", q.minor_per_whole_asset);
+    }
+
+    /// Live check: both legs from Pyth (ZAR is the one African fiat feed
+    /// publishing as of 2026-08). Outside forex hours this may reject as
+    /// stale — that is the guard working, not a bug.
+    #[tokio::test]
+    #[ignore = "hits the real Pyth Hermes API"]
+    async fn live_full_pyth_quotes_ada_zar() {
+        let fx = CrossRateFxSource::new(
+            CryptoUsdLeg::Pyth { hermes_url: "https://hermes.pyth.network".into() },
+            FiatUsdLeg::Pyth { hermes_url: "https://hermes.pyth.network".into() },
+            10,
+            259_200,
+        )
+        .unwrap();
+        let q = fx.quote("ADA", "ZAR").await.unwrap();
+        assert!(q.minor_per_whole_asset > 0);
+        println!("live pyth×pyth ADA/ZAR: {} minor per ADA", q.minor_per_whole_asset);
     }
 }
