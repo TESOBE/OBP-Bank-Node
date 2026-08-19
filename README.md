@@ -1,9 +1,10 @@
 # OBP-Bank-Node
 
-The OBP Bank Node connects a bank's Core Banking System to the Open
-Corridor interbank payment network (an OBP API instance hosted by TESOBE). See
-[`DOCS/OBP-Bank-Node-Spec.md`](DOCS/OBP-Bank-Node-Spec.md) for the full
-specification.
+The OBP Bank Node forms part of Open Corridor, a new bank to bank payment / message / settlement system.
+
+An OBP Bank Node runs at the at the bank's datacenter and calls out to the Open Corridor REST APIs and Rabbit MQ provided by an OBP-API instance, and the Cardano blockchain.
+
+See [`DOCS/OBP-Bank-Node-Spec.md`](DOCS/OBP-Bank-Node-Spec.md) for the full specification.
 
 ## TL;DR
 
@@ -16,13 +17,13 @@ trusting any single bank's private database.
 
 Each stage of a payment produces its own record:
 
-| Record | Think of it as… | What it proves |
-|---|---|---|
-| **Promise** | An IOU receipt | One bank has committed, at a specific moment, to pay a specific amount across the corridor. Signed and time-stamped, so it can't be backdated or denied. |
-| **Netting Snapshot** | A statement / tally | Rather than moving money for every single payment, a batch of IOUs is tallied into one net figure. The snapshot records which IOUs went in and what the net came to. |
-| **Settlement** | A "paid" receipt | The net amount was actually moved and the books cleared — a reference record that it happened, plus, on the Cardano rail, the value transfer itself. |
-| **Exception** | A flag on the record | A payment that couldn't complete (timeout, dispute) is recorded as such — failures are visible and accountable, not quietly dropped. |
-| **Reversal** | A cancellation receipt | If something has to be unwound, that is recorded too, so the history stays honest end to end. |
+| Record               | Think of it as…        | What it proves                                                                                                                                                       |
+| -------------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Promise**          | An IOU receipt         | One bank has committed, at a specific moment, to pay a specific amount across the corridor. Signed and time-stamped, so it can't be backdated or denied.             |
+| **Netting Snapshot** | A statement / tally    | Rather than moving money for every single payment, a batch of IOUs is tallied into one net figure. The snapshot records which IOUs went in and what the net came to. |
+| **Settlement**       | A "paid" receipt       | The net amount was actually moved and the books cleared — a reference record that it happened, plus, on the Cardano rail, the value transfer itself.                 |
+| **Exception**        | A flag on the record   | A payment that couldn't complete (timeout, dispute) is recorded as such — failures are visible and accountable, not quietly dropped.                                 |
+| **Reversal**         | A cancellation receipt | If something has to be unwound, that is recorded too, so the history stays honest end to end.                                                                        |
 
 What this gives you:
 
