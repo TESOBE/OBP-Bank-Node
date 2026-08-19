@@ -1,15 +1,20 @@
 # OBP Bank Node — example configuration.
-# Provided pre-populated by the OBP API operator at registration; replace placeholders.
+# Provided pre-populated by the OBP API operator at registration; replace
+# placeholders. Every field can also be set by environment variable:
+# OBP_BN_ prefix, __ between levels (e.g. OBP_BN_SERVER__BIND=0.0.0.0:8088).
 
-obp_bank_node:
-  port: 8088
-  local_secret: "change-me-on-first-run"
+server:
+  bind: "0.0.0.0:8088"
 
 bank:
   bank_id: "ke.01.kcs"
+  # Settlement account to debit.
   account_id: "7bc9a8e4-5d02-40e3-b129-1c3bf89de9f1"
-  view_id: "owner"
 
+# Shared secret sent as the bearer token on the A2 CBS webhook.
+local_secret: "change-me-on-first-run"
+
+# Interface B — how to reach OBP-API.
 obp_api:
   base_url: "http://localhost:8080"
   # OAuth2 client-credentials (machine-to-machine). Leave empty to run
@@ -18,10 +23,13 @@ obp_api:
   client_id: "provided-at-registration"
   client_secret: "provided-at-registration"
   # scope: "..."          # optional
-  # Alternative: a pre-obtained DirectLogin token.
+  # Alternative to client-credentials: a pre-obtained DirectLogin token.
   # direct_login_token: ""
 
 rabbitmq:
+  # Interface C — inbound from OBP-API. Off by default so the node boots without
+  # a broker; set true to start the consumer.
+  enabled: false
   # Defaults match the rabbitmq:3-management Docker image:
   #   AMQP        amqp://guest:guest@localhost:5672/
   #   Management  http://localhost:15672  (guest / guest)
@@ -29,48 +37,55 @@ rabbitmq:
   port: 5672
   username: "guest"
   password: "guest"
-  virtual_host: "/"
+  # Per-bank isolation: each bank consumes on its own vhost, e.g. /bank.ke.01.kcs
+  virtual_host: "/bank.ke.01.kcs"
   request_queue: "obp_rpc_queue"
 
+# The signing key is the only wallet input — the verification key and wallet
+# address are derived from it. All cardano fields are optional; the defaults
+# match the bundled Cardano container and the key generated at installation,
+# so `type: "cardano"` alone is a complete production config.
+#
+# Do NOT set a network here. The Cardano network is fixed by the image you
+# deploy (obp-bank-node:preprod / obp-bank-node:mainnet); the node refuses to
+# start if this file names a different one. Only a native (non-Docker) dev
+# build reads a `network` field from YAML.
 blockchain:
-  type: "cardano"
-  cardano:
-    network: "preprod"
+  type: "cardano"                          # mock | cardano
+  # cardano:
+  #   ogmios_url: "ws://localhost:1337"    # override only for a managed provider
+  #   wallet_skey_path: "./secrets/cardano.skey"
 
+# Delivery of received credits to the bank's CBS. Only webhook_obp is
+# implemented: a POST of the credit instruction, bearer-authenticated with
+# local_secret.
 cbs_delivery:
-  mode: "webhook_obp"     # webhook_obp | webhook_iso20022 | database | file
-
+  mode: "webhook_obp"
   webhook:
     url: "http://bank-cbs/api/credit-notifications"
     timeout_seconds: 30
 
-  database:
-    host: "cbs-db.bank.local"
-    port: 5432
-    name: "cbs_staging"
-    username: "obp_writer"
-    password: "..."
-    table: "obp_credit_instructions"
-    driver: "postgresql"
+# Settle-time FX. Defaults shown; the cross rate is asset/USD × USD/fiat and
+# each leg tries its sources in order until one answers. The quote records
+# which sources priced it (e.g. "pyth×er-api").
+# settlement:
+#   fx_source: "cross"                     # cross | coingecko | stub
+#   fx_crypto_leg: ["pyth", "coingecko"]   # pyth | coingecko | api3
+#   fx_fiat_leg: ["pyth", "er-api"]        # pyth | er-api
+#   fx_hermes_base_url: "https://hermes.pyth.network"
+#   fx_pyth_max_stale_secs: 259200         # 72h: Friday close → Monday open
+#   # api3 crypto leg only:
+#   # fx_api3_rpc_url: ""
+#   # fx_api3_proxy_address: ""
+#   finality_depth: 15                     # blocks until a settlement is FINAL
+#   finality_poll_secs: 30
+#   store_path: "./outbox/settlements.db"
 
-  file:
-    drop_path: "/shared/credit-notifications/inbound/"
-    acknowledgement_path: "/shared/credit-notifications/acknowledged/"
-    format: "json"
-
-telemetry:
-  type: "prometheus"
-  port: 9090
-  log_level: "INFO"
-
-dashboard:
-  enabled: false
-  bind_address: "127.0.0.1"
-  port: 8081
-  auth:
-    enabled: true
-    username: "admin"
-    password: "change-me"
-
+# Durable message outbox (Interface A → OBP-API), holds commitment salts.
 outbox:
   path: "./outbox/obp-bank-node.db"
+
+# Beneficiary-side evidence store: received credit notifications + the salts that
+# let this bank open Bank A's on-chain commitment in a dispute (commit–reveal).
+evidence:
+  path: "./outbox/evidence.db"

@@ -38,14 +38,59 @@ What this gives you:
   revealed to prove exactly what was committed and when.
 
 Current state: the **Promise**, **Settlement**, and **Exception** records are
-built; the **Netting Snapshot** and **Reversal** records are designed but not
-yet implemented in the node, so the complete chain of records is the target
-rather than the shipped state.
+built. **Reversal** is implemented as a return flow: a credit the beneficiary
+bank's CBS refuses (unknown account, name mismatch) is answered with a RETURN
+promise that nets against the original, repaying the originator — the return
+is linked to the original on the record, and a refused return is parked for
+an operator rather than bounced again. A distinct reversal record beyond the
+return flow, and the **Netting Snapshot** record, are designed but not yet
+implemented.
+
+## Build and run
+
+Requires Rust 1.75+ ([rustup](https://rustup.rs)).
+
+```sh
+cargo build --release
+```
+
+Run the node:
+
+```sh
+cp obp-bank-node-config.yaml.example obp-bank-node-config.yaml   # then edit
+cargo run --release -p obp-bank-node
+curl http://localhost:8088/health
+```
+
+Config is read from `./obp-bank-node-config.yaml` (override the path with
+`OBP_BANK_NODE_CONFIG`); any field can also be set by environment variable
+(`OBP_BN_` prefix, `__` between levels, e.g.
+`OBP_BN_SERVER__BIND=0.0.0.0:8088`). Without a config file the node boots on
+defaults: port 8088, mock blockchain, broker consumer off. Settling on Cardano needs `blockchain.type: "cardano"`
+and a `cardano-node` + Ogmios — see
+[`docker/docker-compose.cardano.yml`](docker/docker-compose.cardano.yml).
+
+Run the demo UI (serves the storyline pages over one or more nodes, default
+`http://localhost:8090`):
+
+```sh
+cargo run --release -p obp-bank-node-app
+```
+
+For a full two-bank round trip — two nodes, two UI apps, OBP-API, RabbitMQ,
+and a stub CBS — see the scripts and configs in [`dev/`](dev/), starting with
+`dev/run_roundtrip.sh`.
 
 ## Licence
 
 Copyright (C) 2026 TESOBE GmbH.
 
 This program is free software: you can redistribute it and/or modify it under
-the terms of the GNU Affero General Public License v3.0 (AGPLv3) as published
-by the Free Software Foundation. See [LICENSE](LICENSE) for the full text.
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License in
+[LICENSE](LICENSE) for details.

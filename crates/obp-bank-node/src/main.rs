@@ -92,12 +92,18 @@ struct SettlementConfig {
     fx_base_url: String,
     #[serde(default = "default_fx_timeout_secs")]
     fx_timeout_secs: u64,
-    /// Cross-rate crypto leg (`coingecko` / `api3` / `pyth`).
-    #[serde(default)]
-    fx_crypto_leg: FxCryptoLeg,
-    /// Cross-rate fiat leg (`er-api` / `pyth`).
-    #[serde(default)]
-    fx_fiat_leg: FxFiatLeg,
+    /// Cross-rate crypto-leg sources (`coingecko` / `api3` / `pyth`), tried
+    /// in order until one answers. A single string or a list; the default
+    /// `[pyth, coingecko]` prefers Pyth and falls back. Naming legs pins the
+    /// order exactly — no implicit extras.
+    #[serde(default = "default_fx_crypto_legs")]
+    fx_crypto_leg: OneOrMany<FxCryptoLeg>,
+    /// Cross-rate fiat-leg sources (`er-api` / `pyth`), tried in order. The
+    /// default `[pyth, er-api]` prefers Pyth and falls back — necessary while
+    /// Pyth's corridor fiat feeds are mostly `coming_soon` (see
+    /// [`FxFiatLeg`]).
+    #[serde(default = "default_fx_fiat_legs")]
+    fx_fiat_leg: OneOrMany<FxFiatLeg>,
     /// Cross-rate er-api fiat leg base URL (USD table with the corridor fiats).
     #[serde(default = "default_fx_fiat_base_url")]
     fx_fiat_base_url: String,
@@ -153,6 +159,12 @@ fn default_fx_hermes_base_url() -> String {
 fn default_fx_pyth_max_stale_secs() -> u64 {
     259_200 // 72h: Friday close → Monday open
 }
+fn default_fx_crypto_legs() -> OneOrMany<FxCryptoLeg> {
+    OneOrMany::Many(vec![FxCryptoLeg::Pyth, FxCryptoLeg::Coingecko])
+}
+fn default_fx_fiat_legs() -> OneOrMany<FxFiatLeg> {
+    OneOrMany::Many(vec![FxFiatLeg::Pyth, FxFiatLeg::ErApi])
+}
 fn default_fx_timeout_secs() -> u64 {
     10
 }
@@ -174,13 +186,32 @@ enum FxSourceKind {
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum FxCryptoLeg {
-    #[default]
     Coingecko,
     /// API3 dAPI via `Api3ReaderProxyV1.read()` — needs `fx_api3_rpc_url` and
     /// `fx_api3_proxy_address` (from the API3 Market, per feed and chain).
     Api3,
     /// Pyth `Crypto.ADA/USD` via the Hermes endpoint (`fx_hermes_base_url`).
+    /// Preferred by default: publishes continuously, keyless, and is the feed
+    /// the Pyth Cardano integration serves on-chain.
+    #[default]
     Pyth,
+}
+
+/// A config value that is either one `T` or a preference-ordered list of `T`.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(untagged)]
+enum OneOrMany<T> {
+    One(T),
+    Many(Vec<T>),
+}
+
+impl<T: Clone> OneOrMany<T> {
+    fn to_vec(&self) -> Vec<T> {
+        match self {
+            OneOrMany::One(t) => vec![t.clone()],
+            OneOrMany::Many(v) => v.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, Default, PartialEq, Eq)]
@@ -202,8 +233,8 @@ impl Default for SettlementConfig {
             fx_source: FxSourceKind::default(),
             fx_base_url: default_fx_base_url(),
             fx_timeout_secs: default_fx_timeout_secs(),
-            fx_crypto_leg: FxCryptoLeg::default(),
-            fx_fiat_leg: FxFiatLeg::default(),
+            fx_crypto_leg: default_fx_crypto_legs(),
+            fx_fiat_leg: default_fx_fiat_legs(),
             fx_fiat_base_url: default_fx_fiat_base_url(),
             fx_hermes_base_url: default_fx_hermes_base_url(),
             fx_pyth_max_stale_secs: default_fx_pyth_max_stale_secs(),
@@ -671,37 +702,54 @@ async fn build_backend(config: &Config) -> anyhow::Result<Backends> {
                     )
                 }
                 FxSourceKind::Cross => {
-                    let crypto = match config.settlement.fx_crypto_leg {
-                        FxCryptoLeg::Coingecko => crate::fx::CryptoUsdLeg::CoinGecko {
-                            base_url: config.settlement.fx_base_url.clone(),
-                        },
-                        FxCryptoLeg::Api3 => {
-                            anyhow::ensure!(
-                                !config.settlement.fx_api3_rpc_url.trim().is_empty()
-                                    && !config.settlement.fx_api3_proxy_address.trim().is_empty(),
-                                "fx_crypto_leg=api3 needs fx_api3_rpc_url and fx_api3_proxy_address"
-                            );
-                            crate::fx::CryptoUsdLeg::Api3 {
-                                rpc_url: config.settlement.fx_api3_rpc_url.clone(),
-                                proxy_address: config.settlement.fx_api3_proxy_address.clone(),
-                            }
-                        }
-                        FxCryptoLeg::Pyth => crate::fx::CryptoUsdLeg::Pyth {
-                            hermes_url: config.settlement.fx_hermes_base_url.clone(),
-                        },
-                    };
-                    let fiat = match config.settlement.fx_fiat_leg {
-                        FxFiatLeg::ErApi => crate::fx::FiatUsdLeg::ErApi {
-                            base_url: config.settlement.fx_fiat_base_url.clone(),
-                        },
-                        FxFiatLeg::Pyth => crate::fx::FiatUsdLeg::Pyth {
-                            hermes_url: config.settlement.fx_hermes_base_url.clone(),
-                        },
-                    };
+                    let crypto_legs = config.settlement.fx_crypto_leg.to_vec();
+                    let fiat_legs = config.settlement.fx_fiat_leg.to_vec();
+                    let crypto = crypto_legs
+                        .iter()
+                        .map(|leg| {
+                            Ok(match leg {
+                                FxCryptoLeg::Coingecko => crate::fx::CryptoUsdLeg::CoinGecko {
+                                    base_url: config.settlement.fx_base_url.clone(),
+                                },
+                                FxCryptoLeg::Api3 => {
+                                    anyhow::ensure!(
+                                        !config.settlement.fx_api3_rpc_url.trim().is_empty()
+                                            && !config
+                                                .settlement
+                                                .fx_api3_proxy_address
+                                                .trim()
+                                                .is_empty(),
+                                        "fx_crypto_leg api3 needs fx_api3_rpc_url and fx_api3_proxy_address"
+                                    );
+                                    crate::fx::CryptoUsdLeg::Api3 {
+                                        rpc_url: config.settlement.fx_api3_rpc_url.clone(),
+                                        proxy_address: config
+                                            .settlement
+                                            .fx_api3_proxy_address
+                                            .clone(),
+                                    }
+                                }
+                                FxCryptoLeg::Pyth => crate::fx::CryptoUsdLeg::Pyth {
+                                    hermes_url: config.settlement.fx_hermes_base_url.clone(),
+                                },
+                            })
+                        })
+                        .collect::<anyhow::Result<Vec<_>>>()?;
+                    let fiat = fiat_legs
+                        .iter()
+                        .map(|leg| match leg {
+                            FxFiatLeg::ErApi => crate::fx::FiatUsdLeg::ErApi {
+                                base_url: config.settlement.fx_fiat_base_url.clone(),
+                            },
+                            FxFiatLeg::Pyth => crate::fx::FiatUsdLeg::Pyth {
+                                hermes_url: config.settlement.fx_hermes_base_url.clone(),
+                            },
+                        })
+                        .collect::<Vec<_>>();
                     info!(
-                        crypto_leg = ?config.settlement.fx_crypto_leg,
-                        fiat_leg = ?config.settlement.fx_fiat_leg,
-                        "FX source: cross rate (asset/USD × USD/fiat)"
+                        crypto_legs = ?crypto_legs,
+                        fiat_legs = ?fiat_legs,
+                        "FX source: cross rate (asset/USD × USD/fiat), sources tried in order"
                     );
                     Arc::new(
                         crate::fx::CrossRateFxSource::new(

@@ -46,10 +46,10 @@ cbs_delivery:
     timeout_seconds: 10
 
 settlement:
-  # Cross rate: ADA/USD (CoinGecko) × USD/KES (open.er-api.com) — CoinGecko
-  # alone dropped KES from vs_currencies (2026-07-31). Switch the crypto leg
-  # to API3 with fx_crypto_leg: "api3" + fx_api3_rpc_url +
-  # fx_api3_proxy_address (ADA/USD proxy from the API3 Market).
+  # Cross rate. Default legs try Pyth first, then fall back:
+  # crypto [pyth, coingecko] × fiat [pyth, er-api]. Pin an order with e.g.
+  # fx_crypto_leg: ["api3", "coingecko"] ("api3" also needs fx_api3_rpc_url +
+  # fx_api3_proxy_address, ADA/USD proxy from the API3 Market).
   fx_source: "cross"
   # Fast finality for the test run (2 blocks ≈ 40 s on preprod).
   finality_depth: 2
