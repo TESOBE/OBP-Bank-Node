@@ -23,3 +23,6 @@
 dev/data/
 dev/env.sh
 dev/__pycache__/
+
+# Runtime pid file
+node.pid

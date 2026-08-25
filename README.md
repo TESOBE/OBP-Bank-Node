@@ -47,6 +47,22 @@ an operator rather than bounced again. A distinct reversal record beyond the
 return flow, and the **Netting Snapshot** record, are designed but not yet
 implemented.
 
+## See it running
+
+- **On-chain evidence (Cardano preprod):** example promise transaction
+  [`3e1ba1c996c9f9a8d9ef1a9335e80aed0b58d02df18e1d27e65fe4ec79f1dcaf`](https://preprod.cardanoscan.io/transaction/3e1ba1c996c9f9a8d9ef1a9335e80aed0b58d02df18e1d27e65fe4ec79f1dcaf)
+  — a salted SHA-256 commitment in transaction metadata; no amounts, names, or
+  PII on-chain.
+- **Where the Cardano integration lives:**
+  [`crates/obp-blockchain`](crates/obp-blockchain) — promise anchoring,
+  evidence, and settlement through the bank's own `cardano-node` + Ogmios,
+  with bank-held keys. The platform side is implemented in the
+  [Open Bank Project API](https://github.com/OpenBankProject/OBP-API)
+  (open source since 2011), of which Open Corridor is a part.
+- **Full two-bank round trip:** [`dev/run_roundtrip.sh`](dev/run_roundtrip.sh)
+  drives the real stack — two nodes, OBP-API, RabbitMQ, and a real
+  `cardano-node` on preprod; only the bank core-banking system is a stub.
+
 ## Build and run
 
 Requires Rust 1.75+ ([rustup](https://rustup.rs)).

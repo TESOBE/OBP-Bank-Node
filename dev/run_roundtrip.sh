@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Round-trip driver: fires one payment at Node A and watches every stage.
+# This drives the real stack — two Bank Nodes, OBP-API, RabbitMQ, and a real
+# cardano-node + Ogmios on preprod. The only mock is the bank CBS (cbs_stub.py);
+# promise anchoring and settlement go through the nodes' production code paths.
 # Prereqs: OBP-API + RabbitMQ + cardano/ogmios up; setup scripts run;
 #          node A (:8088), node B (:8089), cbs_stub.py (:9009) running.
 set -uo pipefail

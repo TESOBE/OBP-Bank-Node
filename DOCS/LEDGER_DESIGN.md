@@ -1,8 +1,14 @@
 # OBP-API Ledger Design — Open Corridor Netting via Full Double-Entry
 
-How OBP-API would track inter-bank netting natively, using its existing
+How OBP-API will track inter-bank netting natively, using its existing
 transaction model. Decision committed: this is the destination, not a
 stepping stone.
+
+**Status (August 2026):** this is the committed design for the full
+double-entry netting model. The OPEN_CORRIDOR flow itself — promise, credit,
+settlement, exception, return — is implemented and running today (see the
+top-level [README](../README.md), "Current state"); the netting-snapshot
+record described here is the next build step.
 
 OBP-API in this role is **the Open Corridor platform's books**, not any individual bank's
 books. The bank's customer-level ledger lives in the bank's CBS. OBP-API is the
