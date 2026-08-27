@@ -94,6 +94,21 @@ setup:
         label: "Node A corridor account"
         currency: "KES"
         owner_username: "rt.node.a"
+      # One corridor account per sending currency (like nostros). The node
+      # still sends only from its configured account; per-currency resolution
+      # in the node is the follow-up work item.
+      - id: "settlement-a-ngn"
+        label: "Node A corridor account (NGN)"
+        currency: "NGN"
+        owner_username: "rt.node.a"
+      - id: "settlement-a-usd"
+        label: "Node A corridor account (USD)"
+        currency: "USD"
+        owner_username: "rt.node.a"
+      - id: "settlement-a-eur"
+        label: "Node A corridor account (EUR)"
+        currency: "EUR"
+        owner_username: "rt.node.a"
       - id: "OBP-OUTGOING-SETTLEMENT-ACCOUNT"
         label: "OC outgoing settlement"
         currency: "KES"

@@ -94,6 +94,21 @@ setup:
         label: "Node B beneficiary account"
         currency: "KES"
         owner_username: "rt.node.b"
+      # One corridor account per sending currency (like nostros). The node
+      # still sends only from its configured account; per-currency resolution
+      # in the node is the follow-up work item.
+      - id: "settlement-b-ngn"
+        label: "Node B beneficiary account (NGN)"
+        currency: "NGN"
+        owner_username: "rt.node.b"
+      - id: "settlement-b-usd"
+        label: "Node B beneficiary account (USD)"
+        currency: "USD"
+        owner_username: "rt.node.b"
+      - id: "settlement-b-eur"
+        label: "Node B beneficiary account (EUR)"
+        currency: "EUR"
+        owner_username: "rt.node.b"
       - id: "OBP-OUTGOING-SETTLEMENT-ACCOUNT"
         label: "OC outgoing settlement"
         currency: "KES"
