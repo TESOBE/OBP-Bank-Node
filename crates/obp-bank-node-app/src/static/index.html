@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OBP Bank Node — Open Corridor</title>
+  <title>OBP Bank Node — Open Corridor — Prime Transmission Network</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <header>
-    <h1>OBP Bank Node — Open Corridor</h1>
+    <h1>OBP Bank Node<!-- — Open Corridor --></h1>
     <nav class="page-nav"><a href="/promises">promises</a> · <a href="/credits">credits</a> · <a href="/settlements">settlements</a> · <a href="/accounts">accounts</a> · <a href="/setup">setup</a></nav>
     <div id="node-health" class="node-health"></div>
   </header>
@@ -20,43 +20,54 @@
       <p class="hint">POST an <code>OPEN_CORRIDOR</code> A1.1 request to a node's south-side API.</p>
       <form id="send-form">
         <div class="grid">
+          <label>Originator name
+            <span class="fnote">free text (Travel Rule)</span>
+            <input name="originator_name" value="Alice Sender" required>
+          </label>
+          <label>Originator address
+            <span class="fnote">free text (Travel Rule)</span>
+            <input name="originator_address" value="1 Sender Street, Nairobi" required>
+          </label>
+          <label class="pair">Originator account routing (scheme · address)
+            <span class="fnote">any scheme — not validated here</span>
+            <span class="pair-inputs">
+              <input name="originator_account_scheme" value="IBAN" class="scheme" required>
+              <input name="originator_account" value="KE93 0000 1234 5678 9012 34" required>
+            </span>
+          </label>
           <label>Sending node
+            <span class="fnote">configured nodes</span>
             <select name="node" id="send-node"></select>
+            <span class="fnote" id="send-node-account"></span>
           </label>
           <label>Amount
+            <span class="fnote">number &gt; 0</span>
             <input name="amount" value="500.00" required>
           </label>
           <label>Currency
+            <span class="fnote">must equal the node's corridor-account currency</span>
             <input name="currency" value="KES" required>
           </label>
           <label>Description
+            <span class="fnote">free text</span>
             <input name="description" value="Demo payment">
           </label>
           <label>Beneficiary name
+            <span class="fnote">free text</span>
             <input name="beneficiary_name" value="Beneficiary at rt.bank.b" required>
           </label>
           <label class="pair">Beneficiary bank routing (scheme · address)
+            <span class="fnote">registered scheme · bank must be registered</span>
             <span class="pair-inputs">
               <input name="other_bank_scheme" value="OBP" class="scheme" required>
               <input name="other_bank" value="rt.bank.b" required>
             </span>
           </label>
           <label class="pair">Beneficiary account routing (scheme · address)
+            <span class="fnote">registered scheme · account checked by beneficiary bank at credit</span>
             <span class="pair-inputs">
               <input name="other_account_scheme" value="OBP" class="scheme" required>
               <input name="other_account" value="settlement-b" required>
-            </span>
-          </label>
-          <label>Originator name
-            <input name="originator_name" value="Alice Sender" required>
-          </label>
-          <label>Originator address
-            <input name="originator_address" value="1 Sender Street, Nairobi" required>
-          </label>
-          <label class="pair">Originator account routing (scheme · address)
-            <span class="pair-inputs">
-              <input name="originator_account_scheme" value="IBAN" class="scheme" required>
-              <input name="originator_account" value="KE93 0000 1234 5678 9012 34" required>
             </span>
           </label>
         </div>
@@ -123,11 +134,7 @@
   </main>
 
   <footer>
-    <p>Note: This application does not hold, move, or decide anything about money.
-      It only reads state from the Bank Nodes and triggers their documented endpoints —
-      validation, promises, netting and settlement happen in the Bank Nodes and OBP-API.
-      Everything shown here can be re-read from a node API; if this application were
-      switched off, payments would be unaffected.</p>
+    <p>&copy; <a href="https://www.tesobe.com" target="_blank" rel="noopener">TESOBE GmbH</a> 2026</p>
   </footer>
 
   <script src="/app.js"></script>

@@ -82,6 +82,16 @@ async function renderHealth() {
     return `<span class="node-chip ${up ? "up" : "down"}">${esc(n.name)} · ${up ? "up" : "down"}${chain}</span>`;
   }));
   $("#node-health").innerHTML = parts.join("");
+  renderSendNodeAccount();
+}
+
+// Read-only line under the Sending node select: the corridor account the
+// promise TRs are booked on (its currency is what the Currency field must match).
+function renderSendNodeAccount() {
+  const el = $("#send-node-account");
+  if (!el) return;
+  const info = NODE_INFO[$("#send-node")?.value];
+  el.textContent = info ? `corridor account: ${info.bank_id} / ${info.account_id}` : "";
 }
 
 // A corridor is inter-bank: when the sender changes, point the beneficiary
@@ -359,6 +369,64 @@ async function onSettle(e) {
   refresh();
 }
 
+// ---- field history (demo convenience) ------------------------------------
+
+// Each text input in the Send/Settle forms gets a datalist of the last few
+// values submitted from this browser (newest first) and is pre-filled with the
+// newest one. Last-used wins over configured/HTML defaults; history is keyed
+// by field name, so fields shared between forms (e.g. currency) share history.
+const HIST_MAX = 8;
+
+function histGet(name) {
+  try {
+    const v = JSON.parse(localStorage.getItem(`hist:${name}`));
+    return Array.isArray(v) ? v : [];
+  } catch { return []; }
+}
+
+function histAdd(name, value) {
+  if (!value) return;
+  const vals = [value, ...histGet(name).filter((v) => v !== value)].slice(0, HIST_MAX);
+  try { localStorage.setItem(`hist:${name}`, JSON.stringify(vals)); } catch {}
+}
+
+function histInputs(form) {
+  return [...form.querySelectorAll("input[name]")].filter((i) => !i.type || i.type === "text");
+}
+
+function fillHistDatalist(name) {
+  const dl = document.getElementById(`hist-${name}`);
+  if (dl) dl.innerHTML = histGet(name).map((v) => `<option value="${esc(v)}"></option>`).join("");
+}
+
+function initFieldHistory(form) {
+  if (!form) return;
+  for (const input of histInputs(form)) {
+    if (!document.getElementById(`hist-${input.name}`)) {
+      const dl = document.createElement("datalist");
+      dl.id = `hist-${input.name}`;
+      form.append(dl);
+    }
+    input.setAttribute("list", `hist-${input.name}`);
+    input.setAttribute("autocomplete", "off"); // browser autofill fights the datalist
+    const hist = histGet(input.name);
+    if (hist.length) input.value = hist[0];
+    fillHistDatalist(input.name);
+  }
+  form.addEventListener("submit", () => {
+    for (const input of histInputs(form)) {
+      histAdd(input.name, input.value.trim());
+      fillHistDatalist(input.name);
+    }
+  });
+  // Enter in a text field implicitly submits the form — i.e. fires a payment —
+  // and with the datalists that's one keystroke away while picking a value.
+  // Only the submit button submits.
+  form.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.target.matches("input")) e.preventDefault();
+  });
+}
+
 // ---- boot + polling ------------------------------------------------------
 
 function fillNodeSelects() {
@@ -409,9 +477,14 @@ async function boot() {
   NODES = r.ok && Array.isArray(r.body) ? r.body : [];
   fillNodeSelects();
   await applyUiDefaults();
+  initFieldHistory($("#send-form"));
+  initFieldHistory($("#settle-form"));
   $("#send-form")?.addEventListener("submit", onSend);
   $("#settle-form")?.addEventListener("submit", onSettle);
-  $("#send-node")?.addEventListener("change", (e) => swapBeneficiaryDefaults(e.target.value));
+  $("#send-node")?.addEventListener("change", (e) => {
+    swapBeneficiaryDefaults(e.target.value);
+    renderSendNodeAccount();
+  });
   $("#settle-node")?.addEventListener("change", (e) => swapBeneficiaryDefaults(e.target.value));
   document.addEventListener("click", (e) => {
     const btn = e.target.closest(".corridor-btn");

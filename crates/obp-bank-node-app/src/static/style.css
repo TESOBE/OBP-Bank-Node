@@ -34,7 +34,7 @@ h1 { font-size: 1.2rem; margin: 0; }
 h2 { font-size: 1.05rem; margin: 0 0 .25rem; }
 h3 { font-size: .9rem; margin: 1rem 0 .35rem; color: var(--dim); }
 
-main { max-width: 1100px; margin: 0 auto; padding: 1rem 2rem 3rem; }
+main { max-width: 1280px; margin: 0 auto; padding: 1rem 2rem 3rem; }
 
 section {
   background: var(--panel);
@@ -74,6 +74,9 @@ code { background: #eef0f3; padding: 0 .25em; border-radius: 3px; font-size: .85
 }
 
 label { display: flex; flex-direction: column; font-size: .8rem; color: var(--dim); gap: .2rem; }
+
+/* Per-field constraint note, between the label text and its input. */
+.fnote { font-size: .7rem; font-style: italic; opacity: .75; }
 
 /* A routing scheme + address pair — one visual unit on its own row: the
    narrow scheme box qualifies the wide address box next to it. */
@@ -182,7 +185,7 @@ td.actions { white-space: nowrap; }
 .node-chip.warn { border-color: #f0e0c0; background: #fff4e0; color: var(--warn); }
 
 footer {
-  max-width: 1100px;
+  max-width: 1280px;
   margin: 0 auto;
   padding: 0 2rem 2rem;
   color: var(--dim);
