@@ -49,8 +49,8 @@ fn error(status: StatusCode, error_code: &str, message: impl Into<String>) -> Re
 ///   - `OBP-BANK-NODE-ORIGINATOR-001` — an `originator` field is empty.
 ///
 /// Returns the OBP error code and message on the first failure. Currency →
-/// settlement-account resolution (`422 OBP-BANK-NODE-ROUTING-001`) lands with
-/// the OBP API client and per-currency `bank` config, so it is not checked here.
+/// corridor-account resolution (`422 OBP-BANK-NODE-ROUTING-001`) needs state,
+/// so it happens in `initiate_payment` after these stateless checks.
 fn validate(req: &InitiateRequest) -> Result<(), (StatusCode, &'static str, String)> {
     const BAD_REQUEST: StatusCode = StatusCode::BAD_REQUEST;
 
@@ -161,6 +161,23 @@ pub async fn initiate_payment(
         }
     }
 
+    // Which corridor account sends this currency. With per-currency accounts
+    // configured, an unmapped currency is refused here, synchronously — not
+    // later in the Promise step as OBP-API's OBP-40003 currency mismatch.
+    let Some(account_id) = state.corridor_account_for(&req.value.currency) else {
+        let message = format!(
+            "no corridor account is configured for currency {}",
+            req.value.currency.trim().to_uppercase()
+        );
+        warn!(%message, "initiate_payment rejected unresolvable currency");
+        return error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "OBP-BANK-NODE-ROUTING-001",
+            message,
+        );
+    };
+    let account_id = account_id.to_string();
+
     let id = Uuid::new_v4().to_string();
 
     // Re-serialize the validated request as the canonical payload the dispatcher
@@ -186,7 +203,7 @@ pub async fn initiate_payment(
         .insert(NewEntry {
             transaction_request_id: &id,
             bank_id: &state.bank_id,
-            account_id: &state.account_id,
+            account_id: &account_id,
             request_payload: &request_payload,
             commitment_salt: &salt,
         })
@@ -202,7 +219,7 @@ pub async fn initiate_payment(
 
     info!(
         bank_id = %state.bank_id,
-        account_id = %state.account_id,
+        account_id = %account_id,
         transaction_request_id = %id,
         currency = %req.value.currency,
         amount = %req.value.amount,
@@ -221,7 +238,7 @@ pub async fn initiate_payment(
         kind: "OPEN_CORRIDOR_PROMISE",
         from: FromAccount {
             bank_id: state.bank_id.clone(),
-            account_id: state.account_id.clone(),
+            account_id,
         },
         to: req.to,
         originator,
@@ -599,6 +616,28 @@ pub async fn get_evidence(
             )
         }
     }
+}
+
+/// `/status` — configuration and identity detail. Kept separate from
+/// `/health`, which stays minimal (liveness of the essential technology) and
+/// whose shape must basically never change.
+pub async fn root_status(State(state): State<BankNodeState>) -> Response {
+    Json(StatusBody {
+        service: "OBP-Bank-Node",
+        version: env!("CARGO_PKG_VERSION"),
+        bank_id: state.bank_id.clone(),
+        account_id: state.account_id.clone(),
+        // BTreeMap: deterministic (sorted) key order in the JSON.
+        corridor_accounts: state
+            .corridor_accounts
+            .iter()
+            .map(|(c, a)| (c.clone(), a.clone()))
+            .collect(),
+        blockchain: state.blockchain_label,
+        finality_depth: state.finality_depth,
+        timestamp: Utc::now(),
+    })
+    .into_response()
 }
 
 pub async fn root_health(State(state): State<BankNodeState>) -> Response {

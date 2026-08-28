@@ -116,6 +116,7 @@ fn allowed(method: &Method, path: &str) -> bool {
     matches!(
         (method, segs.as_slice()),
         (&Method::GET, ["health"])
+            | (&Method::GET, ["status"])
             | (&Method::GET, ["transaction-requests"])
             | (&Method::GET, ["transaction-requests", _])
             | (&Method::GET, ["settlements"])

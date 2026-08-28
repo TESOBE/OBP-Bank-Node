@@ -43,6 +43,7 @@ async fn router_with_obp(obp_base_url: &str) -> (axum::Router, BankNodeState) {
         blockchain_label: "mock",
         bank_id: "test.bank.id".into(),
         account_id: "test-account-id".into(),
+        corridor_accounts: Default::default(),
         finality_depth: TEST_FINALITY_DEPTH,
         interface_c: crate::interface_c::consumer::ConsumerStatus::new(),
     };
@@ -258,6 +259,72 @@ async fn initiate_payment_skips_routing_validation_while_registry_unloaded() {
     payload["to"]["other_bank_routing_scheme"] = serde_json::json!("TOTALLY_UNKNOWN");
     let resp = post_initiate(payload).await;
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn root_status_reports_identity_and_corridor_accounts() {
+    let resp = router_with_corridor_accounts()
+        .await
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body_bytes(resp).await).unwrap();
+    assert_eq!(v["service"], "OBP-Bank-Node");
+    assert_eq!(v["bank_id"], "test.bank.id");
+    assert_eq!(v["account_id"], "test-account-id");
+    assert_eq!(v["corridor_accounts"]["KES"], "settlement-kes");
+    assert_eq!(v["corridor_accounts"]["NGN"], "settlement-ngn");
+    assert_eq!(v["finality_depth"], TEST_FINALITY_DEPTH);
+}
+
+/// A router whose bank sends per-currency: KES and NGN map to their corridor
+/// accounts; any other currency must be refused with ROUTING-001.
+async fn router_with_corridor_accounts() -> axum::Router {
+    let (_, mut state) = router_with_state().await;
+    state.corridor_accounts = [
+        ("KES".to_string(), "settlement-kes".to_string()),
+        ("NGN".to_string(), "settlement-ngn".to_string()),
+    ]
+    .into();
+    build_router(state)
+}
+
+#[tokio::test]
+async fn initiate_payment_books_on_the_currency_corridor_account() {
+    let mut payload = valid_payload();
+    payload["value"]["currency"] = serde_json::json!("NGN");
+    let resp = post_initiate_to(router_with_corridor_accounts().await, payload).await;
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let v: serde_json::Value = serde_json::from_slice(&body_bytes(resp).await).unwrap();
+    assert_eq!(v["from"]["account_id"], "settlement-ngn");
+}
+
+#[tokio::test]
+async fn initiate_payment_resolves_currency_case_insensitively() {
+    let mut payload = valid_payload();
+    payload["value"]["currency"] = serde_json::json!("kes");
+    let resp = post_initiate_to(router_with_corridor_accounts().await, payload).await;
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let v: serde_json::Value = serde_json::from_slice(&body_bytes(resp).await).unwrap();
+    assert_eq!(v["from"]["account_id"], "settlement-kes");
+}
+
+#[tokio::test]
+async fn initiate_payment_rejects_currency_without_corridor_account() {
+    let mut payload = valid_payload();
+    payload["value"]["currency"] = serde_json::json!("USD");
+    let resp = post_initiate_to(router_with_corridor_accounts().await, payload).await;
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let v: serde_json::Value = serde_json::from_slice(&body_bytes(resp).await).unwrap();
+    assert_eq!(v["error_code"], "OBP-BANK-NODE-ROUTING-001");
+    assert!(v["message"].as_str().unwrap().contains("USD"));
 }
 
 #[tokio::test]

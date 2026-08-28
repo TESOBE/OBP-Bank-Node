@@ -12,6 +12,14 @@ server:
 bank:
   bank_id: "rt.bank.b3"
   account_id: "settlement-b"
+  # One corridor account per sending currency (created via the app's setup
+  # page). Authoritative when non-empty: a currency not listed here is
+  # refused at initiation with 422 OBP-BANK-NODE-ROUTING-001.
+  corridor_accounts:
+    KES: "settlement-b"
+    NGN: "settlement-b-ngn"
+    USD: "settlement-b-usd"
+    EUR: "settlement-b-eur"
 
 obp_api:
   base_url: "http://localhost:8080"

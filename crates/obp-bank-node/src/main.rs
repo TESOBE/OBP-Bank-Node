@@ -394,9 +394,16 @@ struct ServerConfig {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct BankConfig {
     bank_id: String,
-    /// Settlement account to debit. Future: support a map keyed by currency
-    /// for multi-currency settlement.
+    /// Corridor account to debit when `corridor_accounts` is empty — the
+    /// single-currency shorthand. Also what `/health` reports as `account_id`.
     account_id: String,
+    /// Currency (ISO 4217) → corridor account id, one account per sending
+    /// currency (like nostros). When non-empty this map is authoritative:
+    /// a currency without an entry is rejected at initiation with
+    /// `422 OBP-BANK-NODE-ROUTING-001` (there is no fallback to `account_id`,
+    /// so a misdirected booking cannot happen silently).
+    #[serde(default)]
+    corridor_accounts: std::collections::HashMap<String, String>,
 }
 
 impl Default for BankConfig {
@@ -404,6 +411,7 @@ impl Default for BankConfig {
         BankConfig {
             bank_id: "PLACEHOLDER-bank-id".into(),
             account_id: "PLACEHOLDER-account-id".into(),
+            corridor_accounts: Default::default(),
         }
     }
 }
@@ -582,6 +590,14 @@ async fn main() -> anyhow::Result<()> {
         blockchain_label,
         bank_id: config.bank.bank_id.clone(),
         account_id: config.bank.account_id.clone(),
+        // Keys uppercased once here so lookup is case-insensitive on the
+        // currency without re-normalizing per request.
+        corridor_accounts: config
+            .bank
+            .corridor_accounts
+            .iter()
+            .map(|(currency, account)| (currency.to_uppercase(), account.clone()))
+            .collect(),
         finality_depth: config.settlement.finality_depth,
         interface_c: interface_c_status,
     };

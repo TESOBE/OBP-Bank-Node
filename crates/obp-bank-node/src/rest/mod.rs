@@ -44,12 +44,31 @@ pub struct BankNodeState {
     pub blockchain_label: &'static str,
     pub bank_id: String,
     pub account_id: String,
+    /// Currency (uppercase ISO 4217) → corridor account id. Empty = the
+    /// single-currency shorthand: every currency sends from `account_id`.
+    pub corridor_accounts: std::collections::HashMap<String, String>,
     /// Depth at which this node's finality watcher promotes settlements to
     /// FINAL — surfaced on the settlement read endpoints.
     pub finality_depth: u32,
     /// Interface C consumer state, surfaced on `/health` so a node that
     /// cannot receive AMQP messages is visible instead of silently green.
     pub interface_c: crate::interface_c::consumer::ConsumerStatus,
+}
+
+impl BankNodeState {
+    /// The corridor account that sends `currency` (matched case-insensitively).
+    /// `None` means the currency has no configured account and the request
+    /// must be rejected (`OBP-BANK-NODE-ROUTING-001`) — a non-empty map never
+    /// falls back to `account_id`.
+    pub fn corridor_account_for(&self, currency: &str) -> Option<&str> {
+        if self.corridor_accounts.is_empty() {
+            Some(&self.account_id)
+        } else {
+            self.corridor_accounts
+                .get(currency.trim().to_uppercase().as_str())
+                .map(String::as_str)
+        }
+    }
 }
 
 pub fn build_router(state: BankNodeState) -> Router {
@@ -83,5 +102,7 @@ pub fn build_router(state: BankNodeState) -> Router {
         )
         .route("/obp-bank-node/v5.1.0/health", get(root_health))
         .route("/health", get(root_health))
+        .route("/obp-bank-node/v5.1.0/status", get(root_status))
+        .route("/status", get(root_status))
         .with_state(state)
 }

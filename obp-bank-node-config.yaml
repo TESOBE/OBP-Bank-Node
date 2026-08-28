@@ -8,8 +8,15 @@ server:
 
 bank:
   bank_id: "ke.01.kcs"
-  # Settlement account to debit.
+  # Corridor account to debit when `corridor_accounts` is not set — the
+  # single-currency shorthand. Also reported by /health.
   account_id: "7bc9a8e4-5d02-40e3-b129-1c3bf89de9f1"
+  # Multi-currency sending: one corridor account per currency (like nostros).
+  # Authoritative when non-empty — a currency not listed is refused at
+  # initiation with 422 OBP-BANK-NODE-ROUTING-001; no fallback to account_id.
+  # corridor_accounts:
+  #   KES: "7bc9a8e4-5d02-40e3-b129-1c3bf89de9f1"
+  #   USD: "account-id-of-the-usd-corridor-account"
 
 # Shared secret sent as the bearer token on the A2 CBS webhook.
 local_secret: "change-me-on-first-run"

@@ -85,12 +85,38 @@ async function renderHealth() {
   renderSendNodeAccount();
 }
 
+// Per-node /status (configuration detail: corridor_accounts map etc.).
+// Fetched once per node — /status only changes on a node restart.
+const NODE_STATUS = {};
+
+async function fetchStatus(name) {
+  if (!NODE_STATUS[name]) {
+    const r = await getJson(nodeUrl(name, "status"));
+    if (r.ok && r.body) NODE_STATUS[name] = r.body;
+  }
+  return NODE_STATUS[name];
+}
+
 // Read-only line under the Sending node select: the corridor account the
-// promise TRs are booked on (its currency is what the Currency field must match).
-function renderSendNodeAccount() {
+// promise TR for the entered currency will be booked on — or a warning when
+// the node has no account for that currency (the node would refuse with
+// OBP-BANK-NODE-ROUTING-001).
+async function renderSendNodeAccount() {
   const el = $("#send-node-account");
   if (!el) return;
-  const info = NODE_INFO[$("#send-node")?.value];
+  const node = $("#send-node")?.value;
+  if (!node) { el.textContent = ""; return; }
+  const status = await fetchStatus(node);
+  const currency = ($("#send-form")?.elements.namedItem("currency")?.value || "")
+    .trim().toUpperCase();
+  const map = status?.corridor_accounts || {};
+  if (Object.keys(map).length && currency) {
+    el.textContent = map[currency]
+      ? `corridor account: ${status.bank_id} / ${map[currency]}`
+      : `no corridor account for ${currency} — the node will refuse this send`;
+    return;
+  }
+  const info = status || NODE_INFO[node];
   el.textContent = info ? `corridor account: ${info.bank_id} / ${info.account_id}` : "";
 }
 
@@ -485,6 +511,8 @@ async function boot() {
     swapBeneficiaryDefaults(e.target.value);
     renderSendNodeAccount();
   });
+  $("#send-form")?.elements.namedItem("currency")
+    ?.addEventListener("input", renderSendNodeAccount);
   $("#settle-node")?.addEventListener("change", (e) => swapBeneficiaryDefaults(e.target.value));
   document.addEventListener("click", (e) => {
     const btn = e.target.closest(".corridor-btn");

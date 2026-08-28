@@ -228,6 +228,24 @@ pub struct HealthBody {
     pub timestamp: DateTime<Utc>,
 }
 
+/// `/status` — what this node is configured as. `/health` stays minimal
+/// (is the essential technology running); configuration and identity detail
+/// live here, so /health's shape basically never changes.
+#[derive(Debug, Serialize)]
+pub struct StatusBody {
+    pub service: &'static str,
+    pub version: &'static str,
+    pub bank_id: String,
+    /// The single-currency shorthand account (what /health reports).
+    pub account_id: String,
+    /// Currency → corridor account id. Empty when the node runs the
+    /// single-account shorthand (every currency sends from `account_id`).
+    pub corridor_accounts: std::collections::BTreeMap<String, String>,
+    pub blockchain: &'static str,
+    pub finality_depth: u32,
+    pub timestamp: DateTime<Utc>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ErrorBody {
     pub error_code: String,
