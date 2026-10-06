@@ -22,6 +22,12 @@
 //! A healthy row walks all steps in a single tick. Retries are paced by the
 //! `retry_interval`: [`OutboxStore::claim_due`] only returns rows whose last
 //! attempt is older than the cutoff.
+//!
+//! Retries are not endless. A row still failing a retryable step once
+//! `max_retry_duration` has passed since it was created is moved to
+//! `EXCEPTION`, with the last error in `exception_reason`, for an operator to
+//! reconcile. Without that limit, a failure misread as temporary was retried
+//! every 15 seconds for weeks (three promises, about 217,000 attempts).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,6 +46,9 @@ pub struct DispatcherConfig {
     pub retry_interval: Duration,
     /// Maximum rows processed per scan.
     pub batch_size: i64,
+    /// How long after a row was created its retryable failures are still
+    /// retried. A row still failing after this is moved to `EXCEPTION`.
+    pub max_retry_duration: Duration,
 }
 
 impl Default for DispatcherConfig {
@@ -48,6 +57,7 @@ impl Default for DispatcherConfig {
             tick_interval: Duration::from_secs(5),
             retry_interval: Duration::from_secs(15),
             batch_size: 50,
+            max_retry_duration: Duration::from_secs(24 * 60 * 60),
         }
     }
 }
@@ -142,6 +152,11 @@ impl Dispatcher {
                     advanced = true;
                 }
                 Err(e) if e.is_retryable() => {
+                    if self.retries_exhausted(row) {
+                        self.give_up(row, "submitting the transaction request to OBP-API", &e.to_string())
+                            .await?;
+                        return Ok(true);
+                    }
                     warn!(
                         transaction_request_id = %id,
                         attempt = row.attempt_count + 1,
@@ -181,6 +196,11 @@ impl Dispatcher {
                     advanced = true;
                 }
                 Err(e) => {
+                    if self.retries_exhausted(row) {
+                        self.give_up(row, "writing the Promise commitment", &e.to_string())
+                            .await?;
+                        return Ok(true);
+                    }
                     warn!(
                         transaction_request_id = %id,
                         error = %e,
@@ -246,11 +266,17 @@ impl Dispatcher {
                     advanced = true;
                 }
                 Err(e) if e.is_retryable() => {
-                    warn!(
-                        transaction_request_id = %id,
-                        error = %e,
-                        "evidence report failed (retryable) — leaving PROMISE_WRITTEN for backoff"
-                    );
+                    if self.retries_exhausted(row) {
+                        self.give_up(row, "reporting the promise evidence to OBP-API", &e.to_string())
+                            .await?;
+                        advanced = true;
+                    } else {
+                        warn!(
+                            transaction_request_id = %id,
+                            error = %e,
+                            "evidence report failed (retryable) — leaving PROMISE_WRITTEN for backoff"
+                        );
+                    }
                 }
                 Err(e) => {
                     warn!(
@@ -265,6 +291,37 @@ impl Dispatcher {
         }
 
         Ok(advanced)
+    }
+
+    /// Whether `max_retry_duration` has passed since the row was created. A row
+    /// whose `created_at` cannot be read is treated as exhausted: it cannot be
+    /// shown to be within the limit, and retrying it forever is the failure
+    /// this limit exists to prevent.
+    fn retries_exhausted(&self, row: &OutboxRecord) -> bool {
+        let limit = chrono::Duration::from_std(self.config.max_retry_duration)
+            .unwrap_or_else(|_| chrono::Duration::days(1));
+        match chrono::DateTime::parse_from_rfc3339(&row.created_at) {
+            Ok(created) => Utc::now().signed_duration_since(created.with_timezone(&Utc)) >= limit,
+            Err(_) => true,
+        }
+    }
+
+    /// Stop retrying a row: move it to `EXCEPTION`, recording which step kept
+    /// failing, how often, and the last error, so an operator can reconcile it.
+    async fn give_up(
+        &self,
+        row: &OutboxRecord,
+        step: &str,
+        last_error: &str,
+    ) -> Result<(), crate::outbox::OutboxError> {
+        let reason = format!(
+            "gave up {step} after {attempts} attempts since {created}; the retry limit is {limit_hours} hours. Last error: {last_error}",
+            attempts = row.attempt_count + 1,
+            created = row.created_at,
+            limit_hours = self.config.max_retry_duration.as_secs() / 3600,
+        );
+        warn!(transaction_request_id = %row.transaction_request_id, %reason, "retry limit reached — marking EXCEPTION");
+        self.store.mark_exception(&row.transaction_request_id, &reason).await
     }
 
     /// The canonical preimage for this row's commitment: a deterministic JSON
@@ -365,10 +422,20 @@ mod tests {
     }
 
     /// No-retry-window config so `claim_due` returns rows immediately in tests.
+    /// The retry limit is an hour, far longer than any test runs.
     fn dispatcher(
         store: OutboxStore,
         obp_base: String,
         backend: Arc<dyn BlockchainBackend>,
+    ) -> Dispatcher {
+        dispatcher_with_retry_limit(store, obp_base, backend, Duration::from_secs(3600))
+    }
+
+    fn dispatcher_with_retry_limit(
+        store: OutboxStore,
+        obp_base: String,
+        backend: Arc<dyn BlockchainBackend>,
+        max_retry_duration: Duration,
     ) -> Dispatcher {
         let obp = Arc::new(ObpClient::new(obp_base, ObpAuth::None).unwrap());
         Dispatcher::new(
@@ -380,7 +447,35 @@ mod tests {
                 tick_interval: Duration::from_millis(10),
                 retry_interval: Duration::from_secs(0),
                 batch_size: 50,
+                max_retry_duration,
             },
+        )
+    }
+
+    /// OBP stub that is temporarily unavailable: a retryable failure.
+    fn unavailable_obp() -> Router {
+        Router::new().route(
+            CREATE_TR_PATH,
+            post(|| async {
+                (
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({ "code": 503, "message": "OBP-50000: Unknown Error." })),
+                )
+            }),
+        )
+    }
+
+    /// OBP stub refusing the TR create the way the counterparty failure did:
+    /// a 404 carrying an OBP business code.
+    fn counterparty_refused_obp() -> Router {
+        Router::new().route(
+            CREATE_TR_PATH,
+            post(|| async {
+                (
+                    axum::http::StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({ "code": 404, "message": "OBP-30014: Counterparty already exists. Please specify a different value for BANK_ID or ACCOUNT_ID or VIEW_ID or NAME." })),
+                )
+            }),
         )
     }
 
@@ -594,5 +689,80 @@ mod tests {
         assert_eq!(a.schema, PromiseRecord::SCHEMA_V1);
         // The cleartext amount must not appear in the on-chain record.
         assert!(!a.commitment.contains("1500"));
+    }
+
+    #[tokio::test]
+    async fn retryable_submit_failure_past_the_retry_limit_marks_exception_with_the_last_error() {
+        let store = OutboxStore::connect_in_memory().await.unwrap();
+        insert_row(&store, "tr-limit-1").await;
+        let backend = Arc::new(MockBackend::new());
+        let base = spawn_obp_stub(unavailable_obp()).await;
+        let disp = dispatcher_with_retry_limit(store.clone(), base, backend.clone(), Duration::ZERO);
+
+        let advanced = disp.process_due_once().await.unwrap();
+        assert_eq!(advanced, 1, "giving up is a change of state");
+
+        let rec = store.get("tr-limit-1").await.unwrap().unwrap();
+        assert_eq!(rec.status, status::EXCEPTION);
+        let reason = rec.exception_reason.unwrap();
+        assert!(reason.contains("submitting the transaction request to OBP-API"), "{reason}");
+        assert!(reason.contains("OBP-50000"), "the last error is recorded: {reason}");
+        assert_eq!(backend.writes().len(), 0, "no Promise for a request OBP-API never accepted");
+
+        assert_eq!(disp.process_due_once().await.unwrap(), 0, "an EXCEPTION row is not retried");
+    }
+
+    #[tokio::test]
+    async fn retryable_submit_failure_within_the_retry_limit_stays_initiated() {
+        let store = OutboxStore::connect_in_memory().await.unwrap();
+        insert_row(&store, "tr-limit-2").await;
+        let backend = Arc::new(MockBackend::new());
+        let base = spawn_obp_stub(unavailable_obp()).await;
+        let disp = dispatcher(store.clone(), base, backend.clone());
+
+        assert_eq!(disp.process_due_once().await.unwrap(), 0);
+
+        let rec = store.get("tr-limit-2").await.unwrap().unwrap();
+        assert_eq!(rec.status, status::INITIATED, "still within the limit, so still retried");
+        assert!(rec.exception_reason.is_none());
+    }
+
+    #[tokio::test]
+    async fn retryable_report_failure_past_the_retry_limit_marks_exception() {
+        let store = OutboxStore::connect_in_memory().await.unwrap();
+        insert_row(&store, "tr-limit-3").await;
+        let backend = Arc::new(MockBackend::new());
+        // OBP accepts the TR but has no report-back route, so the report step
+        // fails with a retryable 404.
+        let base = spawn_obp_stub(accepting_obp()).await;
+        let disp = dispatcher_with_retry_limit(store.clone(), base, backend.clone(), Duration::ZERO);
+
+        disp.process_due_once().await.unwrap();
+
+        let rec = store.get("tr-limit-3").await.unwrap().unwrap();
+        assert_eq!(rec.status, status::EXCEPTION);
+        assert!(
+            rec.exception_reason.unwrap().contains("reporting the promise evidence to OBP-API"),
+            "the step that kept failing is named"
+        );
+        assert_eq!(backend.writes().len(), 1, "the Promise was written before the report step gave up");
+    }
+
+    #[tokio::test]
+    async fn not_found_refusal_with_a_business_code_marks_exception_on_the_first_attempt() {
+        let store = OutboxStore::connect_in_memory().await.unwrap();
+        insert_row(&store, "tr-refused").await;
+        let backend = Arc::new(MockBackend::new());
+        let base = spawn_obp_stub(counterparty_refused_obp()).await;
+        // Well within the retry limit: the refusal is final, not retried.
+        let disp = dispatcher(store.clone(), base, backend.clone());
+
+        assert_eq!(disp.process_due_once().await.unwrap(), 1);
+
+        let rec = store.get("tr-refused").await.unwrap().unwrap();
+        assert_eq!(rec.status, status::EXCEPTION);
+        assert_eq!(rec.attempt_count, 1);
+        assert!(rec.exception_reason.unwrap().contains("OBP-30014"));
+        assert_eq!(backend.writes().len(), 0);
     }
 }

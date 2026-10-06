@@ -47,6 +47,19 @@ an operator rather than bounced again. A distinct reversal record beyond the
 return flow, and the **Netting Snapshot** record, are designed but not yet
 implemented.
 
+## Other uses of this codebase
+
+The evidence and settlement layers are corridor-agnostic: `crates/obp-blockchain`
+(commit–reveal records, Cardano transaction building, wallet, Ogmios client,
+chain follower) and the durable outbox have no dependency on the corridor
+message flow. The same node design can act as a tokenized-deposit /
+stablecoin issuance node: mint and burn of a bank-issued Cardano native
+asset, driven by the outbox against a reserve account in OBP-API, with
+reserve attestations anchored on-chain. That direction is explored in the
+[TEuro](https://github.com/OpenBankProject/TEuro) repository (its `node/`
+workspace starts from a copy of these crates); this repository stays
+corridor-only.
+
 ## See it running
 
 - **On-chain evidence (Cardano preprod):** example promise transaction

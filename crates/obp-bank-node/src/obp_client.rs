@@ -21,11 +21,13 @@
 //!
 //! Errors are split into two classes the dispatcher acts on differently:
 //!   - [`ObpClientError::Transport`] — retryable. Unreachable, timeout, 5xx,
-//!     429, *and* operational 4xx (401/403 auth, 404/405 wrong endpoint, or any
-//!     4xx without an OBP business code). Leave the outbox row and back off.
-//!   - [`ObpClientError::Rejected`] — terminal. A 400/422 carrying an OBP-NNNNN
-//!     business code (e.g. an unroutable destination). Move the row to
-//!     `EXCEPTION`. A misconfiguration must not be mistaken for this.
+//!     429, *and* operational 4xx (401/403 auth, a 404 for a URL OBP-API does
+//!     not serve (`OBP-10404`), 405, or any 4xx without an OBP business code).
+//!     Leave the outbox row and back off.
+//!   - [`ObpClientError::Rejected`] — terminal. A 400, 404 or 422 carrying an
+//!     OBP-NNNNN business code (e.g. an unroutable destination, or a
+//!     counterparty OBP-API will not create). Move the row to `EXCEPTION`.
+//!     A misconfiguration must not be mistaken for this.
 
 use std::time::{Duration, Instant};
 
@@ -35,6 +37,10 @@ use tracing::debug;
 
 /// OBP API version segment for the Transaction Request endpoint.
 const OBP_API_VERSION: &str = "v7.0.0";
+
+/// The code OBP-API puts on a 404 for a URL it does not serve at all, as
+/// opposed to a 404 from an endpoint that found the request and refused it.
+const OBP_URL_NOT_SERVED: &str = "OBP-10404";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ObpClientError {
@@ -517,18 +523,25 @@ fn classify_interactive_failure(status: reqwest::StatusCode, body: &str) -> ObpC
 
 /// Split a non-2xx OBP answer into the two classes the dispatcher acts on.
 ///
-/// Only a genuine *business* rejection is terminal: a 400/422 carrying an
-/// OBP-NNNNN code (e.g. an unroutable destination, or conflicting promise
-/// evidence). Everything else is operational, not a verdict on the payment:
-/// 5xx, timeouts (408), rate limiting (429), bad credentials (401/403), a
-/// wrong/misconfigured endpoint (404/405), or a 4xx with no business code.
-/// Those are retryable — failing a real payment because OBP-API was
+/// Only a genuine *business* rejection is terminal: a 400, 404 or 422 carrying
+/// an OBP-NNNNN code (e.g. an unroutable destination, conflicting promise
+/// evidence, or a counterparty OBP-API refuses to create). The endpoint was
+/// found and looked at the request, and the same request will be refused the
+/// same way every time.
+///
+/// Everything else is operational, not a verdict on the payment: 5xx, timeouts
+/// (408), rate limiting (429), bad credentials (401/403), 405, a 4xx with no
+/// business code, and a 404 carrying `OBP-10404`, which is OBP-API saying it
+/// does not serve that URL at all (a wrong base URL or version, or an endpoint
+/// switched off with `api_disabled_endpoints`). Those are retryable, within
+/// the dispatcher's retry limit — failing every payment because OBP-API was
 /// misconfigured or our credentials were stale would be wrong.
 fn classify_failure(status: reqwest::StatusCode, body: &str) -> ObpClientError {
     let (error_code, message) = parse_obp_error(body);
-    let is_business_rejection = matches!(status.as_u16(), 400 | 422)
+    let is_business_rejection = matches!(status.as_u16(), 400 | 404 | 422)
         && error_code.starts_with("OBP-")
-        && error_code != "OBP-UNKNOWN";
+        && error_code != "OBP-UNKNOWN"
+        && error_code != OBP_URL_NOT_SERVED;
     if is_business_rejection {
         ObpClientError::Rejected {
             status: status.as_u16(),
@@ -870,5 +883,32 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.is_retryable(), "connection refused must be retryable");
+    }
+
+    #[test]
+    fn not_found_with_a_business_code_is_terminal() {
+        // The counterparty failure that was retried for seven weeks: the
+        // endpoint answered, and its answer will not change.
+        let err = classify_failure(
+            reqwest::StatusCode::NOT_FOUND,
+            r#"{"code":404,"message":"OBP-30014: Counterparty already exists. Please specify a different value for BANK_ID or ACCOUNT_ID or VIEW_ID or NAME."}"#,
+        );
+        assert!(!err.is_retryable(), "a 404 refusal with an OBP code is final: {err:?}");
+        match err {
+            ObpClientError::Rejected { status, error_code, .. } => {
+                assert_eq!(status, 404);
+                assert_eq!(error_code, "OBP-30014");
+            }
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn not_found_for_a_url_obp_does_not_serve_is_retryable() {
+        let err = classify_failure(
+            reqwest::StatusCode::NOT_FOUND,
+            r#"{"code":404,"message":"OBP-10404: 404 Not Found. The server could not find the requested URI."}"#,
+        );
+        assert!(err.is_retryable(), "OBP-10404 means a setup problem, not a wrong payment: {err:?}");
     }
 }
