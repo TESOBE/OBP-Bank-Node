@@ -75,14 +75,14 @@ credentials in the config file, a real boundary violation. Now:
 (bank id implied — cross-bank grants inexpressible); `routing_schemes`
 stay in both configs (system catalogue, API-operator scope in production,
 idempotent applies; Simon ok'd). Status body gained `"bank"`; the
-test-account form is locked to the own bank. `dev/app-a/b.yaml` rewritten —
+test-account form is locked to the own bank. `dev/ui-a/b.yaml` rewritten —
 each now carries only its own side. Display: `Role (bank_id)` instead of
 `Role @ bank_id`; page hints trimmed hard (see the terse-UI-copy memory).
 23 app tests / 170 workspace.
 
 New idea (Simon, not built): a read-only **corridor directory** page —
 all banks set up for Open Corridor. Needs an OBP-API listing endpoint
-(broker-registration existence only, no credentials); noted in `APP.md`
+(broker-registration existence only, no credentials); noted in `UI.md`
 §Open.
 
 ## 2026-08-08 — `/setup` operator page in the app (OBP-API provisioning UI)
@@ -97,14 +97,14 @@ existing users but a missing user is an error; service-user creation, the
 psql `authuser.validated` flip, and `env.sh` token writing stay in
 `setup_obp.sh` as the one-shot bootstrap.
 
-Built (all in `crates/obp-bank-node-app`; full description in `APP.md`
+Built (all in `crates/obp-bank-node-ui`; full description in `UI.md`
 §Setup page):
 
 - `oidc.rs` (well-known → discovery → login/callback/refresh, sessions),
   `setup.rs` (check/apply API + test-account endpoint), `/setup` static page.
   New config: `obp_api` block (OIDC client; page inert without it) +
   declarative `setup` block (routing schemes verbatim, banks/accounts/FX/
-  brokers, role grants). `dev/app-a/b.yaml` carry the corridor desired state;
+  brokers, role grants). `dev/ui-a/b.yaml` carry the corridor desired state;
   **consumer key/secret are `CHANGE-ME` placeholders — an OBP consumer with
   redirect URL `http://localhost:8091|8092/setup/callback` must be registered
   and its key/secret configured before first login.**
@@ -123,7 +123,7 @@ Built (all in `crates/obp-bank-node-app`; full description in `APP.md`
 - **Consumers registered on the live sandbox** (2026-08-08, via
   `POST /obp/v5.1.0/management/consumers` as the round-trip superadmin):
   `obp-bank-node-app-8091-setup` / `-8092-setup`; key/secret written into
-  `dev/app-a/b.yaml`. `/setup/login` verified redirecting to the live
+  `dev/ui-a/b.yaml`. `/setup/login` verified redirecting to the live
   obp-oidc authorize endpoint (:9000) with the registered client_id.
 - Not yet done: the interactive browser login + a live reconcile run
   (restart the app instances first — the running ones predate this build).
@@ -135,7 +135,7 @@ Final additions after the evening block below, all verified before shutdown:
 
 - **`ui_defaults`** — optional app-config map (form prefill keyed by form
   field name), served at `GET /api/ui-defaults`, applied by the UI at load.
-  `dev/app-a.yaml` prefills bank B as beneficiary and vice versa — each UI
+  `dev/ui-a.yaml` prefills bank B as beneficiary and vice versa — each UI
   instance now points at the *other* bank out of the box, incl. the Settle
   form's `other_bank_id`.
 - **Scheme·address pairs grouped** (Simon: they only make sense together):
@@ -143,7 +143,7 @@ Final additions after the evening block below, all verified before shutdown:
   render as one visual unit (narrow scheme box + wide address box, own
   row). Originator scheme is now an editable field (was hardcoded `IBAN`
   in the JS).
-- **App launcher hints**: `start_app_a/b.sh` print the demo beneficiary
+- **App launcher hints**: `start_ui_a/b.sh` print the demo beneficiary
   (bank + account + scheme) before starting — out-of-band knowledge, as a
   real sender would have it. Decided with Simon: the app must NOT
   enumerate the other bank's accounts (bank-client boundary). The
@@ -155,7 +155,7 @@ Final additions after the evening block below, all verified before shutdown:
 
 **State of the trees:** OBP-API committed by Simon (`7154d070`, jar
 rebuilt post-rename). This repo (Bank Node): ALL of today's work is
-uncommitted working-tree edits + the new `crates/obp-bank-node-app` and
+uncommitted working-tree edits + the new `crates/obp-bank-node-ui` and
 `dev/` (renamed from `WIP/roundtrip/`) — for Simon to review.
 `commands/_helpers/open_dev_env` (outside this repo) also modified: four
 new terminals (nodes A/B + UIs A/B) calling `./dev/start_*.sh`.
@@ -177,7 +177,7 @@ new terminals (nodes A/B + UIs A/B) calling `./dev/start_*.sh`.
    the UI has only been smoke-tested against a mock node, never against
    the live stack. This is the main untested surface.
 4. Then, in whatever order makes sense: the one-command bring-up +
-   health-check script (`APP.md` caveat), payee-lookup proxy (above),
+   health-check script (`UI.md` caveat), payee-lookup proxy (above),
    routing-scheme category enforcement (needs OBP-API-side decision),
    and the standing items — KES FX (API3), key custody, A2 delivery
    modes, per-vhost TLS.
@@ -186,13 +186,13 @@ new terminals (nodes A/B + UIs A/B) calling `./dev/start_*.sh`.
 
 - **`WIP/roundtrip/` → `dev/`** (repo root; Simon: past experimentation).
   All path references updated: `.gitignore`, launchers, YAML comments,
-  `dev/STATUS.md` re-run instructions, these notes, `APP.md`, and
+  `dev/STATUS.md` re-run instructions, these notes, `UI.md`, and
   `commands/_helpers/open_dev_env`. `run_roundtrip.sh` keeps its name (it
   runs the round-trip test); `dev/` gained `start_node_a/b.sh` +
-  `start_app_a/b.sh` and per-node app configs `app-a/b.yaml` (UIs on
+  `start_ui_a/b.sh` and per-node app configs `ui-a/b.yaml` (UIs on
   :8091/:8092, **each locked to its own node** — bank-client view; the
   bilateral position join was dropped from the UI, position = own
-  outbound exposure per corridor; APP.md storyline step 3 revised).
+  outbound exposure per corridor; UI.md storyline step 3 revised).
   `open_dev_env` opens four themed terminals (nodes A/B + both UIs).
 - **UI Send form** now takes the full end-recipient routing: beneficiary
   name + bank/account routing scheme and address (was hardcoded `OBP`).
@@ -227,8 +227,8 @@ new terminals (nodes A/B + UIs A/B) calling `./dev/start_*.sh`.
   `counterparty_bank_id`.
 - **Checklist step 3**: OBP-API side committed by Simon (`7154d070`
   "OC related"); the Bank Node working tree remains for Simon to review.
-- **Checklist step 4 done — `obp-bank-node-app` built** (see
-  `APP.md` §Shape for the full description): new workspace crate with
+- **Checklist step 4 done — `obp-bank-node-ui` built** (see
+  `UI.md` §Shape for the full description): new workspace crate with
   whitelisted JSON proxy + embedded single-page UI covering the five
   storyline steps; per-node `bearer_token` auth seam. Node-side
   addition: `TransactionRequestStatus` gained `value` / `other_bank_id`
@@ -237,7 +237,7 @@ new terminals (nodes A/B + UIs A/B) calling `./dev/start_*.sh`.
   tests pass** (was 138). Smoke-tested live against a mock-mode node
   through the proxy (initiate → list). Not yet exercised against the
   full roundtrip stack — that's the natural next step, plus the
-  bring-up/health-check script `APP.md` §Honest-demo-caveats asks for.
+  bring-up/health-check script `UI.md` §Honest-demo-caveats asks for.
 
 ## 2026-08-07 — settle endpoint reshaped to a resource; TR-attribute migration; demo-app spec
 
@@ -312,8 +312,8 @@ rationale: the old POST /open-corridor/settle name oversold — it nets and
   (both banks), no longer system-level.
 - `WIP/OPEN_CORRIDOR_INTERFACE_C_PUBLISH_PLAN.md` §5.3 updated (resource
   shape noted as superseding the flat shape).
-- **`WIP/APP.md` (new)** — spec for the `/app` demo/manual-test UI decided
-  with Simon: lives in this repo, one axum crate (`obp-bank-node-app`),
+- **`WIP/UI.md` (new)** — spec for the `/app` demo/manual-test UI decided
+  with Simon: lives in this repo, one axum crate (`obp-bank-node-ui`),
   talks ONLY to Bank Node APIs (node A + node B; position view = each
   node's own outbound legs joined by the app). Requires four node API
   additions: settlement-store + evidence-store read endpoints, the
@@ -322,7 +322,7 @@ rationale: the old POST /open-corridor/settle name oversold — it nets and
   the bank-scoped `CanSettleOpenCorridor` at its bank).
 
 **4. Node API additions for `/app` — built (2026-08-07, later the same day).**
-All four `WIP/APP.md` items, in `crates/obp-bank-node` (138 workspace tests
+All four `WIP/UI.md` items, in `crates/obp-bank-node` (138 workspace tests
 pass, was 120):
 
 - **Settlement read API**: `GET .../settlements` +
@@ -350,8 +350,8 @@ pass, was 120):
   the dispatcher); transport → 502 `OBP-BANK-NODE-INTERFACE-B-001`.
 - `setup_obp.sh`: node service users now get bank-scoped
   `CanSettleOpenCorridor` at their own bank (both sides may trigger).
-- Next for `/app`: the `obp-bank-node-app` axum crate itself (static UI +
-  JSON proxy over the two nodes) per `WIP/APP.md` §Shape.
+- Next for `/app`: the `obp-bank-node-ui` axum crate itself (static UI +
+  JSON proxy over the two nodes) per `WIP/UI.md` §Shape.
 
 **5. Field rename `counterparty_bank_id` → `other_bank_id` (2026-08-07,
 last thing before shutdown — one verification still outstanding, see the
@@ -399,8 +399,8 @@ were uncommitted, so no wire compatibility concern:
 3. Simon reviews + commits the OBP-API working tree (migration + MappedText
    + settle rework + test-import fix + rename) and the Bank Node edits
    (node API additions, rename, WIP docs, scripts).
-4. Then the `/app` work per `WIP/APP.md` — node API additions **done**
-   (block 4 above); the `obp-bank-node-app` crate (static UI + JSON proxy
+4. Then the `/app` work per `WIP/UI.md` — node API additions **done**
+   (block 4 above); the `obp-bank-node-ui` crate (static UI + JSON proxy
    over node A/B) is what remains.
 
 ## 2026-07-31 — FULL ROUND TRIP ACHIEVED on localhost + Cardano preprod

@@ -1,41 +1,41 @@
-# Bank Node App for bank B — locked to its own node (rt.bank.b3), exactly as
+# Bank Node UI for bank A — locked to its own node (rt.bank.a3), exactly as
 # a bank client using Open Corridor would deploy it. The localhost demo runs
-# a second instance (app-a.yaml) so both banks' views sit side by side.
+# a second instance (ui-b.yaml) so both banks' views sit side by side.
 # Start from the repo root:
-#   OBP_BANK_NODE_APP_CONFIG=dev/app-b.yaml cargo run -p obp-bank-node-app
+#   OBP_BANK_NODE_UI_CONFIG=dev/ui-a.yaml cargo run -p obp-bank-node-ui
 
 server:
-  bind: "0.0.0.0:8092"
+  bind: "0.0.0.0:8091"   # 8090 is occupied by nginx on this machine
 
 nodes:
-  - name: "node-b"
-    base_url: "http://localhost:8089"
+  - name: "node-a"
+    base_url: "http://localhost:8088"
 
 # Form prefill for this instance, keyed by form-field name (Send + Settle).
 # Out-of-band knowledge of the demo topology — the app never enumerates the
 # other bank's accounts.
 ui_defaults:
-  beneficiary_name: "Beneficiary at rt.bank.a3"
-  other_bank: "rt.bank.a3"
-  other_account: "settlement-a"
-  other_bank_id: "rt.bank.a3"
+  beneficiary_name: "Beneficiary at rt.bank.b3"
+  other_bank: "rt.bank.b3"
+  other_account: "settlement-b"
+  other_bank_id: "rt.bank.b3"
 
 # --- /setup operator page -------------------------------------------------
 # OBP-API + OIDC client for the setup page (the Portal's login scheme: the
 # provider comes from OBP-API's /obp/v5.1.0/well-known, the admin logs in
 # interactively, this app exchanges the code server-side). The consumer must
-# be registered in OBP with redirect URL http://localhost:8092/setup/callback;
+# be registered in OBP with redirect URL http://localhost:8091/setup/callback;
 # put its key/secret here or via env:
 #   OBP_BN_APP_OBP_API__OAUTH_CLIENT_ID=... OBP_BN_APP_OBP_API__OAUTH_CLIENT_SECRET=...
-# Consumer 'obp-bank-node-app-8092-setup' (registered 2026-08-08 via
+# Consumer 'obp-bank-node-app-8091-setup' (registered 2026-08-08 via
 # POST /obp/v5.1.0/management/consumers; localhost-dev credentials, same
 # class as the broker passwords below).
 obp_api:
   base_url: "http://localhost:8080"
   oauth_provider: "obp-oidc"
-  oauth_client_id: "hfs3f3sis0qmunhdvns2pkxqfydvs2n3u2j3diee"
-  oauth_client_secret: "zfgx4ucj0e4u2wtrfm2yxw1vppmffnz03uztb5ur"
-  callback_url: "http://localhost:8092/setup/callback"
+  oauth_client_id: "xu5htct5zlvmshfvmfruc2riay3pd4uone5jb3ov"
+  oauth_client_secret: "pnp0v1vjl5f5r5o123hrrgreslxgtqie2oojwf0a"
+  callback_url: "http://localhost:8091/setup/callback"
 
 # Desired Open Corridor state the setup page reconciles OBP-API against.
 # Single-bank (2026-08-09): this instance acts for its own bank only — the
@@ -73,7 +73,7 @@ setup:
       country: "INT"
       category: "ACCOUNT"
       address_pattern: "^addr(_test)?1[a-z0-9]{20,120}$"
-      example_address: "addr_test1vqn7sn79x6k9a2353l458mk2gccmwqk7nza93zydpuvl7lquy6jcl"
+      example_address: "addr_test1vz926zpa0qqc06w8zp6y686zmhpm8v4mnws9guayjha3prqwffehs"
       description: "Cardano bech32 payment address. On OBP-INCOMING-SETTLEMENT-ACCOUNT it is the bank's Open Corridor settlement address."
       downstream_rails: ["cardano"]
       status: "ACTIVE"
@@ -87,28 +87,28 @@ setup:
       status: "RESERVED"
 
   bank:
-    id: "rt.bank.b3"
-    full_name: "Round-trip rt.bank.b3"
+    id: "rt.bank.a3"
+    full_name: "Round-trip rt.bank.a3"
     accounts:
-      - id: "settlement-b"
-        label: "Node B beneficiary account"
+      - id: "settlement-a"
+        label: "Node A corridor account"
         currency: "KES"
-        owner_username: "rt.node.b"
+        owner_username: "rt.node.a"
       # One corridor account per sending currency (like nostros). The node
       # still sends only from its configured account; per-currency resolution
       # in the node is the follow-up work item.
-      - id: "settlement-b-ngn"
-        label: "Node B beneficiary account (NGN)"
+      - id: "settlement-a-ngn"
+        label: "Node A corridor account (NGN)"
         currency: "NGN"
-        owner_username: "rt.node.b"
-      - id: "settlement-b-usd"
-        label: "Node B beneficiary account (USD)"
+        owner_username: "rt.node.a"
+      - id: "settlement-a-usd"
+        label: "Node A corridor account (USD)"
         currency: "USD"
-        owner_username: "rt.node.b"
-      - id: "settlement-b-eur"
-        label: "Node B beneficiary account (EUR)"
+        owner_username: "rt.node.a"
+      - id: "settlement-a-eur"
+        label: "Node A corridor account (EUR)"
         currency: "EUR"
-        owner_username: "rt.node.b"
+        owner_username: "rt.node.a"
       - id: "OBP-OUTGOING-SETTLEMENT-ACCOUNT"
         label: "OC outgoing settlement"
         currency: "KES"
@@ -116,19 +116,17 @@ setup:
         label: "OC incoming settlement"
         currency: "KES"
         routings:
-          - { scheme: "CARDANO", address: "addr_test1vqn7sn79x6k9a2353l458mk2gccmwqk7nza93zydpuvl7lquy6jcl" }
+          - { scheme: "CARDANO", address: "addr_test1vpfz0v80fh7pddvngzh3t9dtpyg2v7jnfau7y6nnsyshh3sdlvqqq" }
     fx:
       - { from_currency: "EUR", to_currency: "KES", rate: 150.0, inverse_rate: 0.006667 }
       - { from_currency: "KES", to_currency: "EUR", rate: 0.006667, inverse_rate: 150.0 }
     broker:
       host: "localhost"
       port: 5672
-      virtual_host: "/bank.rt.bank.b3"
-      username: "bank_b_node"
-      password: "rtpass-b"
+      virtual_host: "/bank.rt.bank.a3"
+      username: "bank_a_node"
+      password: "rtpass-a"
       use_ssl: false
     role_grants:
-      - { username: "rt.node.b", role: "CanSettleOpenCorridor" }
-      # The return flow makes node B a SENDER: its return promises need the
-      # report-back role, like node A has always had.
-      - { username: "rt.node.b", role: "CanAttachOpenCorridorPromise" }
+      - { username: "rt.node.a", role: "CanAttachOpenCorridorPromise" }
+      - { username: "rt.node.a", role: "CanSettleOpenCorridor" }

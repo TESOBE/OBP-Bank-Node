@@ -1,7 +1,7 @@
 # The Five Steps — plain-language captions
 
-Text for a non-technical audience, written to accompany screenshots of the UI
-App (one caption per section of the overview page).
+Text for a non-technical audience, written to accompany screenshots of the
+UI (one caption per section of the overview page).
 
 ## Intro line
 

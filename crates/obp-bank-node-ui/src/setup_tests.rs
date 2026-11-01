@@ -453,7 +453,7 @@ async fn setup_reports_not_configured_without_an_obp_api_block() {
     let resp = app.clone().oneshot(get_req("/api/setup/status")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     let v = body_json(resp).await;
-    assert_eq!(v["error_code"], "OBP-BANK-NODE-APP-SETUP-NOT-CONFIGURED");
+    assert_eq!(v["error_code"], "OBP-BANK-NODE-UI-SETUP-NOT-CONFIGURED");
 
     let resp = app
         .oneshot(get_req("/api/setup/account-directory"))
@@ -470,7 +470,7 @@ async fn setup_api_requires_login() {
     let resp = app.oneshot(get_req("/api/setup/status")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     let v = body_json(resp).await;
-    assert_eq!(v["error_code"], "OBP-BANK-NODE-APP-SETUP-LOGIN-REQUIRED");
+    assert_eq!(v["error_code"], "OBP-BANK-NODE-UI-SETUP-LOGIN-REQUIRED");
     assert_eq!(v["login_url"], "/setup/login");
 }
 
@@ -503,7 +503,7 @@ async fn callback_with_unknown_state_is_refused() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
     let v = body_json(resp).await;
-    assert_eq!(v["error_code"], "OBP-BANK-NODE-APP-SETUP-OIDC-004");
+    assert_eq!(v["error_code"], "OBP-BANK-NODE-UI-SETUP-OIDC-004");
 }
 
 #[tokio::test]

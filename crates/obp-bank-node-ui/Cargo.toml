@@ -1,5 +1,5 @@
 [package]
-name = "obp-bank-node-app"
+name = "obp-bank-node-ui"
 description = "Demo / manual-test UI for the OBP Bank Node: static pages plus a JSON proxy over the configured nodes"
 version.workspace = true
 edition.workspace = true

@@ -154,14 +154,14 @@ async fn proxy(
     let Some(target) = state.nodes.get(&node) else {
         return error(
             StatusCode::NOT_FOUND,
-            "OBP-BANK-NODE-APP-UNKNOWN-NODE",
+            "OBP-BANK-NODE-UI-UNKNOWN-NODE",
             format!("no configured node named {node}"),
         );
     };
     if !allowed(&method, &path) {
         return error(
             StatusCode::NOT_FOUND,
-            "OBP-BANK-NODE-APP-PATH-NOT-ALLOWED",
+            "OBP-BANK-NODE-UI-PATH-NOT-ALLOWED",
             format!("{method} {path} is not a proxied Bank Node endpoint"),
         );
     }
@@ -201,7 +201,7 @@ fn upstream_error(node: &str, url: &str, e: reqwest::Error) -> Response {
     warn!(node, url, error = %e, "proxied node request failed");
     error(
         StatusCode::BAD_GATEWAY,
-        "OBP-BANK-NODE-APP-UPSTREAM-001",
+        "OBP-BANK-NODE-UI-UPSTREAM-001",
         format!("node {node} unreachable: {e}"),
     )
 }

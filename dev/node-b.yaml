@@ -1,6 +1,6 @@
 # Round-trip test — Bank Node B (rt.bank.b3, Cardano preprod rail — symmetric
 # with node A so B can also write promises and settle as debtor; wallet is
-# secrets/creditor.skey, address addr_test1vqn7sn79...).
+# secrets/creditor.skey, address in secrets/creditor.addr).
 # Start from the repo root:
 #   source dev/env.sh
 #   OBP_BANK_NODE_CONFIG=dev/node-b.yaml \

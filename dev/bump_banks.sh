@@ -21,15 +21,15 @@ DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
 
 FILES=(
-  node-a.yaml node-b.yaml app-a.yaml app-b.yaml
+  node-a.yaml node-b.yaml ui-a.yaml ui-b.yaml
   run_roundtrip.sh setup_rabbitmq.sh setup_obp.sh
-  start_node_a.sh start_node_b.sh start_app_a.sh start_app_b.sh
+  start_node_a.sh start_node_b.sh start_ui_a.sh start_ui_b.sh
 )
 
-# Current generation, read from app-a.yaml's bank id (rt.bank.aN).
-N="$(grep -oP 'id: "rt\.bank\.a\K[0-9]+' "$DIR/app-a.yaml" | head -1)"
+# Current generation, read from ui-a.yaml's bank id (rt.bank.aN).
+N="$(grep -oP 'id: "rt\.bank\.a\K[0-9]+' "$DIR/ui-a.yaml" | head -1)"
 if [[ -z "$N" ]]; then
-  echo "ERROR: could not read a numeric generation from app-a.yaml (expected id: \"rt.bank.a<N>\")" >&2
+  echo "ERROR: could not read a numeric generation from ui-a.yaml (expected id: \"rt.bank.a<N>\")" >&2
   exit 1
 fi
 NEXT=$((N + 1))
@@ -73,6 +73,6 @@ cat <<EOF
 Done. Remaining bring-up for the new generation:
   1. (restart OBP-API only if its build changed)
   2. dev/setup_obp.sh                       # grants, broker registrations, fresh env.sh
-  3. restart nodes + apps (start_node_*.sh, start_app_*.sh)
+  3. restart nodes + UIs (start_node_*.sh, start_ui_*.sh)
   4. each /setup page: log in, Apply the missing items to green
 EOF

@@ -104,10 +104,10 @@ Run the demo UI (serves the storyline pages over one or more nodes, default
 `http://localhost:8090`):
 
 ```sh
-cargo run --release -p obp-bank-node-app
+cargo run --release -p obp-bank-node-ui
 ```
 
-For a full two-bank round trip — two nodes, two UI apps, OBP-API, RabbitMQ,
+For a full two-bank round trip — two nodes, two UIs, OBP-API, RabbitMQ,
 and a stub CBS — see the scripts and configs in [`dev/`](dev/), starting with
 `dev/run_roundtrip.sh`.
 

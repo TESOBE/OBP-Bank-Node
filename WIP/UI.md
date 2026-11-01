@@ -1,6 +1,6 @@
-# OBP Bank Node App — demo / manual-test UI
+# OBP Bank Node UI — for demos and manual tests
 
-Decided 2026-08-07: lives at `/app` in this repo. The storyline pages talk
+Decided 2026-08-07: lives in this repo, in `crates/obp-bank-node-ui`. The storyline pages talk
 **only** to OBP-Bank-Node APIs (in the demo topology: node A on :8088, node B
 on :8089) — they never call OBP-API, RabbitMQ, or the chain directly;
 everything they show or trigger goes through a node's south-side REST API. No
@@ -88,25 +88,25 @@ not the app.
 
 ## Shape
 
-**Built 2026-08-07** (`crates/obp-bank-node-app`; 10 crate tests, 148
-workspace-wide). Config file `obp-bank-node-app-config.yaml` (cwd, path
-overridable via `OBP_BANK_NODE_APP_CONFIG` — mirrors the node's
+**Built 2026-08-07** (`crates/obp-bank-node-ui`; 10 crate tests, 148
+workspace-wide). Config file `obp-bank-node-ui-config.yaml` (cwd, path
+overridable via `OBP_BANK_NODE_UI_CONFIG` — mirrors the node's
 `OBP_BANK_NODE_CONFIG`), env prefix `OBP_BN_APP_` (e.g.
 `OBP_BN_APP_SERVER__BIND=0.0.0.0:8091` — note this machine's nginx
 already occupies the default 8090). Defaults: bind `0.0.0.0:8090`, nodes
-`node-a`→:8088, `node-b`→:8089. Run: `cargo run -p obp-bank-node-app`.
+`node-a`→:8088, `node-b`→:8089. Run: `cargo run -p obp-bank-node-ui`.
 Later the same day: config gained an optional `ui_defaults` map (form
 prefill keyed by field name, served at `GET /api/ui-defaults`; set per
-instance in `dev/app-a/b.yaml` so each UI prefills its own demo
+instance in `dev/ui-a/b.yaml` so each UI prefills its own demo
 beneficiary — out-of-band knowledge, the app never enumerates the other
 bank's accounts), the Send form takes the full end-recipient routing
 (beneficiary name + bank/account/originator scheme·address pairs, each
 pair grouped as one visual unit), and the app launchers print the demo
 beneficiary hint. Dev-env wiring (2026-08-07, same day): `dev/` gained
-`app-a.yaml`/`app-b.yaml` (per-node UI instances on :8091/:8092, each
+`ui-a.yaml`/`ui-b.yaml` (per-node UI instances on :8091/:8092, each
 **locked to its own node** — the bank-client view, see the revised
 storyline step 3) plus `start_node_a.sh` / `start_node_b.sh` /
-`start_app_a.sh` / `start_app_b.sh`, and
+`start_ui_a.sh` / `start_ui_b.sh`, and
 `commands/_helpers/open_dev_env` now opens four themed terminals running
 them (nodes A/B + both UIs). The proxy
 (`/api/nodes/{name}/{path}`) forwards only a whitelist of south-side
@@ -119,7 +119,7 @@ addition made for the position view: `TransactionRequestStatus` now
 carries `value`, `other_bank_id`, `description` projected from the
 stored A1.1 payload — the position table nets those client-side.
 
-- **`/app` = one small axum crate** (`obp-bank-node-app`), added to the
+- **One small axum crate** (`obp-bank-node-ui`), added to the
   workspace: serves the static UI and proxies JSON to the configured nodes.
   Rationale for a backend at all: node credentials stay out of the browser
   (A-interface auth is OAuth2 + PSD2-CERT per `../DOCS/A1_A2.md` — locally
@@ -164,7 +164,7 @@ page, so an admin can verify an OBP-API instance is ready for Open Corridor
   because applies are idempotent. The test-account form is locked to the
   own bank.
 - **Declarative desired state** in the `setup` config block (see
-  `dev/app-a/b.yaml`): routing schemes (wire-shaped, posted verbatim), the
+  `dev/ui-a/b.yaml`): routing schemes (wire-shaped, posted verbatim), the
   own bank's accounts / FX rates / broker registration, role grants. The page
   renders every item as a read-only check (`ok` / `missing` / `differs` /
   `unverified` / `error`) with per-item **Apply** + **Apply all missing**;

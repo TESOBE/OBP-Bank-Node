@@ -35,7 +35,7 @@ collected nor displayed.
   `charge_policy` (`SHARED`/`SENDER`/`RECEIVER`). Verified in the dev DB:
   promises carry e.g. `charge 2.0 KES`; settlement TRs correctly `0.00`.
   Netting sums promise VALUES only, so no fee money ever moves; the node
-  discards the charge block from OBP-API's 201 response; the App shows
+  discards the charge block from OBP-API's 201 response; the UI shows
   nothing.
 - **Bank→customer margin.** The banks' own pricing toward their customers
   (product fees + their customer FX margin). Their revenue, not the
@@ -91,9 +91,9 @@ collected nor displayed.
 - [ ] Node: keep the `charge` block from OBP-API's 201 submit response
       (currently only the TR id is parsed), store it on the outbox row,
       surface it on the south-side TR endpoints.
-- [ ] App: show the charge in the Promise tables — `charge 2.00 KES ·
+- [ ] UI: show the charge in the Promise tables — `charge 2.00 KES ·
       SHARED`.
-- [ ] App: show the configured charge level in the Send form hint so the
+- [ ] UI: show the configured charge level in the Send form hint so the
       pricing is visible before submitting.
 
 Result: every transfer is metered and priced from the first promise;

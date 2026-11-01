@@ -218,7 +218,7 @@ async fn proxy_refuses_unknown_node() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     let v = body_json(resp).await;
-    assert_eq!(v["error_code"], "OBP-BANK-NODE-APP-UNKNOWN-NODE");
+    assert_eq!(v["error_code"], "OBP-BANK-NODE-UI-UNKNOWN-NODE");
 }
 
 #[tokio::test]
@@ -235,7 +235,7 @@ async fn proxy_refuses_paths_outside_the_whitelist() {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND, "GET {uri}");
         let v = body_json(resp).await;
         assert_eq!(
-            v["error_code"], "OBP-BANK-NODE-APP-PATH-NOT-ALLOWED",
+            v["error_code"], "OBP-BANK-NODE-UI-PATH-NOT-ALLOWED",
             "GET {uri}"
         );
     }
@@ -264,5 +264,5 @@ async fn proxy_maps_unreachable_node_to_502() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
     let v = body_json(resp).await;
-    assert_eq!(v["error_code"], "OBP-BANK-NODE-APP-UPSTREAM-001");
+    assert_eq!(v["error_code"], "OBP-BANK-NODE-UI-UPSTREAM-001");
 }

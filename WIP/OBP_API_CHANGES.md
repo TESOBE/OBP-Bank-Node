@@ -361,4 +361,4 @@ PLATFORM_FEE instruction in the outbox, swept-row stamping, re-sweep no-op.
   beneficiary/return/CBS-REJECTED work (tested except final suite rerun).
 
 Bank-Node side of the fee feature is complete and green (purpose field:
-wire → store → REST → App).
+wire → store → REST → UI).

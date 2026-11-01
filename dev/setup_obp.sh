@@ -5,16 +5,32 @@
 # Writes DirectLogin tokens to env.sh for the node processes.
 set -uo pipefail
 
-OBP="http://localhost:8080"
-CK="rtkey6a33e2a63adba1658290ecac776ff155"   # consumer 'obp-bank-node-roundtrip'
-SA_USER="TheSuperUserAForTesting"
-SA_PASS="alk24ahf8au98uropifa8aba"
+# Per-machine overrides (gitignored): RT_OBP_URL, RT_CONSUMER_KEY, RT_SA_USER, RT_SA_PASS,
+# RT_OBP_PROPS_FILE, RT_PG_DB, RT_PG_USER. Unset ones keep the defaults below.
+SETUP_DIR="$(cd "$(dirname "$0")" && pwd)"
+[ -f "$SETUP_DIR/local.env" ] && source "$SETUP_DIR/local.env"
+
+OBP="${RT_OBP_URL:-http://localhost:8080}"
+CK="${RT_CONSUMER_KEY:-rtkey6a33e2a63adba1658290ecac776ff155}"   # consumer 'obp-bank-node-roundtrip'
+SA_USER="${RT_SA_USER:-TheSuperUserAForTesting}"
+SA_PASS="${RT_SA_PASS:-alk24ahf8au98uropifa8aba}"
 
 BANK_A="rt.bank.a3"; BANK_B="rt.bank.b3"
 NODE_A_USER="rt.node.a"; NODE_B_USER="rt.node.b"; NODE_PASS="RtNodePass2026!"
-# Cardano addresses (preprod): A = bank wallet (funded), B = receive-only.
-ADDR_A="addr_test1vz233470pc30zzsceh9k2qmzkj4gvj7n976ulvdmed5w9mg0a37ns"
-ADDR_B="addr_test1vqn7sn79x6k9a2353l458mk2gccmwqk7nza93zydpuvl7lquy6jcl"
+# Cardano addresses (preprod) of the nodes' wallets, written by dev/wallets.py next to the keys.
+REPO_DIR="$(cd "$SETUP_DIR/.." && pwd)"
+read_addr() { # read_addr <file> -> address
+  [ -s "$REPO_DIR/secrets/$1" ] || { echo "FATAL: secrets/$1 not found — run python3 dev/wallets.py" >&2; exit 1; }
+  tr -d '[:space:]' < "$REPO_DIR/secrets/$1"
+}
+ADDR_A=$(read_addr cardano.addr) || exit 1
+ADDR_B=$(read_addr creditor.addr) || exit 1
+# The UI setup pages apply the same address as the CARDANO routing on OBP-INCOMING-SETTLEMENT-ACCOUNT.
+for pair in "ui-a.yaml:$ADDR_A" "ui-b.yaml:$ADDR_B"; do
+  grep -q "address: \"${pair#*:}\"" "$SETUP_DIR/${pair%%:*}" \
+    || echo "WARN: dev/${pair%%:*} has a different CARDANO settlement address than secrets/ (${pair#*:})"
+done
+echo "settlement addresses: A=$ADDR_A B=$ADDR_B"
 
 dl() { # dl <user> <pass> -> token
   curl -s -X POST "$OBP/my/logins/direct" \
@@ -91,8 +107,9 @@ done
 # DirectLogin refuses unvalidated emails (OBP-20073); no API path for it, so
 # flip the flag in Postgres (password from default.props db.url).
 echo "  (validating emails in Postgres — needed for DirectLogin)"
-PGPASS=$(grep -E '^db.url' ~/Documents/workspace_2024/OBP-API-Simon/OBP-API/obp-api/src/main/resources/props/default.props | head -1 | grep -oP 'password=\K[^&\s]+')
-PGPASSWORD="$PGPASS" psql -h localhost -U obp -d sandbox -q \
+PROPS_FILE="${RT_OBP_PROPS_FILE:-$HOME/Documents/workspace_2024/OBP-API-Simon/OBP-API/obp-api/src/main/resources/props/default.props}"
+PGPASS=$(grep -E '^db.url' "$PROPS_FILE" | head -1 | grep -oP 'password=\K[^&\s]+')
+PGPASSWORD="$PGPASS" psql -h localhost -U "${RT_PG_USER:-obp}" -d "${RT_PG_DB:-sandbox}" -q \
   -c "UPDATE authuser SET validated=true WHERE username IN ('$NODE_A_USER','$NODE_B_USER');"
 UA_ID=$(dl "$NODE_A_USER" "$NODE_PASS" >/dev/null; api GET "/obp/v5.1.0/users/username/$NODE_A_USER" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("user_id",""))')
 UB_ID=$(api GET "/obp/v5.1.0/users/username/$NODE_B_USER" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("user_id",""))')

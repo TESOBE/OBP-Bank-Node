@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "crates/obp-bank-node",
-    "crates/obp-bank-node-app",
+    "crates/obp-bank-node-ui",
     "crates/obp-blockchain",
 ]
 

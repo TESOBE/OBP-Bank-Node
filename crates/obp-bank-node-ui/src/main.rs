@@ -1,4 +1,4 @@
-//! OBP Bank Node App — demo / manual-test UI (`WIP/APP.md`).
+//! OBP Bank Node UI — for demos and manual tests (`WIP/UI.md`).
 //!
 //! Serves the static single-page UI and a whitelisted JSON proxy over the
 //! configured Bank Nodes (demo topology: node A on :8088, node B on :8089).
@@ -31,7 +31,7 @@ mod setup_tests;
 #[cfg(test)]
 mod tests;
 
-const CONFIG_FILE: &str = "obp-bank-node-app-config.yaml";
+const CONFIG_FILE: &str = "obp-bank-node-ui-config.yaml";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -206,11 +206,11 @@ impl Default for Config {
 }
 
 fn load_config() -> anyhow::Result<Config> {
-    // `OBP_BANK_NODE_APP_CONFIG` overrides the config file path, mirroring the
+    // `OBP_BANK_NODE_UI_CONFIG` overrides the config file path, mirroring the
     // node's `OBP_BANK_NODE_CONFIG` — it's how several app instances (one per
     // node, as in the roundtrip dev environment) run from the same directory.
     let path =
-        std::env::var("OBP_BANK_NODE_APP_CONFIG").unwrap_or_else(|_| CONFIG_FILE.to_string());
+        std::env::var("OBP_BANK_NODE_UI_CONFIG").unwrap_or_else(|_| CONFIG_FILE.to_string());
     Figment::from(Serialized::defaults(Config::default()))
         .merge(Yaml::file(&path))
         .merge(Env::prefixed("OBP_BN_APP_").split("__"))
@@ -223,7 +223,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "obp_bank_node_app=info,tower_http=info".into()),
+                .unwrap_or_else(|_| "obp_bank_node_ui=info,tower_http=info".into()),
         )
         .init();
 
@@ -232,7 +232,7 @@ async fn main() -> anyhow::Result<()> {
         bind = %config.server.bind,
         nodes = ?config.nodes.iter().map(|n| format!("{}={}", n.name, n.base_url)).collect::<Vec<_>>(),
         setup = config.obp_api.as_ref().map(|o| o.base_url.as_str()).unwrap_or("(not configured)"),
-        "OBP Bank Node App starting"
+        "OBP Bank Node UI starting"
     );
 
     let setup_state = config

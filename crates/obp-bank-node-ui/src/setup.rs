@@ -128,7 +128,7 @@ pub fn router(state: Option<SetupState>) -> Router {
                 (
                     StatusCode::NOT_FOUND,
                     Json(json!({
-                        "error_code": "OBP-BANK-NODE-APP-SETUP-NOT-CONFIGURED",
+                        "error_code": "OBP-BANK-NODE-UI-SETUP-NOT-CONFIGURED",
                         "message": "add an obp_api block to the app config to enable the setup page",
                     })),
                 )
@@ -184,7 +184,7 @@ async fn login(State(state): State<SetupState>, Query(params): Query<LoginParams
         Ok(url) => Redirect::temporary(&url).into_response(),
         Err(e) => error(
             StatusCode::BAD_GATEWAY,
-            "OBP-BANK-NODE-APP-SETUP-OIDC-001",
+            "OBP-BANK-NODE-UI-SETUP-OIDC-001",
             format!("cannot start login: {e:#}"),
         ),
     }
@@ -209,7 +209,7 @@ async fn callback(
     if let Some(err) = params.error {
         return error(
             StatusCode::BAD_GATEWAY,
-            "OBP-BANK-NODE-APP-SETUP-OIDC-002",
+            "OBP-BANK-NODE-UI-SETUP-OIDC-002",
             format!(
                 "provider refused the login: {err} {}",
                 params.error_description.unwrap_or_default()
@@ -219,7 +219,7 @@ async fn callback(
     let (Some(code), Some(oauth_state)) = (params.code, params.state) else {
         return error(
             StatusCode::BAD_REQUEST,
-            "OBP-BANK-NODE-APP-SETUP-OIDC-003",
+            "OBP-BANK-NODE-UI-SETUP-OIDC-003",
             "callback is missing code or state".into(),
         );
     };
@@ -231,7 +231,7 @@ async fn callback(
             .into_response(),
         Err(e) => error(
             StatusCode::BAD_GATEWAY,
-            "OBP-BANK-NODE-APP-SETUP-OIDC-004",
+            "OBP-BANK-NODE-UI-SETUP-OIDC-004",
             format!("code exchange failed: {e:#}"),
         ),
     }
@@ -258,7 +258,7 @@ async fn require_token(state: &SetupState, headers: &HeaderMap) -> Result<String
         (
             StatusCode::UNAUTHORIZED,
             Json(json!({
-                "error_code": "OBP-BANK-NODE-APP-SETUP-LOGIN-REQUIRED",
+                "error_code": "OBP-BANK-NODE-UI-SETUP-LOGIN-REQUIRED",
                 "message": "log in to OBP-API to use this page",
                 "login_url": "/setup/login",
             })),
@@ -346,7 +346,7 @@ async fn me(State(state): State<SetupState>, headers: HeaderMap) -> Response {
         .into_response(),
         Err(e) => error(
             StatusCode::BAD_GATEWAY,
-            "OBP-BANK-NODE-APP-SETUP-OBP-001",
+            "OBP-BANK-NODE-UI-SETUP-OBP-001",
             e,
         ),
     }
@@ -462,7 +462,7 @@ async fn status(State(state): State<SetupState>, headers: HeaderMap) -> Response
         Err(e) => {
             return error(
                 StatusCode::BAD_GATEWAY,
-                "OBP-BANK-NODE-APP-SETUP-OBP-001",
+                "OBP-BANK-NODE-UI-SETUP-OBP-001",
                 e,
             )
         }
@@ -825,7 +825,7 @@ async fn account_directory(State(state): State<SetupState>, headers: HeaderMap) 
     let Some(bank) = &state.0.setup.bank else {
         return error(
             StatusCode::NOT_FOUND,
-            "OBP-BANK-NODE-APP-SETUP-NO-BANK",
+            "OBP-BANK-NODE-UI-SETUP-NO-BANK",
             "add setup.bank to the app config to list its account directory".into(),
         );
     };
@@ -841,7 +841,7 @@ async fn account_directory(State(state): State<SetupState>, headers: HeaderMap) 
         Ok((status, body)) => (status, Json(body)).into_response(),
         Err(e) => error(
             StatusCode::BAD_GATEWAY,
-            "OBP-BANK-NODE-APP-SETUP-OBP-001",
+            "OBP-BANK-NODE-UI-SETUP-OBP-001",
             e,
         ),
     }
@@ -1013,7 +1013,7 @@ async fn request_entitlement(
         Ok((status, body)) => (status, Json(body)).into_response(),
         Err(e) => error(
             StatusCode::BAD_GATEWAY,
-            "OBP-BANK-NODE-APP-SETUP-APPLY-001",
+            "OBP-BANK-NODE-UI-SETUP-APPLY-001",
             e,
         ),
     }
@@ -1033,7 +1033,7 @@ async fn apply(
         Err(e) => {
             return error(
                 StatusCode::BAD_GATEWAY,
-                "OBP-BANK-NODE-APP-SETUP-OBP-001",
+                "OBP-BANK-NODE-UI-SETUP-OBP-001",
                 e,
             )
         }
@@ -1210,7 +1210,7 @@ async fn apply(
         }
         Err(e) => error(
             StatusCode::BAD_GATEWAY,
-            "OBP-BANK-NODE-APP-SETUP-APPLY-001",
+            "OBP-BANK-NODE-UI-SETUP-APPLY-001",
             e,
         ),
     }
@@ -1252,7 +1252,7 @@ async fn test_account(
         Err(e) => {
             return error(
                 StatusCode::BAD_GATEWAY,
-                "OBP-BANK-NODE-APP-SETUP-OBP-001",
+                "OBP-BANK-NODE-UI-SETUP-OBP-001",
                 e,
             )
         }
@@ -1283,7 +1283,7 @@ async fn test_account(
         Ok((status, body)) => (status, Json(body)).into_response(),
         Err(e) => error(
             StatusCode::BAD_GATEWAY,
-            "OBP-BANK-NODE-APP-SETUP-APPLY-001",
+            "OBP-BANK-NODE-UI-SETUP-APPLY-001",
             e,
         ),
     }

@@ -1,4 +1,4 @@
-// OBP Bank Node App — vanilla JS, no build step.
+// OBP Bank Node UI — vanilla JS, no build step.
 // The app displays; the nodes decide. Everything below is fetch + render.
 
 const POLL_MS = 3000;

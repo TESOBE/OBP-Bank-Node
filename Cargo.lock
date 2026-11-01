@@ -1778,7 +1778,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "obp-bank-node-app"
+name = "obp-bank-node-ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",

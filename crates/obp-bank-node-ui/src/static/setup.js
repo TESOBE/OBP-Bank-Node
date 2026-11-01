@@ -95,7 +95,7 @@ async function renderStatusJson() {
     return { name: n.name, reachable: h.ok, health: h.body };
   }));
   const snapshot = {
-    snapshot_type: "obp-bank-node-app-setup-status",
+    snapshot_type: "obp-bank-node-ui-setup-status",
     app_url: location.origin,
     nodes: nodeHealth,
     ...LAST_STATUS,
