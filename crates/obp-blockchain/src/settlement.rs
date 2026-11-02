@@ -119,6 +119,21 @@ pub trait SettlementBackend: Send + Sync + 'static {
 
     /// Poll whether a submitted settlement transfer has confirmed on its rail.
     async fn confirm(&self, tx: &TxReference) -> Result<ConfirmationStatus>;
+
+    /// What transaction `tx_id` paid to this backend's own account (the
+    /// creditor side of a settlement), if the rail has seen it. `None` when it
+    /// has not, or when the backend cannot tell.
+    async fn incoming_payment(&self, _tx_id: &str) -> Result<Option<IncomingPayment>> {
+        Ok(None)
+    }
+}
+
+/// A payment into this backend's own account as seen on its rail: the amount
+/// in the rail's smallest unit (lovelace for ADA), and how deep it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IncomingPayment {
+    pub lovelace: u64,
+    pub depth: u32,
 }
 
 /// A fixed-rate [`FxSource`] for the proof-of-concept and unit tests. Returns

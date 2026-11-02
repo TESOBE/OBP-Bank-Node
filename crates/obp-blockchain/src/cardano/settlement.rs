@@ -174,6 +174,16 @@ impl SettlementBackend for CardanoAdaSettlement {
         &self.wallet.address
     }
 
+    async fn incoming_payment(
+        &self,
+        tx_id: &str,
+    ) -> Result<Option<crate::settlement::IncomingPayment>> {
+        Ok(self
+            .follower
+            .as_ref()
+            .and_then(|f| f.payment(tx_id, &self.wallet.address)))
+    }
+
     async fn settle(&self, instruction: &SettlementInstruction) -> Result<SettlementOutcome> {
         // This node can only pay out from its own wallet. Reject instructions
         // where we are not the debtor before doing any work.

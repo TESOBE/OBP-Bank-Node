@@ -63,6 +63,8 @@ details[open] > summary { margin-bottom: .25rem; }
 }
 
 .hint { color: var(--dim); font-size: .85rem; margin: .25rem 0 .75rem; }
+.latest-head { margin: .25rem 0 .5rem; }
+#latest-settlement th { width: 12rem; }
 
 code { background: #eef0f3; padding: 0 .25em; border-radius: 3px; font-size: .85em; }
 
@@ -153,15 +155,17 @@ a:hover { text-decoration: underline; }
   background: #eef0f3;
   color: var(--dim);
 }
-.chip-initiated { background: #eef0f3; color: var(--dim); }
-.chip-submitted, .chip-settling { background: #fff4e0; color: var(--warn); }
-.chip-promise-written, .chip-delivered { background: #e7effc; color: var(--accent); }
-.chip-reported, .chip-final, .chip-verified { background: #eef7f0; color: var(--ok); }
-.chip-exception, .chip-error, .chip-failed, .chip-rejected { background: #fdf0ef; color: var(--err); }
+/* Three meanings only: a step that succeeded is green, one still in progress
+   is amber, a failure is red. Unknown statuses keep the grey .chip default. */
+.chip-initiated, .chip-submitted, .chip-settling, .chip-retrying, .chip-netted, .chip-pending { background: #fff4e0; color: var(--warn); }
+.chip-promise-written, .chip-reported, .chip-delivered, .chip-accepted, .chip-verified,
+.chip-paid, .chip-received, .chip-final { background: #eef7f0; color: var(--ok); }
+.chip-exception, .chip-error, .chip-failed, .chip-rejected, .chip-mismatch { background: #fdf0ef; color: var(--err); }
 
 .page-nav { font-size: .82rem; }
 
 td.actions { white-space: nowrap; }
+td.details { font-size: .78rem; color: var(--dim); min-width: 16rem; overflow-wrap: anywhere; }
 
 /* setup page */
 .setup-toolbar {

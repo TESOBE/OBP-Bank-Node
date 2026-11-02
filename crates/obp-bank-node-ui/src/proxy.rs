@@ -122,6 +122,7 @@ fn allowed(method: &Method, path: &str) -> bool {
             | (&Method::GET, ["settlements"])
             | (&Method::GET, ["settlements", _])
             | (&Method::GET, ["settlements", _, "corridor"])
+            | (&Method::GET, ["incoming-settlements"])
             | (&Method::GET, ["evidence"])
             | (&Method::GET, ["evidence", _])
             | (&Method::POST, ["transaction-requests"])

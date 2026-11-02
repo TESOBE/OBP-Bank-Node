@@ -9,6 +9,7 @@ mod dispatcher;
 mod evidence;
 mod finality;
 mod fx;
+mod incoming;
 mod interface_c;
 mod obp_client;
 mod outbox;
@@ -515,6 +516,19 @@ async fn main() -> anyhow::Result<()> {
                 poll_interval: std::time::Duration::from_secs(config.settlement.finality_poll_secs),
             };
             tokio::spawn(watcher.run());
+            // Settlements this bank receives as creditor: checked against what
+            // actually arrives at its own address.
+            tokio::spawn(
+                incoming::IncomingWatcher {
+                    store: settlement_store.clone(),
+                    obp: Arc::clone(&obp),
+                    backend: Arc::clone(backend),
+                    bank_id: config.bank.bank_id.clone(),
+                    finality_depth: config.settlement.finality_depth,
+                    poll_interval: std::time::Duration::from_secs(20),
+                }
+                .run(),
+            );
             Some((Arc::clone(backend), settlement_store.clone()))
         }
         None => None,
@@ -600,6 +614,13 @@ async fn main() -> anyhow::Result<()> {
             .collect(),
         finality_depth: config.settlement.finality_depth,
         interface_c: interface_c_status,
+        obp_api_url: config.obp_api.base_url.clone(),
+        chain_health_url: match config.blockchain.kind {
+            BlockchainKind::Mock => None,
+            BlockchainKind::Cardano => Some(ogmios_health_url(&config.blockchain.cardano.ogmios_url)),
+        },
+        instance_id: uuid::Uuid::new_v4().to_string(),
+        started_at: std::time::Instant::now(),
     };
     let app = build_router(state);
 
@@ -697,6 +718,14 @@ type Backends = (
     Arc<dyn BlockchainBackend>,
     Option<Arc<dyn SettlementBackend>>,
 );
+
+/// Ogmios serves `/health` over HTTP on the port of its WebSocket.
+fn ogmios_health_url(ogmios_url: &str) -> String {
+    let base = ogmios_url
+        .replacen("wss://", "https://", 1)
+        .replacen("ws://", "http://", 1);
+    format!("{}/health", base.trim_end_matches('/'))
+}
 
 async fn build_backend(config: &Config) -> anyhow::Result<Backends> {
     match config.blockchain.kind {

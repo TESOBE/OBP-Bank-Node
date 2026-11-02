@@ -322,6 +322,10 @@ fn status_from_record(rec: OutboxRecord) -> TransactionRequestStatus {
         settlement_system: None,
         created_at: parse_rfc3339(&rec.created_at),
         settled_at: rec.settled_at.as_deref().map(parse_rfc3339),
+        attempt_count: rec.attempt_count,
+        last_attempted_at: rec.last_attempted_at.as_deref().map(parse_rfc3339),
+        last_error: rec.last_error,
+        exception_reason: rec.exception_reason,
     }
 }
 
@@ -579,6 +583,22 @@ pub async fn get_corridor_settlement(
     Json(result.raw).into_response()
 }
 
+/// Settlements this bank receives as creditor, and whether each payment has
+/// been seen arriving (see `incoming.rs`).
+pub async fn list_incoming_settlements(State(state): State<BankNodeState>) -> Response {
+    match state.settlements.list_incoming(LIST_LIMIT).await {
+        Ok(rows) => Json(rows).into_response(),
+        Err(e) => {
+            error!(bank_id = %state.bank_id, error = %e, "incoming settlements list failed");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "OBP-BANK-NODE-PLATFORM-001",
+                "failed to list incoming settlements",
+            )
+        }
+    }
+}
+
 pub async fn list_evidence(State(state): State<BankNodeState>) -> Response {
     match state.evidence.list(LIST_LIMIT).await {
         Ok(recs) => {
@@ -618,9 +638,10 @@ pub async fn get_evidence(
     }
 }
 
-/// `/status` — configuration and identity detail. Kept separate from
-/// `/health`, which stays minimal (liveness of the essential technology) and
-/// whose shape must basically never change.
+/// `/obp-bank-node/v5.1.0/status` — configuration and identity detail, read by
+/// the Bank Node apps. Kept separate from `/obp-bank-node/v5.1.0/health`, which
+/// stays minimal and whose shape must basically never change. The root
+/// `/alive`, `/health` and `/status` follow OBP-API's format (`status_page`).
 pub async fn root_status(State(state): State<BankNodeState>) -> Response {
     Json(StatusBody {
         service: "OBP-Bank-Node",

@@ -78,6 +78,9 @@ pub struct OutboxRecord {
     pub promise_tx_id: Option<String>,
     pub promise_blockchain: Option<String>,
     pub exception_reason: Option<String>,
+    /// Why the latest attempt failed, while the row is still being retried.
+    /// Cleared when the dispatcher picks the row up again.
+    pub last_error: Option<String>,
     /// The Open Corridor settlement that covered (netted) this promise, stamped
     /// when the settle result / corridor status names this row's OBP TR id in
     /// `covered_transaction_request_ids`. `None` while unsettled.
@@ -108,6 +111,20 @@ pub struct OutboxStore {
 }
 
 impl OutboxStore {
+    /// Whether the database answers, for the root `/status` page.
+    pub async fn ping(&self) -> Result<(), sqlx::Error> {
+        sqlx::query("SELECT 1").execute(&self.pool).await.map(|_| ())
+    }
+
+    /// How many rows are in each status, for the root `/status` page.
+    pub async fn count_by_status(&self) -> Result<Vec<(String, i64)>, OutboxError> {
+        let rows: Vec<(String, i64)> =
+            sqlx::query_as("SELECT status, COUNT(*) FROM outbox GROUP BY status ORDER BY status")
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows)
+    }
+
     /// Open (creating if absent) the SQLite database at `path` and ensure the
     /// schema exists. The parent directory is created if missing.
     pub async fn connect(path: &Path) -> Result<Self, OutboxError> {
@@ -159,6 +176,7 @@ impl OutboxStore {
                 promise_tx_id          TEXT,
                 promise_blockchain     TEXT,
                 exception_reason       TEXT,
+                last_error             TEXT,
                 settlement_id          TEXT,
                 settled_at             TEXT,
                 created_at             TEXT NOT NULL,
@@ -170,13 +188,14 @@ impl OutboxStore {
         .await?;
 
         // Migrations for databases created before later columns existed
-        // (report-back step; settlement linkage). SQLite has no
+        // (report-back step; settlement linkage; last error). SQLite has no
         // `ADD COLUMN IF NOT EXISTS`; a duplicate-column error means the
         // column is already there, which is fine.
         for col in [
             "obp_transaction_request_id TEXT",
             "settlement_id TEXT",
             "settled_at TEXT",
+            "last_error TEXT",
         ] {
             if let Err(e) = sqlx::query(&format!("ALTER TABLE outbox ADD COLUMN {col}"))
                 .execute(pool)
@@ -269,13 +288,13 @@ impl OutboxStore {
         Ok(recs)
     }
 
-    /// Bump `attempt_count` and stamp `last_attempted_at = now`. Called by the
-    /// dispatcher each time it picks a row up, so a failing row backs off
-    /// instead of spinning.
+    /// Bump `attempt_count`, stamp `last_attempted_at = now` and clear
+    /// `last_error`. Called by the dispatcher each time it picks a row up, so a
+    /// failing row backs off instead of spinning.
     pub async fn record_attempt(&self, id: &str) -> Result<(), OutboxError> {
         let now = rfc3339(Utc::now());
         sqlx::query(
-            "UPDATE outbox SET attempt_count = attempt_count + 1, \
+            "UPDATE outbox SET attempt_count = attempt_count + 1, last_error = NULL, \
                 last_attempted_at = ?, updated_at = ? WHERE transaction_request_id = ?",
         )
         .bind(&now)
@@ -283,6 +302,17 @@ impl OutboxStore {
         .bind(id)
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    /// Record why this attempt failed, for a row that stays in its status to be
+    /// retried. Shown with the row, so an operator sees why it is not moving.
+    pub async fn record_error(&self, id: &str, error: &str) -> Result<(), OutboxError> {
+        sqlx::query("UPDATE outbox SET last_error = ? WHERE transaction_request_id = ?")
+            .bind(error)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -508,6 +538,20 @@ mod tests {
 
         store.record_attempt("tr-4").await.unwrap();
         assert_eq!(store.get("tr-4").await.unwrap().unwrap().attempt_count, 2);
+    }
+
+    #[tokio::test]
+    async fn record_error_is_kept_until_the_next_attempt() {
+        let store = OutboxStore::connect_in_memory().await.unwrap();
+        store.insert(entry("tr-5", "{}")).await.unwrap();
+
+        store.record_attempt("tr-5").await.unwrap();
+        store.record_error("tr-5", "insufficient funds").await.unwrap();
+        let rec = store.get("tr-5").await.unwrap().unwrap();
+        assert_eq!(rec.last_error.as_deref(), Some("insufficient funds"));
+
+        store.record_attempt("tr-5").await.unwrap();
+        assert!(store.get("tr-5").await.unwrap().unwrap().last_error.is_none());
     }
 
     #[tokio::test]

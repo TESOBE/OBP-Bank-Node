@@ -163,6 +163,7 @@ impl Dispatcher {
                         error = %e,
                         "OBP-API submit failed (retryable) — leaving INITIATED for backoff"
                     );
+                    self.store.record_error(id, &e.to_string()).await?;
                     return Ok(false);
                 }
                 Err(e) => {
@@ -206,6 +207,7 @@ impl Dispatcher {
                         error = %e,
                         "Promise write failed — leaving SUBMITTED for retry"
                     );
+                    self.store.record_error(id, &e.to_string()).await?;
                     return Ok(advanced);
                 }
             }
@@ -276,6 +278,7 @@ impl Dispatcher {
                             error = %e,
                             "evidence report failed (retryable) — leaving PROMISE_WRITTEN for backoff"
                         );
+                        self.store.record_error(id, &e.to_string()).await?;
                     }
                 }
                 Err(e) => {

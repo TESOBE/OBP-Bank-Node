@@ -386,6 +386,25 @@ impl Router {
                 );
             }
         };
+        // As creditor, keep the settlement so its payment can be checked when
+        // it arrives (incoming.rs); the advice itself comes before the payment.
+        if advice.creditor_bank_id.as_deref() == Some(self.bank_id.as_str()) {
+            if let Some(svc) = &self.settlement {
+                if let Err(e) = svc
+                    .store
+                    .record_incoming(
+                        &advice.settlement_id,
+                        advice.debtor_bank_id.as_deref(),
+                        advice.currency.as_deref(),
+                        advice.net_amount.as_deref(),
+                        &advice.covered_transaction_request_ids,
+                    )
+                    .await
+                {
+                    warn!(error = %e, "settlement_advice: failed to record the incoming settlement");
+                }
+            }
+        }
         let credits = self
             .evidence
             .mark_settled(&advice.covered_transaction_request_ids, &advice.settlement_id)
@@ -875,6 +894,43 @@ mod tests {
         assert!(!reply.is_ok());
         assert_eq!(reply.status.error_code, error_code::NOT_IMPLEMENTED);
         assert_eq!(reply.inbound_adapter_call_context.correlation_id, "corr-1");
+    }
+
+    #[tokio::test]
+    async fn settlement_advice_records_an_incoming_settlement_only_as_creditor() {
+        let settlement = Arc::new(MockSettlement {
+            from: "addr_test1me".into(),
+            calls: Arc::new(AtomicUsize::new(0)),
+            last_creditor: std::sync::Mutex::new(None),
+            last_minor: std::sync::Mutex::new(None),
+        });
+        let (r, store) = router_with("http://127.0.0.1:1/credit", Some(settlement)).await;
+        let store = store.unwrap();
+        let advice = |id: &str, creditor: &str| {
+            serde_json::json!({
+                "settlement_id": id, "currency": "KES", "net_amount": "1530.00",
+                "debtor_bank_id": "rt.bank.a", "creditor_bank_id": creditor,
+                "covered_transaction_request_ids": ["tr-1", "tr-2"],
+            })
+            .to_string()
+        };
+        // This router's bank is ke.01.kcs: creditor of one, debtor side of the other.
+        for (id, creditor) in [("in-1", "ke.01.kcs"), ("out-1", "rt.bank.b")] {
+            let reply = r
+                .handle(message_id::SETTLEMENT_ADVICE, "c", advice(id, creditor).as_bytes())
+                .await;
+            assert!(reply.is_ok(), "{:?}", reply.status);
+        }
+        // Redelivered: still one row, progress kept.
+        r.handle(message_id::SETTLEMENT_ADVICE, "c", advice("in-1", "ke.01.kcs").as_bytes())
+            .await;
+
+        let rows = store.list_incoming(10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].settlement_id, "in-1");
+        assert_eq!(rows[0].status, crate::settlement_store::incoming_status::NETTED);
+        assert_eq!(rows[0].net_amount.as_deref(), Some("1530.00"));
+        assert_eq!(rows[0].debtor_bank_id.as_deref(), Some("rt.bank.a"));
     }
 
     #[tokio::test]

@@ -148,6 +148,25 @@ async function fetchTrs() {
   }
 }
 
+// What a row is waiting for, or why it stopped: the node's last error while it
+// retries, the reason for EXCEPTION, else what the next step is.
+const TR_NEXT = {
+  INITIATED: "submitting to OBP-API",
+  SUBMITTED: "writing the promise on-chain",
+  PROMISE_WRITTEN: "reporting the promise to OBP-API",
+  REPORTED: "awaiting settlement",
+};
+
+function trDetails(tr) {
+  if (tr.status === "EXCEPTION") return tr.exception_reason || "";
+  if (tr.last_error) {
+    const tries = tr.attempt_count === 1 ? "1 attempt" : `${tr.attempt_count} attempts`;
+    return `retrying (${tries}): ${tr.last_error}`;
+  }
+  if (tr.status === "REPORTED" && tr.settlement_id) return "settled";
+  return TR_NEXT[tr.status] || "";
+}
+
 function renderTrTables() {
   const el = $("#tr-tables");
   if (!el) return;
@@ -166,11 +185,12 @@ function renderTrTables() {
         <td>${tr.promise_id ? txLink(tr.promise_id) : ""}</td>
         <td class="id-full">${esc(tr.settlement_id || "")}</td>
         <td>${esc(tr.settled_at ? tr.settled_at.slice(0, 19) : "")}</td>
+        <td class="details">${esc(trDetails(tr))}</td>
       </tr>`).join("");
     return `<h3>${esc(n.name)}</h3>
       <table>
         <thead><tr><th>transaction request id</th><th>status</th><th>value</th><th>to bank</th>
-          <th>promise tx</th><th>settlement</th><th>settled at</th></tr></thead>
+          <th>promise tx</th><th>settlement</th><th>settled at</th><th>details</th></tr></thead>
         <tbody>${body}</tbody>
       </table>
       ${moreLink(rows.length, shown.length, "/promises", "promises")}`;
@@ -250,27 +270,129 @@ function fmtRail(amount, asset) {
   return `${amount} ${asset || ""}`;
 }
 
+// A retryable ERROR is temporary: the attempt provably never reached the chain,
+// OBP-API resends the instruction, and the node tries again (often ending
+// FINAL). Only a sticky ERROR needs someone to reconcile it.
+function settlementStatus(s) {
+  return s.status === "ERROR" && s.retryable ? "RETRYING" : s.status;
+}
+
+function settlementError(s) {
+  if (!s.error_reason) return "";
+  if (s.status !== "ERROR") return s.error_reason;
+  return s.retryable
+    ? `temporary, OBP-API resends the instruction and this node tries again: ${s.error_reason}`
+    : `needs reconciling, the payment may have reached the chain: ${s.error_reason}`;
+}
+
+// Settlements a node receives as creditor: NETTED when OBP-API's advice
+// arrives (before the debtor pays), PAID once the debtor reports a tx,
+// RECEIVED once the node has seen the payment reach its own address.
+function incomingTable(n, rows) {
+  if (rows.length === 0) return "";
+  const body = rows.map((s) => `
+      <tr>
+        <td class="id-full">${esc(s.settlement_id)}</td>
+        <td>${chip(s.status)}</td>
+        <td>${esc(s.debtor_bank_id || "")}</td>
+        <td class="num">${esc(s.net_amount || "")} ${esc(s.currency || "")}</td>
+        <td class="num">${esc(fmtRail(s.received_amount || s.asset_amount, s.asset))}</td>
+        <td>${txLink(s.tx_id)}</td>
+        <td class="details">${esc(s.detail || "")}</td>
+      </tr>`).join("");
+  return `<h4>${esc(n.name)} — incoming (as creditor)</h4>
+      <table>
+        <thead><tr><th>settlement id</th><th>status</th><th>from bank</th><th>net</th>
+          <th>rail amount</th><th>tx</th><th>details</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table>`;
+}
+
+// Each node's outgoing settlements (it pays) and incoming ones (it is paid),
+// fetched once per refresh for both the tables and the latest-settlement panel.
+let SETTLEMENTS = {}; // node name -> { out: [...], in: [...] }
+
+async function fetchSettlements() {
+  const entries = await Promise.all(NODES.map(async (n) => {
+    const [r, inc] = await Promise.all([
+      getJson(nodeUrl(n.name, "settlements")),
+      getJson(nodeUrl(n.name, "incoming-settlements")),
+    ]);
+    const list = (x) => (x.ok && Array.isArray(x.body) ? x.body : []);
+    return [n.name, { out: list(r), in: list(inc) }];
+  }));
+  SETTLEMENTS = Object.fromEntries(entries);
+}
+
+// The newest settlement across all nodes, followed end to end: the paying
+// node's leg (SUBMITTED → FINAL) and the receiving node's check
+// (NETTED → PAID → RECEIVED).
+function renderLatestSettlement() {
+  const el = $("#latest-settlement");
+  if (!el) return;
+  const byId = {};
+  for (const [node, s] of Object.entries(SETTLEMENTS)) {
+    for (const o of s.out) {
+      const id = o.settlement_id || o.idempotency_key;
+      byId[id] = { ...byId[id], id, out: o, payer: node, at: o.created_at };
+    }
+    for (const i of s.in) {
+      const e = byId[i.settlement_id] || { id: i.settlement_id };
+      byId[i.settlement_id] = { ...e, in: i, payee: node, at: e.at || i.received_at };
+    }
+  }
+  const latest = Object.values(byId).sort((a, b) => (b.at || "").localeCompare(a.at || ""))[0];
+  if (!latest) {
+    el.innerHTML = `<p class="empty">no settlements yet</p>`;
+    return;
+  }
+  const o = latest.out;
+  const i = latest.in;
+  const net = o ? `${fmtMinor(o.net_amount_minor)} ${o.currency}` : `${i.net_amount || ""} ${i.currency || ""}`;
+  const rail = o ? fmtRail(o.asset_amount, o.asset) : fmtRail(i.received_amount || i.asset_amount, i.asset);
+  const from = o ? latest.payer : (i.debtor_bank_id || "?");
+  const to = i ? latest.payee : "";
+  const payLeg = o
+    ? `${chip(settlementStatus(o))} depth ${o.depth}/${o.finality_depth} ${txLink(o.tx_id)}
+       <div class="details">${esc(settlementError(o))}</div>`
+    : `<span class="dim">not paid from a node in this app</span>`;
+  const receiveLeg = i
+    ? `${chip(i.status)} <div class="details">${esc(i.detail || "")}</div>`
+    : `<span class="dim">no node in this app has received the advice yet</span>`;
+  el.innerHTML = `
+    <p class="latest-head"><span class="id-full">${esc(latest.id)}</span> ·
+      <strong>${esc(net)}</strong>${rail ? ` · ${esc(rail)}` : ""} ·
+      ${esc((latest.at || "").slice(0, 19).replace("T", " "))}Z</p>
+    <table>
+      <tbody>
+        <tr><th>paid by ${esc(from)}</th><td>${payLeg}</td></tr>
+        <tr><th>received by ${esc(to || "creditor")}</th><td>${receiveLeg}</td></tr>
+      </tbody>
+    </table>`;
+}
+
 async function renderSettlements() {
   const el = $("#settlement-tables");
   if (!el) return;
-  const parts = await Promise.all(NODES.map(async (n) => {
-    const r = await getJson(nodeUrl(n.name, "settlements"));
-    const rows = r.ok && Array.isArray(r.body) ? r.body : [];
+  const parts = NODES.map((n) => {
+    const data = SETTLEMENTS[n.name] || { out: [], in: [] };
+    const rows = data.out;
+    const incoming = incomingTable(n, data.in.slice(0, rowLimit(el)));
     if (rows.length === 0) {
-      return `<h3>${esc(n.name)}</h3><p class="empty">no settlements</p>`;
+      return `<h3>${esc(n.name)}</h3><p class="empty">no outgoing settlements</p>${incoming}`;
     }
     const shown = rows.slice(0, rowLimit(el));
     const body = shown.map((s) => `
       <tr>
         <td class="id-full" title="${esc(s.idempotency_key)}">${esc(s.settlement_id || s.idempotency_key)}${
           s.purpose === "PLATFORM_FEE" ? `<div class="dim">platform fee</div>` : ""}</td>
-        <td>${chip(s.status)}</td>
+        <td>${chip(settlementStatus(s))}</td>
         <td class="num">${esc(fmtMinor(s.net_amount_minor))} ${esc(s.currency)}</td>
         <td class="num">${esc(fmtRail(s.asset_amount, s.asset))}</td>
         <td>${fmtFx(s)}</td>
         <td class="num">${s.depth}/${s.finality_depth}</td>
         <td>${txLink(s.tx_id)}</td>
-        <td>${esc(s.error_reason || "")}</td>
+        <td class="details">${esc(settlementError(s))}</td>
         <td><button class="small corridor-btn" data-node="${esc(n.name)}"
               data-key="${esc(s.settlement_id || s.idempotency_key)}"
               title="OBP-API's authoritative settlement view — covered promises from both banks; also reconciles this node's linkage">corridor view</button></td>
@@ -281,8 +403,8 @@ async function renderSettlements() {
           <th>rate</th><th>depth</th><th>tx</th><th>error</th><th></th></tr></thead>
         <tbody>${body}</tbody>
       </table>
-      ${moreLink(rows.length, shown.length, "/settlements", "settlements")}`;
-  }));
+      ${moreLink(rows.length, shown.length, "/settlements", "settlements")}${incoming}`;
+  });
   el.innerHTML = parts.join("");
 }
 
@@ -483,6 +605,10 @@ async function refresh() {
     await fetchTrs();
     renderTrTables();
     renderPosition();
+  }
+  if ($("#settlement-tables") || $("#latest-settlement")) {
+    await fetchSettlements();
+    renderLatestSettlement();
   }
   await Promise.all([renderHealth(), renderSettlements(), renderEvidence()]);
 }

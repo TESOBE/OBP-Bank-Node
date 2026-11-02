@@ -88,6 +88,11 @@ pub struct EvidenceStore {
 }
 
 impl EvidenceStore {
+    /// Whether the database answers, for the root `/status` page.
+    pub async fn ping(&self) -> Result<(), sqlx::Error> {
+        sqlx::query("SELECT 1").execute(&self.pool).await.map(|_| ())
+    }
+
     pub async fn connect(path: &Path) -> Result<Self, OutboxError> {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {

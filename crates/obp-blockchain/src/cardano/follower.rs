@@ -21,7 +21,7 @@
 //! submissions only (a few per payment), so growth is bounded by write volume;
 //! revisit if a node ever submits at high rate for months.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -29,6 +29,7 @@ use serde_json::{json, Value};
 use tracing::{debug, info, warn};
 
 use super::ogmios::{OgmiosError, OgmiosSession};
+use crate::settlement::IncomingPayment;
 use crate::ConfirmationStatus;
 
 /// Recent block points retained for reconnect intersection. 32 points ≈ 10
@@ -68,7 +69,24 @@ struct FollowerState {
     watched: HashMap<String, Watch>,
     /// Points of recently processed blocks, oldest first.
     recent_points: VecDeque<Point>,
+    /// Addresses whose incoming payments are recorded (the node's own wallet),
+    /// so a payment can be checked even after the node has spent it.
+    watched_addresses: HashSet<String>,
+    /// Payments to a watched address seen since the follower started, keyed by
+    /// lowercase tx id.
+    payments: HashMap<String, Payment>,
 }
+
+/// Lovelace one transaction paid to one watched address, and where.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Payment {
+    address: String,
+    lovelace: u64,
+    height: u64,
+    slot: u64,
+}
+
+
 
 /// A processed `nextBlock` step.
 #[derive(Debug, PartialEq, Eq)]
@@ -85,6 +103,8 @@ struct BlockSummary {
     slot: u64,
     height: u64,
     tx_ids: Vec<String>,
+    /// Every output of every tx: (tx id, address, lovelace).
+    outputs: Vec<(String, String, u64)>,
 }
 
 impl FollowerState {
@@ -97,6 +117,18 @@ impl FollowerState {
     }
 
     fn apply_forward(&mut self, block: BlockSummary, tip_height: Option<u64>) {
+        for (tx_id, address, lovelace) in &block.outputs {
+            if self.watched_addresses.contains(address) {
+                let p = self.payments.entry(tx_id.to_lowercase()).or_insert(Payment {
+                    address: address.clone(),
+                    lovelace: 0,
+                    height: block.height,
+                    slot: block.slot,
+                });
+                p.lovelace += lovelace;
+                info!(tx_id = %tx_id, %address, lovelace, height = block.height, "payment to a watched address");
+            }
+        }
         for id in &block.tx_ids {
             if let Some(w) = self.watched.get_mut(&id.to_lowercase()) {
                 info!(tx_id = %id, height = block.height, slot = block.slot, "watched tx included on chain");
@@ -129,6 +161,8 @@ impl FollowerState {
         }
         self.recent_points
             .retain(|p| rollback_slot.is_some_and(|cut| p.slot <= cut));
+        self.payments
+            .retain(|_, p| rollback_slot.is_some_and(|cut| p.slot <= cut));
         if tip_height.is_some() {
             self.tip_height = tip_height;
         }
@@ -144,6 +178,20 @@ impl FollowerState {
                 Some(ConfirmationStatus::Confirmed { depth })
             }
         }
+    }
+
+    /// What `tx_id` paid to `address`, if the follower saw it; `None` if it
+    /// did not (not on chain, rolled back, or before the follower started).
+    fn payment(&self, tx_id: &str, address: &str) -> Option<IncomingPayment> {
+        let p = self.payments.get(&tx_id.to_lowercase())?;
+        if p.address != address {
+            return None;
+        }
+        let tip = self.tip_height.unwrap_or(p.height).max(p.height);
+        Some(IncomingPayment {
+            lovelace: p.lovelace,
+            depth: (tip - p.height + 1).min(u32::MAX as u64) as u32,
+        })
     }
 
     /// Intersection candidates for (re)connect: recent points newest-first.
@@ -183,6 +231,17 @@ impl ChainFollower {
     /// watched by this process (caller decides the fallback).
     pub fn status(&self, tx_id: &str) -> Option<ConfirmationStatus> {
         self.lock().status(tx_id)
+    }
+
+    /// Record every payment to `address` from now on (see [`Self::payment`]).
+    pub fn watch_address(&self, address: &str) {
+        self.lock().watched_addresses.insert(address.to_string());
+    }
+
+    /// What `tx_id` paid to `address` (a watched address) and how deep it is;
+    /// `None` if the follower has not seen it since it started.
+    pub fn payment(&self, tx_id: &str, address: &str) -> Option<IncomingPayment> {
+        self.lock().payment(tx_id, address)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, FollowerState> {
@@ -279,17 +338,28 @@ fn parse_step(v: &Value) -> Result<Step, String> {
                 .get("height")
                 .and_then(Value::as_u64)
                 .ok_or("block missing height")?;
-            let tx_ids = block
+            let txs = block
                 .get("transactions")
                 .and_then(Value::as_array)
-                .map(|txs| {
-                    txs.iter()
-                        .filter_map(|t| t.get("id").and_then(Value::as_str))
-                        .map(str::to_string)
-                        .collect()
-                })
+                .map(Vec::as_slice)
                 .unwrap_or_default();
-            Ok(Step::Forward(BlockSummary { id, slot, height, tx_ids }))
+            let tx_ids = txs
+                .iter()
+                .filter_map(|t| t.get("id").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect();
+            let outputs = txs
+                .iter()
+                .filter_map(|t| Some((t.get("id")?.as_str()?, t.get("outputs")?.as_array()?)))
+                .flat_map(|(tx_id, outs)| {
+                    outs.iter().filter_map(move |o| {
+                        let address = o.get("address")?.as_str()?;
+                        let lovelace = o.get("value")?.get("ada")?.get("lovelace")?.as_u64()?;
+                        Some((tx_id.to_string(), address.to_string(), lovelace))
+                    })
+                })
+                .collect();
+            Ok(Step::Forward(BlockSummary { id, slot, height, tx_ids, outputs }))
         }
         Some("backward") => match v.get("point") {
             Some(Value::String(s)) if s == "origin" => Ok(Step::Backward(None)),
@@ -316,6 +386,46 @@ mod tests {
             slot,
             height,
             tx_ids: tx_ids.iter().map(|s| s.to_string()).collect(),
+            outputs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn payments_to_a_watched_address_are_recorded_and_rolled_back() {
+        let mut s = FollowerState::default();
+        s.watched_addresses.insert("addr_me".into());
+        let mut b = block(100, 1000, &["tx-pay"]);
+        b.outputs = vec![
+            ("tx-pay".into(), "addr_me".into(), 61_943_319),
+            ("tx-pay".into(), "addr_change".into(), 9_932_012_283),
+            ("tx-other".into(), "addr_else".into(), 5),
+        ];
+        s.apply_forward(b, Some(100));
+        s.apply_forward(block(101, 1020, &[]), Some(101));
+        assert_eq!(
+            s.payment("TX-PAY", "addr_me"),
+            Some(IncomingPayment { lovelace: 61_943_319, depth: 2 })
+        );
+        assert_eq!(s.payment("tx-pay", "addr_change"), None, "only watched addresses");
+        assert_eq!(s.payment("tx-other", "addr_else"), None);
+
+        s.apply_backward(Some(999), Some(99));
+        assert_eq!(s.payment("tx-pay", "addr_me"), None, "rolled back off chain");
+    }
+
+    #[test]
+    fn parse_step_collects_outputs() {
+        let v = json!({"direction": "forward", "block": {"id": "b", "slot": 7, "height": 3,
+            "transactions": [{"id": "t1", "outputs": [
+                {"address": "addr_a", "value": {"ada": {"lovelace": 1500000}}},
+                {"address": "addr_b", "value": {"ada": {"lovelace": 2}}}
+            ]}]}});
+        match parse_step(&v).unwrap() {
+            Step::Forward(b) => assert_eq!(
+                b.outputs,
+                vec![("t1".to_string(), "addr_a".to_string(), 1_500_000), ("t1".into(), "addr_b".into(), 2)]
+            ),
+            other => panic!("unexpected {other:?}"),
         }
     }
 

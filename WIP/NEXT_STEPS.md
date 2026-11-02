@@ -3,6 +3,66 @@
 State of the project as of the pause point, so we can resume without re-litigating
 decisions.
 
+## 2026-11-02 — round trip on the new laptop; PLAN: incoming settlements on the creditor node
+
+State: the full round trip works again on the new laptop (promises REPORTED, a
+4-promise KES net settled as 61.94 tADA on preprod, FINAL at depth 2). Uncommitted
+changes from that session: outbox `last_error` + a details column on the promises
+table, root `/alive` `/health` `/status` in OBP-API's format (plus an
+`open_corridor` check), `docker/cardano-bootstrap.sh mithril`, RETRYING instead of
+ERROR for retryable settlement errors in the app, and the app setup-login clients
+from `commands/_helpers/sync_obp_consumers.sh` (via `dev/local.env`).
+
+### Incoming settlements on the creditor node — steps 1-4 BUILT (2026-11-02, uncommitted)
+
+Built the same day: the follower records payments to the node's own wallet
+address; `incoming_settlements` table + `incoming.rs` watcher (20 s);
+`GET .../incoming-settlements`; the app shows an "incoming (as creditor)" table;
+OBP-API's v7 settlement view gains `settlement_tx_id`, `settlement_asset`,
+`settlement_asset_amount`. The check is against what the debtor REPORTS paying
+(lovelace), so a different FX rate at the creditor is not a MISMATCH. Still open:
+step 5 (`/status` check), and payments that arrive while the node is down (the
+follower only sees blocks from its start).
+
+### Original plan: incoming settlements on the creditor node
+
+**The gap.** The creditor node keeps no record of settlements it receives. Its only
+trace is the credits flipping to "settled" when `obp_settlement_advice` arrives,
+and OBP-API sends that advice at settle time, *before* the debtor node has paid.
+So "settled" on B means "netted on OBP-API's ledger", not "the ADA arrived". The
+advice carries no rail tx id, and B never checks the chain.
+
+**Steps.**
+1. **Store each advice (node).** New `incoming_settlements` table, keyed by
+   `settlement_id`: debtor bank, currency, net amount, covered TR ids,
+   `received_at`, and later `tx_id`, `depth`, `status`, `verified_at`. Fill it in
+   `router.rs::settlement_advice` (idempotent; advices are redelivered). Add
+   `GET /obp-bank-node/v5.1.0/incoming-settlements`.
+2. **Learn the rail tx id (OBP-API).** The debtor node reports `tx_id` and depth
+   in its instruction replies, and OBP-API keeps them on the outbox row
+   (`nodeReportedField`). Add `settlement_tx_id` to the v7 corridor settlement
+   view (`OpenCorridorSettlement` status JSON); it is additive. The creditor node
+   polls that view for its open incoming rows (the endpoint is already proxied as
+   `.../settlements/:key/corridor`). A later option is a second message to the
+   creditor when the instruction is DELIVERED, so no polling is needed.
+3. **Verify on chain (node).** With the tx id, query Ogmios. The tx must pay this
+   bank's CARDANO settlement address (the routing on its
+   OBP-INCOMING-SETTLEMENT-ACCOUNT) at least the expected lovelace, and it reaches
+   the node's own `finality_depth`. Then mark the row `RECEIVED`. Mark it
+   `MISMATCH` if the outputs don't match: a different address, too little, or no
+   such tx.
+4. **App B.** Add an "incoming settlements" table on the settlements page:
+   settlement id, from bank, net, rail amount, tx link, depth, status
+   (NETTED → PAID → RECEIVED, or MISMATCH in red). Show credits as "netted" until
+   their settlement is RECEIVED, and "settled" after.
+5. **`/status`.** Add a soft check that warns on incoming settlements that have
+   been NETTED for longer than about an hour, or are in MISMATCH.
+
+**Open questions.** Which lovelace amount to expect: the debtor converts at its
+own FX rate, so either OBP-API's view also reports the rail amount the debtor
+paid, or B checks against a tolerance. And what B does on MISMATCH: today, only
+show it.
+
 ## 2026-08-09 (even later) — global routing schemes seeded at boot; NPE fix
 
 - **`RoutingSchemeSeed` now seeds the three global INT schemes**

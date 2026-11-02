@@ -46,6 +46,10 @@ async fn router_with_obp(obp_base_url: &str) -> (axum::Router, BankNodeState) {
         corridor_accounts: Default::default(),
         finality_depth: TEST_FINALITY_DEPTH,
         interface_c: crate::interface_c::consumer::ConsumerStatus::new(),
+        obp_api_url: obp_base_url.into(),
+        chain_health_url: None,
+        instance_id: "test-instance".into(),
+        started_at: std::time::Instant::now(),
     };
     (build_router(state.clone()), state)
 }
@@ -57,14 +61,63 @@ async fn body_bytes(resp: axum::response::Response) -> Vec<u8> {
         .to_vec()
 }
 
+async fn get_with_accept(uri: &str, accept: Option<&str>) -> axum::response::Response {
+    let mut req = Request::builder().method(Method::GET).uri(uri);
+    if let Some(a) = accept {
+        req = req.header("accept", a);
+    }
+    router().await.oneshot(req.body(Body::empty()).unwrap()).await.unwrap()
+}
+
 #[tokio::test]
-async fn root_health_returns_200_with_blockchain_label() {
+async fn root_alive_and_health_are_minimal_like_obp_api() {
+    let resp = get_with_accept("/alive", None).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_bytes(resp).await, b"true");
+
+    let resp = get_with_accept("/health", None).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body_bytes(resp).await).unwrap();
+    assert_eq!(v, serde_json::json!({"status": "ok"}));
+}
+
+#[tokio::test]
+async fn root_status_is_503_json_with_each_check_when_degraded() {
+    // The test state's OBP-API (port 1) refuses connections and its Interface C
+    // never connects, so the node is not ready.
+    let resp = get_with_accept("/status", Some("application/json")).await;
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let v: serde_json::Value = serde_json::from_slice(&body_bytes(resp).await).unwrap();
+    assert_eq!(v["status"], "degraded");
+    assert_eq!(v["service"], "OBP-Bank-Node");
+    assert_eq!(v["instance_id"], "test-instance");
+    assert_eq!(v["checks"]["database"]["status"], "ok");
+    assert_eq!(v["checks"]["obp_api"]["status"], "fail");
+    assert_eq!(v["checks"]["open_corridor"]["status"], "fail");
+    assert_eq!(v["checks"]["blockchain"]["status"], "ok", "the mock has no chain to check");
+    assert_eq!(v["checks"]["interface_c"]["status"], "fail");
+    assert_eq!(v["outbox"]["detail"], "no transaction requests");
+    assert!(v["git_commit"].is_string() && v["uptime_seconds"].is_u64());
+}
+
+#[tokio::test]
+async fn root_status_is_html_by_default() {
+    let resp = get_with_accept("/status", None).await;
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(resp.headers()["content-type"].to_str().unwrap().starts_with("text/html"));
+    let html = String::from_utf8(body_bytes(resp).await).unwrap();
+    assert!(html.contains("OBP Bank Node Status:"));
+    assert!(html.contains("<th>interface_c</th>"));
+}
+
+#[tokio::test]
+async fn versioned_health_returns_200_with_blockchain_label() {
     let resp = router()
         .await
         .oneshot(
             Request::builder()
                 .method(Method::GET)
-                .uri("/health")
+                .uri("/obp-bank-node/v5.1.0/health")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -79,22 +132,6 @@ async fn root_health_returns_200_with_blockchain_label() {
     // A node that cannot receive AMQP must be visible: the consumer state is
     // part of health (this test state never connects, so "connecting").
     assert_eq!(v["interface_c"], "connecting");
-}
-
-#[tokio::test]
-async fn versioned_health_endpoint_responds() {
-    let resp = router()
-        .await
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri("/obp-bank-node/v5.1.0/health")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -262,13 +299,13 @@ async fn initiate_payment_skips_routing_validation_while_registry_unloaded() {
 }
 
 #[tokio::test]
-async fn root_status_reports_identity_and_corridor_accounts() {
+async fn versioned_status_reports_identity_and_corridor_accounts() {
     let resp = router_with_corridor_accounts()
         .await
         .oneshot(
             Request::builder()
                 .method(Method::GET)
-                .uri("/status")
+                .uri("/obp-bank-node/v5.1.0/status")
                 .body(Body::empty())
                 .unwrap(),
         )

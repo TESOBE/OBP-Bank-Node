@@ -123,12 +123,16 @@ impl CardanoBackend {
             .map_err(|e| BlockchainError::Internal(format!("wallet load failed: {e}")))?;
         info!(address = %wallet.address, "wallet loaded");
 
+        let follower = ChainFollower::spawn(config.ogmios_url);
+        // Payments into the wallet (settlements this bank receives as creditor)
+        // are recorded as they arrive, so they can be checked after being spent.
+        follower.watch_address(&wallet.address);
         Ok(Self {
             ogmios,
             wallet: Arc::new(wallet),
             network: config.network,
             submit_lock: Arc::new(Mutex::new(())),
-            follower: ChainFollower::spawn(config.ogmios_url),
+            follower,
         })
     }
 

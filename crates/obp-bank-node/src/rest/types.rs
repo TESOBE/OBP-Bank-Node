@@ -129,6 +129,13 @@ pub struct TransactionRequestStatus {
     pub settlement_system: Option<String>,
     pub created_at: DateTime<Utc>,
     pub settled_at: Option<DateTime<Utc>>,
+    /// How often the dispatcher has tried to move this row on.
+    pub attempt_count: i64,
+    pub last_attempted_at: Option<DateTime<Utc>>,
+    /// Why the latest attempt failed, while the row is still being retried.
+    pub last_error: Option<String>,
+    /// Why the row stopped in `EXCEPTION`.
+    pub exception_reason: Option<String>,
 }
 
 /// Body of `POST .../settlements` — ask this node to trigger bilateral Open

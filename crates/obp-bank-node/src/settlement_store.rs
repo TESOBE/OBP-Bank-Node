@@ -101,6 +101,11 @@ pub struct SettlementStore {
 }
 
 impl SettlementStore {
+    /// Whether the database answers, for the root `/status` page.
+    pub async fn ping(&self) -> Result<(), sqlx::Error> {
+        sqlx::query("SELECT 1").execute(&self.pool).await.map(|_| ())
+    }
+
     pub async fn connect(path: &Path) -> Result<Self, OutboxError> {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
@@ -178,6 +183,29 @@ impl SettlementStore {
                 }
             }
         }
+
+        // Settlements this bank receives as creditor, from obp_settlement_advice,
+        // and whether the payment has been seen arriving (see incoming.rs).
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS incoming_settlements (
+                settlement_id     TEXT PRIMARY KEY,
+                debtor_bank_id    TEXT,
+                currency          TEXT,
+                net_amount        TEXT,
+                covered_ids       TEXT NOT NULL,
+                status            TEXT NOT NULL,
+                tx_id             TEXT,
+                asset             TEXT,
+                asset_amount      TEXT,
+                received_amount   TEXT,
+                depth             INTEGER NOT NULL DEFAULT 0,
+                detail            TEXT,
+                received_at       TEXT NOT NULL,
+                updated_at        TEXT NOT NULL
+            )",
+        )
+        .execute(pool)
+        .await?;
         Ok(())
     }
 
@@ -359,8 +387,170 @@ impl SettlementStore {
     }
 }
 
+/// Statuses of a settlement this bank receives.
+pub mod incoming_status {
+    /// The advice arrived: OBP-API has netted the promises on its ledger.
+    pub const NETTED: &str = "NETTED";
+    /// The debtor's node reports paying; not yet seen here at finality depth.
+    pub const PAID: &str = "PAID";
+    /// Seen paying this node's own address at least the reported amount, at
+    /// this node's finality depth.
+    pub const RECEIVED: &str = "RECEIVED";
+    /// Seen paying this node's address less than the debtor reported.
+    pub const MISMATCH: &str = "MISMATCH";
+}
+
+/// One settlement this bank receives as creditor.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct IncomingSettlement {
+    pub settlement_id: String,
+    pub debtor_bank_id: Option<String>,
+    pub currency: Option<String>,
+    pub net_amount: Option<String>,
+    /// JSON array of the covered OBP transaction request ids.
+    pub covered_ids: String,
+    pub status: String,
+    pub tx_id: Option<String>,
+    pub asset: Option<String>,
+    /// What the debtor reports paying, in the asset's smallest unit.
+    pub asset_amount: Option<String>,
+    /// What was seen arriving at this node's address, same unit.
+    pub received_amount: Option<String>,
+    pub depth: i64,
+    pub detail: Option<String>,
+    pub received_at: String,
+    pub updated_at: String,
+}
+
+/// What the incoming watcher learnt about one settlement this tick.
+#[derive(Clone, Copy)]
+pub struct IncomingUpdate<'a> {
+    pub status: &'a str,
+    pub tx_id: Option<&'a str>,
+    pub asset: Option<&'a str>,
+    pub asset_amount: Option<&'a str>,
+    pub received_amount: Option<u64>,
+    pub depth: u32,
+    pub detail: &'a str,
+}
+
+impl SettlementStore {
+    /// Record a settlement advice naming this bank as creditor. Idempotent:
+    /// advices are redelivered, and a known settlement keeps its progress.
+    pub async fn record_incoming(
+        &self,
+        settlement_id: &str,
+        debtor_bank_id: Option<&str>,
+        currency: Option<&str>,
+        net_amount: Option<&str>,
+        covered_ids: &[String],
+    ) -> Result<(), OutboxError> {
+        let now = now();
+        sqlx::query(
+            "INSERT OR IGNORE INTO incoming_settlements \
+                (settlement_id, debtor_bank_id, currency, net_amount, covered_ids, status, \
+                 received_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(settlement_id)
+        .bind(debtor_bank_id)
+        .bind(currency)
+        .bind(net_amount)
+        .bind(serde_json::to_string(covered_ids).unwrap_or_else(|_| "[]".into()))
+        .bind(incoming_status::NETTED)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Most-recent-first listing for the south-side read API.
+    pub async fn list_incoming(&self, limit: i64) -> Result<Vec<IncomingSettlement>, OutboxError> {
+        Ok(sqlx::query_as::<_, IncomingSettlement>(
+            "SELECT * FROM incoming_settlements ORDER BY received_at DESC LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// The incoming watcher's worklist: not yet RECEIVED (MISMATCH is
+    /// re-checked too: a payment can still deepen or be followed by more).
+    pub async fn list_open_incoming(&self) -> Result<Vec<IncomingSettlement>, OutboxError> {
+        Ok(sqlx::query_as::<_, IncomingSettlement>(
+            "SELECT * FROM incoming_settlements WHERE status != ? ORDER BY received_at ASC LIMIT 100",
+        )
+        .bind(incoming_status::RECEIVED)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn update_incoming(&self, settlement_id: &str, u: IncomingUpdate<'_>) -> Result<(), OutboxError> {
+        sqlx::query(
+            "UPDATE incoming_settlements SET status = ?, tx_id = COALESCE(?, tx_id), \
+                asset = COALESCE(?, asset), asset_amount = COALESCE(?, asset_amount), \
+                received_amount = COALESCE(?, received_amount), depth = ?, detail = ?, updated_at = ? \
+             WHERE settlement_id = ?",
+        )
+        .bind(u.status)
+        .bind(u.tx_id)
+        .bind(u.asset)
+        .bind(u.asset_amount)
+        .bind(u.received_amount.map(|n| n.to_string()))
+        .bind(u.depth as i64)
+        .bind(u.detail)
+        .bind(now())
+        .bind(settlement_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}
+
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
+}
+
+#[cfg(test)]
+mod incoming_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn incoming_settlement_moves_from_netted_to_received() {
+        let s = SettlementStore::connect_in_memory().await.unwrap();
+        s.record_incoming("set-1", Some("rt.bank.a"), Some("KES"), Some("1530.00"), &["tr-1".into()])
+            .await
+            .unwrap();
+        assert_eq!(s.list_open_incoming().await.unwrap().len(), 1);
+
+        let base = IncomingUpdate {
+            status: incoming_status::PAID,
+            tx_id: Some("tx-9"),
+            asset: Some("ADA"),
+            asset_amount: Some("61943319"),
+            received_amount: None,
+            depth: 0,
+            detail: "reported",
+        };
+        s.update_incoming("set-1", base).await.unwrap();
+        s.update_incoming("set-1", IncomingUpdate {
+            status: incoming_status::RECEIVED,
+            tx_id: None,
+            received_amount: Some(61_943_319),
+            depth: 15,
+            detail: "received",
+            ..base
+        })
+        .await
+        .unwrap();
+
+        let row = &s.list_incoming(10).await.unwrap()[0];
+        assert_eq!(row.status, incoming_status::RECEIVED);
+        assert_eq!(row.tx_id.as_deref(), Some("tx-9"), "a later update without tx id keeps it");
+        assert_eq!(row.received_amount.as_deref(), Some("61943319"));
+        assert_eq!(row.depth, 15);
+        assert!(s.list_open_incoming().await.unwrap().is_empty());
+    }
 }
 
 #[cfg(test)]
