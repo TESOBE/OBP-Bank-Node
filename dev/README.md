@@ -56,17 +56,20 @@ client credentials from OBP-OIDC. No person or stand-in user is involved. It nee
 ### 1. Tools
 
 Rust ([rustup](https://rustup.rs)), Python 3 with `cryptography` (`pip install cryptography`),
-`curl`, `psql`, and Docker or Podman with compose.
+`curl`, and Docker or Podman with compose. `psql` is optional: `create_consumers.sh` uses it to
+recover the key and secret of a Consumer that already exists.
 
 ### 2. OBP-API and OBP-OIDC
 
-Run [OBP-API](https://github.com/OpenBankProject/OBP-API) (`develop`) on Postgres, and
-[OBP-OIDC](https://github.com/OpenBankProject/OBP-OIDC) next to it. In OBP-API's props
+Run [OBP-API](https://github.com/OpenBankProject/OBP-API) (`develop` from 6 November 2026 or
+later: it needs Consumer Account Access) and [OBP-OIDC](https://github.com/OpenBankProject/OBP-OIDC)
+next to it, on `:9000`. OBP-OIDC reads its clients from OBP-API's Consumers, so the Consumers
+`create_consumers.sh` makes can log in with client credentials. In OBP-API's props
 (`obp-api/src/main/resources/props/default.props`):
 
 - `open_corridor_enabled=true`
-- `db.url=jdbc:postgresql://...` (not H2: `setup_obp.sh` marks the node users' emails as
-  validated directly in Postgres)
+- `db.url=jdbc:postgresql://...` (Postgres is recommended: `create_consumers.sh` reads an existing
+  Consumer's secret from it, because OBP-API only returns a secret when the Consumer is created)
 - the `oidc_operator_*` props that OBP-OIDC's README describes; `create_consumers.sh` logs in
   with them
 - your own user in `super_admin_user_ids`; `setup_obp.sh` logs in as that user
@@ -119,7 +122,7 @@ overwritten.
 
 ```sh
 cp dev/local.env.example dev/local.env    # set RT_OBP_PROPS_FILE, RT_SA_USER, RT_SA_PASS
-dev/create_consumers.sh                   # creates the 3 Consumers, writes their values to dev/local.env
+dev/create_consumers.sh                   # creates the 5 Consumers, writes their values to dev/local.env
 ```
 
 The Consumers are:
@@ -180,7 +183,7 @@ what node B and the CBS stub received. It prints a cardanoscan link for each tra
 | File | What it does |
 |---|---|
 | `up.sh` | brings everything up in order, and has the `check` / `setup` / `cbs` / `status` / `stop` steps |
-| `create_consumers.sh` | creates the three OBP Consumers and writes them to `local.env` |
+| `create_consumers.sh` | creates the five OBP Consumers and writes them to `local.env` |
 | `setup_rabbitmq.sh`, `setup_obp.sh` | RabbitMQ and OBP-API data for the current bank pair, and the `env.sh` admin token |
 | `start_node_a.sh` / `_b.sh`, `start_ui_a.sh` / `_b.sh` | start one process each (`cargo run`) |
 | `node-a.yaml` / `node-b.yaml`, `ui-a.yaml` / `ui-b.yaml` | the nodes' and UIs' config |
@@ -204,6 +207,21 @@ dev/up.sh                  # then Apply on both /setup pages again
 
 Nothing is deleted: the old banks stay in OBP-API and their data stays in the old
 `dev/data/node-*N` directories. The wallets and the nodes' Consumers carry over.
+
+## Coming from the DirectLogin setup
+
+Before 6 November 2026 the nodes logged in as the service users `rt.node.a` and `rt.node.b`, and
+those users owned the corridor accounts. Your admin can't add the node's view to accounts it
+doesn't own, so move to fresh banks once:
+
+```sh
+dev/up.sh stop
+dev/create_consumers.sh    # adds obp-bank-node-a / -b to dev/local.env
+dev/bump_banks.sh
+dev/up.sh
+```
+
+The `rt.node.*` users are no longer used and can stay where they are.
 
 ## When something is wrong
 
