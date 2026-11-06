@@ -2,7 +2,8 @@
 //! the app config's declarative `setup` block.
 //!
 //! Every desired item (routing scheme, bank, account, FX rate, broker
-//! registration, role grant) renders as a check — `GET`-only, no side
+//! registration, role grant, and the node's Consumer: Platform App, Scopes,
+//! view access) renders as a check — `GET`-only, no side
 //! effects — plus an explicit apply action that mirrors what
 //! `dev/setup_obp.sh` sends. Applies are idempotent: "already exists"
 //! responses (OBP-30515 schemes, OBP-30216 entitlements, existing accounts)
@@ -26,7 +27,7 @@ use serde_json::{json, Value};
 use tracing::warn;
 
 use crate::oidc::{self, Oidc};
-use crate::{ObpApiConfig, SetupConfig, SetupRouting};
+use crate::{ObpApiConfig, SetupConfig, SetupNode, SetupRouting};
 
 const SETUP_HTML: &str = include_str!("static/setup.html");
 const SETUP_JS: &str = include_str!("static/setup.js");
@@ -391,6 +392,23 @@ fn required_admin_roles(setup: &SetupConfig) -> Vec<(String, String)> {
                 bank.id.clone(),
                 "CanCreateEntitlementAtOneBank".to_string(),
             ));
+        }
+        if let Some(node) = &bank.node {
+            // Finding the node's Consumer by name, and its Platform App mark.
+            roles.push((String::new(), "CanGetConsumers".to_string()));
+            roles.push((String::new(), "CanGetPlatformApps".to_string()));
+            roles.push((String::new(), "CanCreatePlatformApp".to_string()));
+            if !node.scopes.is_empty() {
+                // Reading another Consumer's Scopes (v4.0.0 Get Scopes for Consumer).
+                roles.push((
+                    String::new(),
+                    "CanGetEntitlementsForAnyUserAtAnyBank".to_string(),
+                ));
+                roles.push((bank.id.clone(), "CanCreateScopeAtOneBank".to_string()));
+            }
+            if !node.corridor_accounts.is_empty() {
+                roles.push((String::new(), "CanCreateCustomView".to_string()));
+            }
         }
     }
     roles
@@ -793,6 +811,10 @@ async fn status(State(state): State<SetupState>, headers: HeaderMap) -> Response
                 (b, "CanCreateEntitlementAtOneBank"),
             ));
         }
+
+        if let Some(node) = &bank.node {
+            items.extend(node_items(&state, &token, b, node).await);
+        }
     }
 
     Json(json!({
@@ -946,6 +968,260 @@ async fn create_account(
     Ok((status, body))
 }
 
+// ---------------------------------------------------------------------------
+// The node's Consumer
+
+fn node_of<'a>(setup: &'a SetupConfig, bank_id: &str) -> Option<&'a SetupNode> {
+    setup
+        .bank
+        .as_ref()
+        .filter(|b| b.id == bank_id)
+        .and_then(|b| b.node.as_ref())
+}
+
+fn consumer_missing(node: &SetupNode) -> String {
+    format!(
+        "Consumer {} not found: create it with dev/create_consumers.sh (or in the API Manager)",
+        node.consumer_name
+    )
+}
+
+/// The consumer_id of the Consumer named `name`, which differs on every
+/// OBP-API instance. `Ok(None)` when there is no such Consumer.
+async fn find_consumer(state: &SetupState, token: &str, name: &str) -> Result<Option<String>, String> {
+    let (status, body) = state
+        .obp(
+            Method::GET,
+            "/obp/v6.0.0/management/consumers?limit=1000",
+            Some(token),
+            None,
+        )
+        .await?;
+    if !status.is_success() {
+        return Err(format!(
+            "cannot list Consumers ({status}): {}",
+            body["message"].as_str().unwrap_or("")
+        ));
+    }
+    Ok(body["consumers"].as_array().and_then(|list| {
+        list.iter()
+            .filter(|c| c["app_name"].as_str() == Some(name))
+            .find_map(|c| c["consumer_id"].as_str().map(|s| s.to_string()))
+    }))
+}
+
+/// The checks for the node's Consumer: it exists, it is a Platform App, it
+/// holds its Scopes at this bank, and it has access to the node's view on
+/// each corridor account.
+async fn node_items(state: &SetupState, token: &str, b: &str, node: &SetupNode) -> Vec<Value> {
+    let mut items = Vec::new();
+    let name = &node.consumer_name;
+    let consumer = find_consumer(state, token, name).await;
+    let consumer_id = match &consumer {
+        Ok(Some(id)) => Some(id.clone()),
+        _ => None,
+    };
+    let (status_str, detail) = match &consumer {
+        Ok(Some(id)) => ("ok", format!("consumer_id {id}")),
+        // No Apply: the page doesn't create Consumers.
+        Ok(None) => ("error", consumer_missing(node)),
+        Err(e) => ("error", e.clone()),
+    };
+    items.push(item(
+        format!("consumer:{b}"),
+        "node",
+        format!("Consumer {name}"),
+        status_str,
+        detail,
+        ("", "CanGetConsumers"),
+    ));
+    let needs_consumer = || ("error", format!("needs the Consumer {name} first"));
+
+    // Marked as a Platform App, and whether it has declared its Scopes.
+    let (status_str, detail) = match &consumer_id {
+        None => needs_consumer(),
+        Some(id) => match state
+            .obp(Method::GET, "/obp/v7.0.0/management/platform-apps", Some(token), None)
+            .await
+        {
+            Ok((status, body)) if status.is_success() => {
+                let app = body["platform_apps"].as_array().and_then(|list| {
+                    list.iter().find(|a| a["consumer_id"].as_str() == Some(id.as_str()))
+                });
+                match app {
+                    Some(app) => (
+                        "ok",
+                        match app["state"].as_str().unwrap_or("") {
+                            "not_declared" => "marked; the node declares its Scopes when it starts".to_string(),
+                            "missing" => "marked; it has declared Scopes it does not hold".to_string(),
+                            other => format!("marked, declaration {other}"),
+                        },
+                    ),
+                    None => ("missing", String::new()),
+                }
+            }
+            Ok((status, body)) => classify(status, &body, String::new()),
+            Err(e) => ("error", e),
+        },
+    };
+    items.push(item(
+        format!("platformapp:{b}"),
+        "node",
+        format!("Platform App {}", node.label),
+        status_str,
+        detail,
+        ("", "CanCreatePlatformApp"),
+    ));
+
+    // Its Scopes at this bank, read in one call.
+    let held = match &consumer_id {
+        None => None,
+        Some(id) => Some(
+            state
+                .obp(
+                    Method::GET,
+                    &format!("/obp/v4.0.0/consumers/{id}/scopes"),
+                    Some(token),
+                    None,
+                )
+                .await,
+        ),
+    };
+    for role in &node.scopes {
+        let (status_str, detail) = match &held {
+            None => needs_consumer(),
+            Some(Ok((status, body))) if status.is_success() => {
+                let has = body["list"].as_array().map_or(false, |list| {
+                    list.iter().any(|s| {
+                        s["role_name"].as_str() == Some(role.as_str())
+                            && s["bank_id"].as_str() == Some(b)
+                    })
+                });
+                if has { ("ok", String::new()) } else { ("missing", String::new()) }
+            }
+            Some(Ok((status, body))) => {
+                let message = body["message"].as_str().unwrap_or("").to_string();
+                if message.contains("OBP-20006") {
+                    ("unverified", format!("cannot read the Consumer's Scopes; Apply is idempotent — {message}"))
+                } else {
+                    ("error", format!("{status}: {message}"))
+                }
+            }
+            Some(Err(e)) => ("error", e.clone()),
+        };
+        items.push(item(
+            format!("scope:{b}:{role}"),
+            "node",
+            format!("Scope {role} for {name} ({b})"),
+            status_str,
+            detail,
+            (b, "CanCreateScopeAtOneBank"),
+        ));
+    }
+
+    // Its access to the node's view on each corridor account. The list is
+    // read through the admin's owner view, which they hold on accounts they
+    // created.
+    for a in &node.corridor_accounts {
+        let view = &node.view_id;
+        let (status_str, detail) = match &consumer_id {
+            None => needs_consumer(),
+            Some(id) => match state
+                .obp(
+                    Method::GET,
+                    &format!("/obp/v7.0.0/banks/{b}/accounts/{a}/views/owner/consumer-account-access"),
+                    Some(token),
+                    None,
+                )
+                .await
+            {
+                Ok((status, body)) if status.is_success() => {
+                    let granted = body["consumer_account_access"].as_array().map_or(false, |list| {
+                        list.iter().any(|g| {
+                            g["consumer_id"].as_str() == Some(id.as_str())
+                                && g["view_id"].as_str() == Some(view.as_str())
+                        })
+                    });
+                    if granted { ("ok", String::new()) } else { ("missing", String::new()) }
+                }
+                Ok((status, body)) => {
+                    let message = body["message"].as_str().unwrap_or("").to_string();
+                    if message.contains("OBP-30018") || message.contains("OBP-30001") {
+                        ("missing", format!("account {b}/{a} not created yet"))
+                    } else if message.contains("OBP-20017") || status == StatusCode::FORBIDDEN {
+                        (
+                            "unverified",
+                            format!("cannot read the account's Consumer access (no owner view?); Apply is idempotent — {message}"),
+                        )
+                    } else {
+                        ("error", format!("{status}: {message}"))
+                    }
+                }
+                Err(e) => ("error", e),
+            },
+        };
+        items.push(item(
+            format!("nodeview:{b}/{a}"),
+            "node",
+            format!("View {view} on {b} / {a} for {name}"),
+            status_str,
+            detail,
+            ("", "CanCreateCustomView"),
+        ));
+    }
+    items
+}
+
+/// Give the node's Consumer access to its view on one corridor account, as
+/// dev/setup_obp.sh does: the admin gives themself the ManageCustomViews
+/// system view through owner (owner can't grant custom views), the custom
+/// view is created with only can_add_transaction_request_to_any_account
+/// (management endpoint, CanCreateCustomView), and the Consumer is given
+/// access to it through ManageCustomViews. Each step is idempotent.
+async fn grant_node_view(
+    state: &SetupState,
+    token: &str,
+    me: &Me,
+    bank_id: &str,
+    account_id: &str,
+    node: &SetupNode,
+    consumer_id: &str,
+) -> Result<(StatusCode, Value), String> {
+    let base = format!("/obp/v5.1.0/banks/{bank_id}/accounts/{account_id}");
+    let steps = [
+        (
+            format!("{base}/views/owner/account-access/grant"),
+            json!({ "user_id": me.user_id, "view_id": "ManageCustomViews" }),
+        ),
+        (
+            format!("/obp/v6.0.0/management/banks/{bank_id}/accounts/{account_id}/views"),
+            json!({
+                "name": node.view_id,
+                "description": "The Bank Node creates OPEN_CORRIDOR_PROMISE Transaction Requests through this view",
+                "metadata_view": node.view_id,
+                "is_public": false,
+                "which_alias_to_use": "",
+                "hide_metadata_if_alias_used": false,
+                "allowed_actions": ["can_add_transaction_request_to_any_account"],
+            }),
+        ),
+        (
+            format!("/obp/v7.0.0/banks/{bank_id}/accounts/{account_id}/views/ManageCustomViews/consumer-account-access"),
+            json!({ "consumer_id": consumer_id, "view_id": node.view_id }),
+        ),
+    ];
+    let mut last = (StatusCode::OK, json!({}));
+    for (path, body) in steps {
+        let (status, body) = state.obp(Method::POST, &path, Some(token), Some(&body)).await?;
+        if !(status.is_success() || already_ok(&body)) {
+            // The failing step's answer, verbatim.
+            return Ok((status, body));
+        }
+        last = (status, body);
+    }
+    Ok(last)
+}
+
 async fn grant_role(
     state: &SetupState,
     token: &str,
@@ -970,6 +1246,10 @@ fn already_ok(body: &Value) -> bool {
         "OBP-30515",
         "OBP-30216",
         "OBP-30208",
+        // A custom view, a Consumer's access to a view, a Platform App mark.
+        "OBP-30266",
+        "OBP-30627",
+        "OBP-35045",
         "already exists",
         "EntitlementRequestAlreadyExists",
         "Entitlement Request already exists",
@@ -1187,6 +1467,65 @@ async fn apply(
                 None => Err(format!("malformed grant id {rest}")),
             }
         }
+        Some(("consumer", _)) => Err(
+            "this page does not create Consumers: the Consumer's secret belongs in the node's config. \
+             Create it with dev/create_consumers.sh (or in the API Manager) and give the node its key and secret."
+                .into(),
+        ),
+        Some(("platformapp", bank_id)) => match node_of(setup, bank_id) {
+            Some(node) => match find_consumer(&state, &token, &node.consumer_name).await {
+                Ok(Some(consumer_id)) => {
+                    state
+                        .obp(
+                            Method::POST,
+                            "/obp/v7.0.0/management/platform-apps",
+                            Some(&token),
+                            Some(&json!({ "consumer_id": consumer_id, "label": node.label })),
+                        )
+                        .await
+                }
+                Ok(None) => Err(consumer_missing(node)),
+                Err(e) => Err(e),
+            },
+            None => Err(format!("no node for bank {bank_id} in the setup config")),
+        },
+        Some(("scope", rest)) => match rest.split_once(':') {
+            Some((bank_id, role)) => match node_of(setup, bank_id)
+                .filter(|n| n.scopes.iter().any(|r| r == role))
+            {
+                Some(node) => match find_consumer(&state, &token, &node.consumer_name).await {
+                    Ok(Some(consumer_id)) => {
+                        state
+                            .obp(
+                                Method::POST,
+                                &format!("/obp/v7.0.0/consumers/{consumer_id}/scopes"),
+                                Some(&token),
+                                Some(&json!({ "bank_id": bank_id, "role_name": role })),
+                            )
+                            .await
+                    }
+                    Ok(None) => Err(consumer_missing(node)),
+                    Err(e) => Err(e),
+                },
+                None => Err(format!("no Scope {rest} for the node in the setup config")),
+            },
+            None => Err(format!("malformed scope id {rest}")),
+        },
+        Some(("nodeview", rest)) => match rest.split_once('/') {
+            Some((bank_id, account_id)) => match node_of(setup, bank_id)
+                .filter(|n| n.corridor_accounts.iter().any(|a| a == account_id))
+            {
+                Some(node) => match find_consumer(&state, &token, &node.consumer_name).await {
+                    Ok(Some(consumer_id)) => {
+                        grant_node_view(&state, &token, &me, bank_id, account_id, node, &consumer_id).await
+                    }
+                    Ok(None) => Err(consumer_missing(node)),
+                    Err(e) => Err(e),
+                },
+                None => Err(format!("no node view on {rest} in the setup config")),
+            },
+            None => Err(format!("malformed node view id {rest}")),
+        },
         Some(("myrole", rest)) => match rest.split_once(':') {
             Some((bank_id, role))
                 if required_admin_roles(setup)

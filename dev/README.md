@@ -7,7 +7,7 @@ on the Cardano **preprod** testnet. The only stand-in is the banks' core banking
 
 ```
  UI A :8091 ──► Node A :8088 ─┐                              ┌─ Node B :8089 ◄── UI B :8092
- (bank A)       (debtor)      │  REST (DirectLogin)          │  (creditor)        (bank B)
+ (bank A)       (debtor)      │  REST (client credentials)   │  (creditor)        (bank B)
                               ├────────► OBP-API :8080 ◄─────┤
                               │  RabbitMQ :5672, one vhost   │
                               │  per bank (/bank.<bank_id>)  │
@@ -25,20 +25,31 @@ Before running it, read [`../DOCS/TLDR.md`](../DOCS/TLDR.md), then
 | What | Where | Notes |
 |---|---|---|
 | OBP-API | `http://localhost:8080` | one instance for both banks, `open_corridor_enabled=true`, on Postgres |
-| OBP-OIDC | `http://localhost:9000` | only for logging in to the UIs' `/setup` pages |
+| OBP-OIDC | `http://localhost:9000` | the nodes' client-credentials tokens, and the login to the UIs' `/setup` pages |
 | RabbitMQ | `:5672`, management `:15672` (guest/guest) | vhosts `/bank.<bank_id>`, users `bank_a_node` / `bank_b_node` |
 | cardano-node + Ogmios | `ws://localhost:1337` | preprod; `docker/cardano-bootstrap.sh` |
-| Node A | `http://localhost:8088` | `dev/node-a.yaml`, bank `rt.bank.a3`, OBP user `rt.node.a`, wallet `secrets/cardano.skey` |
-| Node B | `http://localhost:8089` | `dev/node-b.yaml`, bank `rt.bank.b3`, OBP user `rt.node.b`, wallet `secrets/creditor.skey` |
+| Node A | `http://localhost:8088` | `dev/node-a.yaml`, bank `rt.bank.a3`, Consumer `obp-bank-node-a`, wallet `secrets/cardano.skey` |
+| Node B | `http://localhost:8089` | `dev/node-b.yaml`, bank `rt.bank.b3`, Consumer `obp-bank-node-b`, wallet `secrets/creditor.skey` |
 | UI A / UI B | `http://localhost:8091` / `:8092` | `dev/ui-a.yaml` / `ui-b.yaml`; each fronts its own node only |
 | CBS stub | `http://localhost:9009` | writes what it receives to `dev/data/cbs_received.jsonl` |
 
 Both nodes run on Cardano: either side can be the debtor and settle. The bank ids end in a
 generation number (`a3`, `b3`); `dev/bump_banks.sh` moves to a fresh pair (see below).
 
-The nodes log in to OBP-API with DirectLogin, as the service users `rt.node.a` and `rt.node.b`.
-They will move to OAuth2 client credentials (one Consumer per node) once OBP-API can grant
-account access to a Consumer.
+Each node is a **Platform App**: it calls OBP-API as itself, with its own Consumer and OAuth2
+client credentials from OBP-OIDC. No person or stand-in user is involved. It needs:
+
+- **Scopes** at its own bank: `CanAttachOpenCorridorPromise` (reporting each promise back) and
+  `CanSettleOpenCorridor` (settling when an operator asks). At startup the node declares them
+  (`PUT /obp/v7.0.0/consumers/current/platform-app`), so OBP-API's administrators see which are
+  missing.
+- **Consumer Account Access** to a view of each of its corridor accounts, to create the
+  `OPEN_CORRIDOR_PROMISE` Transaction Requests. This is `_open-corridor-node` (`bank.view_id` in
+  `node-*.yaml`), a custom view with only `can_add_transaction_request_to_any_account`. A Consumer
+  can't be given the owner view.
+
+`dev/setup_obp.sh` sets all of this up. See the Glossary entries "Platform Apps" and
+"Consumer Account Access" in OBP-API.
 
 ## One-time setup
 
@@ -111,9 +122,15 @@ cp dev/local.env.example dev/local.env    # set RT_OBP_PROPS_FILE, RT_SA_USER, R
 dev/create_consumers.sh                   # creates the 3 Consumers, writes their values to dev/local.env
 ```
 
-The three Consumers are `obp-bank-node-roundtrip` (the DirectLogin consumer key for the node
-users), and `obp-bank-node-app-a` / `-b` (the UIs' `/setup` login, with redirect URLs
-`http://localhost:8091/setup/callback` and `:8092/setup/callback`). `dev/local.env` is gitignored.
+The Consumers are:
+
+- `obp-bank-node-a` and `obp-bank-node-b`: the nodes. Their key and secret are the OAuth2 client
+  id and secret the node logs in to OBP-OIDC with.
+- `obp-bank-node-roundtrip`: the DirectLogin consumer key the setup scripts' admin logs in with.
+- `obp-bank-node-app-a` and `-b`: the UIs' `/setup` login, with redirect URLs
+  `http://localhost:8091/setup/callback` and `:8092/setup/callback`.
+
+`dev/local.env` is gitignored.
 
 ## Every time
 
@@ -128,14 +145,16 @@ dev/up.sh stop
 
 1. Waits for OBP-API and RabbitMQ.
 2. Runs `setup_rabbitmq.sh`: the per-bank vhosts and users.
-3. Runs `setup_obp.sh`: banks, routing schemes, the node users and their roles, the corridor and
-   settlement accounts, FX rates and broker registrations. It writes fresh DirectLogin tokens to
-   `dev/env.sh`.
+3. Runs `setup_obp.sh`: banks, routing schemes, the corridor and settlement accounts, the nodes'
+   view on each corridor account and their Consumers' access to it, the nodes as Platform Apps
+   with their Scopes, FX rates and broker registrations. It writes the admin's DirectLogin token
+   (for `run_roundtrip.sh`) to `dev/env.sh`.
 4. Starts `cbs_stub.py`.
 5. Builds the nodes and UIs, then starts all four in the background, with logs in `dev/data/logs/`.
 
-Everything is idempotent, so re-running is safe. The tokens in `dev/env.sh` expire, so run
-`dev/up.sh setup` again if a node starts failing with OBP-API authentication errors.
+Everything is idempotent, so re-running is safe. The nodes fetch and refresh their own
+client-credentials tokens. The admin token in `dev/env.sh` expires: run `dev/up.sh setup` again
+before `run_roundtrip.sh` if it fails with an authentication error.
 
 Prefer one terminal per process? Run `dev/up.sh setup` and `dev/up.sh cbs` first, then
 `dev/start_node_a.sh`, `dev/start_node_b.sh`, `dev/start_ui_a.sh` and `dev/start_ui_b.sh`, each
@@ -144,8 +163,11 @@ in its own terminal.
 Then, the first time for each bank generation:
 
 1. Open `http://localhost:8091/setup`, log in as your OBP-API super admin, and **Apply** the
-   missing items until everything is green. These are the per-currency corridor accounts and the
-   bank's CARDANO settlement address on `OBP-INCOMING-SETTLEMENT-ACCOUNT`. Do the same on
+   missing items until everything is green. This is mainly the bank's CARDANO settlement address
+   on `OBP-INCOMING-SETTLEMENT-ACCOUNT`. The section "The Bank Node as a Platform App" checks the
+   node's Consumer: that it exists, is marked as a Platform App, holds its Scopes at this bank, and
+   has access to its view on each corridor account. The page can fix all of these except creating
+   the Consumer, which `dev/create_consumers.sh` does, because its secret goes to the node. Do the same on
    `http://localhost:8092/setup`. Each page sets up its own bank only, as two real banks would.
 2. Send a payment from UI A (`http://localhost:8091`), and watch it arrive in UI B.
 
@@ -159,7 +181,7 @@ what node B and the CBS stub received. It prints a cardanoscan link for each tra
 |---|---|
 | `up.sh` | brings everything up in order, and has the `check` / `setup` / `cbs` / `status` / `stop` steps |
 | `create_consumers.sh` | creates the three OBP Consumers and writes them to `local.env` |
-| `setup_rabbitmq.sh`, `setup_obp.sh` | RabbitMQ and OBP-API data for the current bank pair, and `env.sh` tokens |
+| `setup_rabbitmq.sh`, `setup_obp.sh` | RabbitMQ and OBP-API data for the current bank pair, and the `env.sh` admin token |
 | `start_node_a.sh` / `_b.sh`, `start_ui_a.sh` / `_b.sh` | start one process each (`cargo run`) |
 | `node-a.yaml` / `node-b.yaml`, `ui-a.yaml` / `ui-b.yaml` | the nodes' and UIs' config |
 | `wallets.py` | Cardano wallets, addresses, faucet, balances |
@@ -181,7 +203,7 @@ dev/up.sh                  # then Apply on both /setup pages again
 ```
 
 Nothing is deleted: the old banks stay in OBP-API and their data stays in the old
-`dev/data/node-*N` directories. The wallets and node users carry over.
+`dev/data/node-*N` directories. The wallets and the nodes' Consumers carry over.
 
 ## When something is wrong
 
@@ -190,6 +212,12 @@ Nothing is deleted: the old banks stay in OBP-API and their data stays in the ol
   `curl localhost:8088/health`.
 - "Invalid client" on a `/setup` login: the UI Consumer is missing or has a different redirect URL.
   Run `dev/create_consumers.sh` again.
+- A node logs `OAuth2 token request` or `OAuth2 token endpoint returned` errors, or OBP-API
+  answers 401: OBP-OIDC isn't running, or the node's client id or secret in `dev/local.env` is
+  wrong (`dev/create_consumers.sh`).
+- Payments are retried with a 403 from OBP-API: the node's Consumer lacks its access to the view
+  (creating the promise) or a Scope (reporting it back). Run `dev/setup_obp.sh` again. At startup
+  each node logs whether OBP-API accepted its Platform App declaration.
 - Credit notifications stuck in PENDING: the bank's RabbitMQ vhost was missing when the node
   started. Run `dev/setup_rabbitmq.sh`, then restart the node.
 - Settlement waits forever: Ogmios is not synced (`docker/cardano-bootstrap.sh status`), or the

@@ -5,8 +5,12 @@
 //!
 //! ```text
 //! POST {base_url}/obp/v7.0.0/banks/{bank_id}/accounts/{account_id}
-//!      /owner/transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests
+//!      /{view_id}/transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests
 //! ```
+//!
+//! `view_id` is `bank.view_id` in the config (default `owner`). With client
+//! credentials it is the view the node's Consumer has been given access to
+//! (Consumer Account Access in OBP-API).
 //!
 //! The request body is the A1.1 body verbatim — the south-side and OBP-API
 //! shapes are identical, so the dispatcher replays the stored payload unchanged.
@@ -105,8 +109,19 @@ pub struct ObpClient {
     http: reqwest::Client,
     base_url: String,
     auth: ObpAuth,
+    /// The account view Transaction Requests are created through.
+    view_id: String,
     /// Cached client-credentials token (unused for the other auth schemes).
     token: Mutex<Option<CachedToken>>,
+}
+
+/// One Scope the node declares it needs, as a Platform App.
+#[derive(Debug, serde::Serialize)]
+pub struct RequiredScope<'a> {
+    pub role_name: &'a str,
+    pub bank_id: &'a str,
+    pub needed_for: &'a str,
+    pub optional: bool,
 }
 
 /// The slice of the OBP Transaction Request response the Bank Node cares about:
@@ -141,8 +156,20 @@ impl ObpClient {
             // Trim a trailing slash so URL joins are unambiguous.
             base_url: base_url.into().trim_end_matches('/').to_string(),
             auth,
+            view_id: "owner".to_string(),
             token: Mutex::new(None),
         })
+    }
+
+    /// Create Transaction Requests through this account view instead of `owner`.
+    pub fn with_view_id(mut self, view_id: impl Into<String>) -> Self {
+        self.view_id = view_id.into();
+        self
+    }
+
+    /// Whether the node calls OBP-API as an application acting as itself.
+    pub fn uses_client_credentials(&self) -> bool {
+        matches!(self.auth, ObpAuth::ClientCredentials { .. })
     }
 
     /// Attach OBP-API credentials to a request. For client-credentials this
@@ -229,12 +256,13 @@ impl ObpClient {
 
     fn transaction_requests_url(&self, bank_id: &str, account_id: &str) -> String {
         format!(
-            "{base}/obp/{ver}/banks/{bank}/accounts/{acct}/owner\
+            "{base}/obp/{ver}/banks/{bank}/accounts/{acct}/{view}\
              /transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests",
             base = self.base_url,
             ver = OBP_API_VERSION,
             bank = bank_id,
             acct = account_id,
+            view = self.view_id,
         )
     }
 
@@ -394,6 +422,42 @@ impl ObpClient {
             return Ok(());
         }
         Err(classify_failure(status, &text))
+    }
+
+    /// Declare, as a Platform App, the Scopes the node needs
+    /// (`PUT /obp/v7.0.0/consumers/current/platform-app`). OBP-API shows the
+    /// declaration to its administrators with the Scopes the node's Consumer
+    /// holds and lacks. Refused with 404 (`OBP-35046`) until an administrator
+    /// has marked the Consumer as a Platform App.
+    pub async fn declare_platform_app(
+        &self,
+        version: &str,
+        required_scopes: &[RequiredScope<'_>],
+    ) -> Result<(), ObpClientError> {
+        let url = format!(
+            "{}/obp/{}/consumers/current/platform-app",
+            self.base_url, OBP_API_VERSION
+        );
+        debug!(%url, "declaring the node's Scopes as a Platform App");
+        let body = serde_json::json!({
+            "version": version,
+            "required_scopes": required_scopes,
+        });
+        let req = self.http.put(&url).json(&body);
+        let req = self.authorize(req).await?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ObpClientError::Transport(e.to_string()))?;
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| ObpClientError::Transport(format!("reading response body: {e}")))?;
+        if status.is_success() {
+            return Ok(());
+        }
+        Err(classify_interactive_failure(status, &text))
     }
 
     /// Fetch the ACTIVE rows of OBP-API's routing-scheme registry
@@ -631,6 +695,64 @@ mod tests {
             accepted.obp_transaction_request_id.as_deref(),
             Some("obp-tr-999")
         );
+    }
+
+    #[tokio::test]
+    async fn transaction_requests_go_through_the_configured_view() {
+        let router = Router::new().route(
+            "/obp/v7.0.0/banks/:bank/accounts/:acct/_payment-initiation/transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests",
+            post(|| async { Json(serde_json::json!({ "id": "obp-tr-7" })) }),
+        );
+        let base = spawn_stub(router).await;
+        let client = ObpClient::new(base, ObpAuth::None)
+            .unwrap()
+            .with_view_id("_payment-initiation");
+
+        let accepted = client
+            .submit_open_corridor("ke.01.kcs", "acct-1", "{}")
+            .await
+            .unwrap();
+        assert_eq!(accepted.obp_transaction_request_id.as_deref(), Some("obp-tr-7"));
+    }
+
+    #[tokio::test]
+    async fn platform_app_declaration_sends_the_scopes_and_surfaces_a_refusal() {
+        use axum::routing::put;
+        let router = Router::new().route(
+            "/obp/v7.0.0/consumers/current/platform-app",
+            put(|Json(body): Json<serde_json::Value>| async move {
+                let scopes = body["required_scopes"].as_array().cloned().unwrap_or_default();
+                if body["version"] == "1.0.0"
+                    && scopes.len() == 1
+                    && scopes[0]["role_name"] == "CanSettleOpenCorridor"
+                    && scopes[0]["bank_id"] == "ke.01.kcs"
+                {
+                    (axum::http::StatusCode::OK, Json(serde_json::json!({ "state": "missing" })))
+                } else {
+                    (
+                        axum::http::StatusCode::NOT_FOUND,
+                        Json(serde_json::json!({ "code": 404, "message": "OBP-35046: This Consumer is not a Platform App." })),
+                    )
+                }
+            }),
+        );
+        let base = spawn_stub(router).await;
+        let client = ObpClient::new(base, ObpAuth::None).unwrap();
+        let scope = |bank_id| RequiredScope {
+            role_name: "CanSettleOpenCorridor",
+            bank_id,
+            needed_for: "Settling.",
+            optional: false,
+        };
+
+        client.declare_platform_app("1.0.0", &[scope("ke.01.kcs")]).await.unwrap();
+
+        let err = client
+            .declare_platform_app("1.0.0", &[scope("other.bank")])
+            .await
+            .unwrap_err();
+        assert!(!err.is_retryable(), "a refusal is not retried");
+        assert!(matches!(err, ObpClientError::Rejected { status: 404, ref error_code, .. } if error_code == "OBP-35046"));
     }
 
     #[tokio::test]

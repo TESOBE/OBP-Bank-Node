@@ -19,7 +19,7 @@ use tower::ServiceExt;
 
 use crate::proxy::{build_router, AppState};
 use crate::setup::SetupState;
-use crate::{NodeConfig, ObpApiConfig, SetupAccount, SetupBank, SetupConfig, SetupRoleGrant};
+use crate::{NodeConfig, ObpApiConfig, SetupAccount, SetupBank, SetupConfig, SetupNode, SetupRoleGrant};
 
 const ACCESS_TOKEN: &str = "test-access-token";
 
@@ -32,6 +32,12 @@ struct Captured {
     account_puts: Vec<(String, Value)>,
     account_posts: Vec<(String, Value)>,
     entitlement_requests: Vec<Value>,
+    /// POSTs made for the node's Consumer: (path, body).
+    node_posts: Vec<(String, Value)>,
+}
+
+fn record_node_post(s: &Stub, path: String, body: Value) {
+    s.captured.lock().unwrap().node_posts.push((path, body));
 }
 
 #[derive(Clone)]
@@ -267,6 +273,98 @@ fn obp_stub(base: String, captured: Arc<Mutex<Captured>>) -> Router {
                 )
             }),
         )
+        // The node's Consumer: obp-bank-node-a exists, is not yet a Platform
+        // App, holds CanAttachOpenCorridorPromise at rt.bank.a only, and has
+        // access to its view on settlement-a only; settlement-a-usd does not
+        // exist.
+        .route(
+            "/obp/v6.0.0/management/consumers",
+            get(|| async {
+                Json(json!({ "consumers": [
+                    { "app_name": "obp-portal-client", "consumer_id": "portal-consumer-id" },
+                    { "app_name": "obp-bank-node-a", "consumer_id": "node-a-consumer-id" },
+                ]}))
+            }),
+        )
+        .route(
+            "/obp/v7.0.0/management/platform-apps",
+            get(|| async { Json(json!({ "platform_apps": [] })) }).post(
+                |State(s): State<Stub>, Json(body): Json<Value>| async move {
+                    record_node_post(&s, "platform-apps".into(), body.clone());
+                    (StatusCode::CREATED, Json(json!({ "consumer_id": body["consumer_id"], "state": "not_declared" })))
+                },
+            ),
+        )
+        .route(
+            "/obp/v4.0.0/consumers/:consumer_id/scopes",
+            get(|Path(consumer_id): Path<String>| async move {
+                assert_eq!(consumer_id, "node-a-consumer-id");
+                Json(json!({ "list": [
+                    { "scope_id": "s1", "role_name": "CanAttachOpenCorridorPromise", "bank_id": "rt.bank.a" },
+                    { "scope_id": "s2", "role_name": "CanSettleOpenCorridor", "bank_id": "other.bank" },
+                ]}))
+            }),
+        )
+        .route(
+            "/obp/v7.0.0/consumers/:consumer_id/scopes",
+            post(
+                |State(s): State<Stub>, Path(consumer_id): Path<String>, Json(body): Json<Value>| async move {
+                    record_node_post(&s, format!("scopes:{consumer_id}"), body);
+                    (StatusCode::CREATED, Json(json!({ "scope_id": "s3" })))
+                },
+            ),
+        )
+        .route(
+            "/obp/v7.0.0/banks/:bank_id/accounts/:account_id/views/owner/consumer-account-access",
+            get(|Path((_, account_id)): Path<(String, String)>| async move {
+                match account_id.as_str() {
+                    "settlement-a" => Json(json!({ "consumer_account_access": [
+                        { "consumer_id": "node-a-consumer-id", "view_id": "_open-corridor-node" },
+                    ]}))
+                    .into_response(),
+                    "settlement-a-ngn" => Json(json!({ "consumer_account_access": [
+                        { "consumer_id": "someone-else", "view_id": "_open-corridor-node" },
+                    ]}))
+                    .into_response(),
+                    _ => (
+                        StatusCode::NOT_FOUND,
+                        Json(json!({ "message": "OBP-30018: Bank Account not found." })),
+                    )
+                        .into_response(),
+                }
+            }),
+        )
+        .route(
+            "/obp/v5.1.0/banks/:bank_id/accounts/:account_id/views/owner/account-access/grant",
+            post(
+                |State(s): State<Stub>, Path((_, a)): Path<(String, String)>, Json(body): Json<Value>| async move {
+                    record_node_post(&s, format!("grant-view:{a}"), body);
+                    (StatusCode::CREATED, Json(json!({ "id": "ManageCustomViews" })))
+                },
+            ),
+        )
+        .route(
+            "/obp/v6.0.0/management/banks/:bank_id/accounts/:account_id/views",
+            post(
+                |State(s): State<Stub>, Path((_, a)): Path<(String, String)>, Json(body): Json<Value>| async move {
+                    record_node_post(&s, format!("create-view:{a}"), body);
+                    // The view is already there: an apply must go on to the grant.
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "message": "OBP-30266: The custom view is already exists." })),
+                    )
+                },
+            ),
+        )
+        .route(
+            "/obp/v7.0.0/banks/:bank_id/accounts/:account_id/views/ManageCustomViews/consumer-account-access",
+            post(
+                |State(s): State<Stub>, Path((_, a)): Path<(String, String)>, Json(body): Json<Value>| async move {
+                    record_node_post(&s, format!("consumer-access:{a}"), body);
+                    (StatusCode::CREATED, Json(json!({ "consumer_account_access_id": "caa1" })))
+                },
+            ),
+        )
         .route(
             "/obp/v7.0.0/banks/:bank_id/amqp-broker",
             get(|| async {
@@ -336,11 +434,32 @@ fn setup_config() -> SetupConfig {
                     role: "CanSettleOpenCorridor".into(),
                 },
             ],
+            node: None,
         }),
     }
 }
 
+fn node_setup_config(consumer_name: &str) -> SetupConfig {
+    let mut setup = setup_config();
+    setup.bank.as_mut().unwrap().node = Some(SetupNode {
+        consumer_name: consumer_name.into(),
+        label: "OBP Bank Node A (rt.bank.a)".into(),
+        scopes: vec!["CanAttachOpenCorridorPromise".into(), "CanSettleOpenCorridor".into()],
+        view_id: "_open-corridor-node".into(),
+        corridor_accounts: vec![
+            "settlement-a".into(),
+            "settlement-a-ngn".into(),
+            "settlement-a-usd".into(),
+        ],
+    });
+    setup
+}
+
 fn app_with_setup(obp_base: &str) -> Router {
+    app_with_config(obp_base, setup_config())
+}
+
+fn app_with_config(obp_base: &str, setup: SetupConfig) -> Router {
     let cfg = ObpApiConfig {
         base_url: obp_base.to_string(),
         oauth_provider: "obp-oidc".into(),
@@ -356,7 +475,7 @@ fn app_with_setup(obp_base: &str) -> Router {
     }];
     build_router(
         AppState::new(nodes, Default::default()).unwrap(),
-        Some(SetupState::new(cfg, setup_config()).unwrap()),
+        Some(SetupState::new(cfg, setup).unwrap()),
     )
 }
 
@@ -837,4 +956,145 @@ async fn test_account_endpoint_creates_an_account_owned_by_me_by_default() {
         body["account_routings"],
         json!([{ "scheme": "IBAN", "address": "KE9300001234567890" }])
     );
+}
+
+fn items_by_id(v: &Value) -> HashMap<String, Value> {
+    v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| (i["id"].as_str().unwrap().to_string(), i.clone()))
+        .collect()
+}
+
+#[tokio::test]
+async fn status_checks_the_node_consumer_platform_app_scopes_and_view_access() {
+    let captured = Arc::new(Mutex::new(Captured::default()));
+    let base = spawn_obp_stub(captured.clone()).await;
+    let app = app_with_config(&base, node_setup_config("obp-bank-node-a"));
+    let cookie = log_in(&app, &captured).await;
+
+    let resp = app
+        .oneshot(get_with_cookie("/api/setup/status", &cookie))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let by_id = items_by_id(&body_json(resp).await);
+
+    assert_eq!(by_id["consumer:rt.bank.a"]["status"], "ok");
+    assert_eq!(by_id["consumer:rt.bank.a"]["section"], "node");
+    assert_eq!(by_id["consumer:rt.bank.a"]["detail"], "consumer_id node-a-consumer-id");
+    assert_eq!(by_id["platformapp:rt.bank.a"]["status"], "missing");
+    assert_eq!(by_id["scope:rt.bank.a:CanAttachOpenCorridorPromise"]["status"], "ok");
+    // Held, but at another bank: missing here.
+    assert_eq!(by_id["scope:rt.bank.a:CanSettleOpenCorridor"]["status"], "missing");
+    assert_eq!(by_id["nodeview:rt.bank.a/settlement-a"]["status"], "ok");
+    // Another Consumer's access to the same view does not count.
+    assert_eq!(by_id["nodeview:rt.bank.a/settlement-a-ngn"]["status"], "missing");
+    assert_eq!(by_id["nodeview:rt.bank.a/settlement-a-usd"]["status"], "missing");
+    assert_eq!(
+        by_id["nodeview:rt.bank.a/settlement-a-usd"]["detail"],
+        "account rt.bank.a/settlement-a-usd not created yet"
+    );
+    // The roles these checks and applies need are listed under "me".
+    for role in [
+        "myrole::CanGetConsumers",
+        "myrole::CanGetPlatformApps",
+        "myrole::CanCreatePlatformApp",
+        "myrole::CanGetEntitlementsForAnyUserAtAnyBank",
+        "myrole:rt.bank.a:CanCreateScopeAtOneBank",
+        "myrole::CanCreateCustomView",
+    ] {
+        assert!(by_id.contains_key(role), "{role} should be listed");
+    }
+}
+
+#[tokio::test]
+async fn status_without_the_node_consumer_says_how_to_create_it() {
+    let captured = Arc::new(Mutex::new(Captured::default()));
+    let base = spawn_obp_stub(captured.clone()).await;
+    let app = app_with_config(&base, node_setup_config("obp-bank-node-ghost"));
+    let cookie = log_in(&app, &captured).await;
+
+    let resp = app
+        .clone()
+        .oneshot(get_with_cookie("/api/setup/status", &cookie))
+        .await
+        .unwrap();
+    let by_id = items_by_id(&body_json(resp).await);
+    // "error" items get no Apply: the page can't create the Consumer.
+    assert_eq!(by_id["consumer:rt.bank.a"]["status"], "error");
+    assert!(by_id["consumer:rt.bank.a"]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("dev/create_consumers.sh"));
+    assert_eq!(by_id["platformapp:rt.bank.a"]["status"], "error");
+    assert_eq!(by_id["nodeview:rt.bank.a/settlement-a"]["status"], "error");
+
+    // Applying the Consumer item explains instead of creating anything.
+    let resp = app
+        .oneshot(post_json_with_cookie(
+            "/api/setup/apply",
+            &cookie,
+            json!({ "id": "consumer:rt.bank.a" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    assert!(captured.lock().unwrap().node_posts.is_empty());
+}
+
+#[tokio::test]
+async fn apply_marks_the_platform_app_adds_scopes_and_grants_the_node_view() {
+    let captured = Arc::new(Mutex::new(Captured::default()));
+    let base = spawn_obp_stub(captured.clone()).await;
+    let app = app_with_config(&base, node_setup_config("obp-bank-node-a"));
+    let cookie = log_in(&app, &captured).await;
+    let apply = |id: &str| post_json_with_cookie("/api/setup/apply", &cookie, json!({ "id": id }));
+
+    let resp = app.clone().oneshot(apply("platformapp:rt.bank.a")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let resp = app
+        .clone()
+        .oneshot(apply("scope:rt.bank.a:CanSettleOpenCorridor"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // The view already exists (OBP-30266): the apply goes on to the grant.
+    let resp = app
+        .clone()
+        .oneshot(apply("nodeview:rt.bank.a/settlement-a-ngn"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    assert_eq!(body_json(resp).await["consumer_account_access_id"], "caa1");
+
+    // Ids the config does not name are refused, not improvised.
+    let resp = app
+        .clone()
+        .oneshot(apply("scope:rt.bank.a:CanCreateBank"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+
+    let c = captured.lock().unwrap();
+    let posts: Vec<(&str, &Value)> = c.node_posts.iter().map(|(p, b)| (p.as_str(), b)).collect();
+    assert_eq!(posts[0].0, "platform-apps");
+    assert_eq!(posts[0].1["consumer_id"], "node-a-consumer-id");
+    assert_eq!(posts[0].1["label"], "OBP Bank Node A (rt.bank.a)");
+    assert_eq!(posts[1].0, "scopes:node-a-consumer-id");
+    assert_eq!(posts[1].1, &json!({ "bank_id": "rt.bank.a", "role_name": "CanSettleOpenCorridor" }));
+    assert_eq!(posts[2].0, "grant-view:settlement-a-ngn");
+    assert_eq!(posts[2].1, &json!({ "user_id": "admin-user-id", "view_id": "ManageCustomViews" }));
+    assert_eq!(posts[3].0, "create-view:settlement-a-ngn");
+    assert_eq!(posts[3].1["name"], "_open-corridor-node");
+    assert_eq!(posts[3].1["allowed_actions"], json!(["can_add_transaction_request_to_any_account"]));
+    assert_eq!(posts[4].0, "consumer-access:settlement-a-ngn");
+    assert_eq!(
+        posts[4].1,
+        &json!({ "consumer_id": "node-a-consumer-id", "view_id": "_open-corridor-node" })
+    );
+    assert_eq!(posts.len(), 5);
 }

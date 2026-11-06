@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Create the three OBP-API Consumers the localhost round trip needs, and write their
+# Create the OBP-API Consumers the localhost round trip needs, and write their
 # credentials into dev/local.env (idempotent: safe to re-run).
 #
-#   obp-bank-node-roundtrip  no redirect   -> RT_CONSUMER_KEY (DirectLogin for the node service users)
+#   obp-bank-node-a          no redirect   -> NODE_A_CLIENT_ID / _SECRET / NODE_A_CONSUMER_ID
+#   obp-bank-node-b          no redirect   -> NODE_B_CLIENT_ID / _SECRET / NODE_B_CONSUMER_ID
+#                            (the nodes, as Platform Apps: OAuth2 client credentials at OBP-OIDC)
+#   obp-bank-node-roundtrip  no redirect   -> RT_CONSUMER_KEY (DirectLogin for the setup scripts' admin)
 #   obp-bank-node-app-a      :8091/setup/callback -> UI_A_OAUTH_CLIENT_ID / _SECRET
 #   obp-bank-node-app-b      :8092/setup/callback -> UI_B_OAUTH_CLIENT_ID / _SECRET
 #
@@ -99,12 +102,14 @@ echo "$CONSUMERS_JSON" | python3 -c 'import json,sys; json.load(sys.stdin)["cons
 OP_EMAIL="$(get_value "$PROPS_FILE" oidc_operator_email)"
 
 problems=0
-# name | redirect | key variable | secret variable (empty: key only)
+# name | redirect | key variable | secret variable (empty: key only) | consumer_id variable (optional)
 for row in \
+  "obp-bank-node-a||NODE_A_CLIENT_ID|NODE_A_CLIENT_SECRET|NODE_A_CONSUMER_ID" \
+  "obp-bank-node-b||NODE_B_CLIENT_ID|NODE_B_CLIENT_SECRET|NODE_B_CONSUMER_ID" \
   "obp-bank-node-roundtrip||RT_CONSUMER_KEY|" \
   "obp-bank-node-app-a|http://localhost:8091/setup/callback|UI_A_OAUTH_CLIENT_ID|UI_A_OAUTH_CLIENT_SECRET" \
   "obp-bank-node-app-b|http://localhost:8092/setup/callback|UI_B_OAUTH_CLIENT_ID|UI_B_OAUTH_CLIENT_SECRET"; do
-  IFS='|' read -r NAME REDIRECT KEY_VAR SECRET_VAR <<<"$row"
+  IFS='|' read -r NAME REDIRECT KEY_VAR SECRET_VAR ID_VAR <<<"$row"
   echo ""
   echo "== $NAME"
   ID="$(echo "$CONSUMERS_JSON" | NAME="$NAME" python3 -c 'import json,os,sys
@@ -116,6 +121,7 @@ print(c[0]["consumer_id"] if c else "")')"
     if [ -z "$KEY" ] || { [ -n "$SECRET_VAR" ] && [ -z "$SECRET" ]; }; then
       if [ -n "$(get_value "$LOCAL_ENV" "$KEY_VAR")" ]; then
         echo "   could not read it from Postgres; keeping the values already in dev/local.env"
+        [ -n "$ID_VAR" ] && set_local "$ID_VAR" "$ID"
       else
         echo "   could not read its key/secret from Postgres: delete this Consumer and run again"; problems=1
       fi
@@ -137,6 +143,7 @@ print(json.dumps({"app_name": os.environ["NAME"], "app_type": "Confidential",
   fi
   set_local "$KEY_VAR" "$KEY"
   [ -n "$SECRET_VAR" ] && set_local "$SECRET_VAR" "$SECRET"
+  [ -n "$ID_VAR" ] && set_local "$ID_VAR" "$ID"
 done
 
 echo ""

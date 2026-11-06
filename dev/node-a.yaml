@@ -1,8 +1,6 @@
 # Round-trip test — Bank Node A (debtor, rt.bank.a3, Cardano preprod).
-# Start from the repo root:
-#   source dev/env.sh
-#   OBP_BANK_NODE_CONFIG=dev/node-a.yaml \
-#   OBP_BN_OBP_API__DIRECT_LOGIN_TOKEN="$RT_NODE_A_TOKEN" cargo run -p obp-bank-node
+# Start from the repo root: dev/start_node_a.sh (it passes the node's OAuth2 client
+# credentials from dev/local.env).
 
 server:
   bind: "0.0.0.0:8088"
@@ -18,10 +16,16 @@ bank:
     NGN: "settlement-a-ngn"
     USD: "settlement-a-usd"
     EUR: "settlement-a-eur"
+  # The view the node creates Transaction Requests through on each corridor account: a custom
+  # view with only can_add_transaction_request_to_any_account, given to the node's Consumer
+  # (Consumer Account Access). dev/setup_obp.sh creates it and the grant.
+  view_id: "_open-corridor-node"
 
 obp_api:
   base_url: "http://localhost:8080"
-  # direct_login_token comes from the environment (env.sh, written by setup_obp.sh)
+  # The node is a Platform App: it calls OBP-API as itself, with OAuth2 client credentials from
+  # OBP-OIDC. client_id / client_secret come from dev/local.env (start_node_a.sh passes them).
+  token_url: "http://localhost:9000/obp-oidc/token"
 
 blockchain:
   type: "cardano"

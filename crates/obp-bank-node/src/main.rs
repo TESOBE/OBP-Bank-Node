@@ -405,6 +405,18 @@ struct BankConfig {
     /// so a misdirected booking cannot happen silently).
     #[serde(default)]
     corridor_accounts: std::collections::HashMap<String, String>,
+    /// The account view the node creates Transaction Requests through. With
+    /// client credentials (the node as a Platform App) this is the view its
+    /// Consumer has been given access to on each corridor account (Consumer
+    /// Account Access in OBP-API): a view with only the permission to create
+    /// Transaction Requests, never `owner`. With a DirectLogin service user it
+    /// is a view that user holds, `owner` by default.
+    #[serde(default = "default_view_id")]
+    view_id: String,
+}
+
+fn default_view_id() -> String {
+    "owner".into()
 }
 
 impl Default for BankConfig {
@@ -413,6 +425,7 @@ impl Default for BankConfig {
             bank_id: "PLACEHOLDER-bank-id".into(),
             account_id: "PLACEHOLDER-account-id".into(),
             corridor_accounts: Default::default(),
+            view_id: default_view_id(),
         }
     }
 }
@@ -470,8 +483,18 @@ async fn main() -> anyhow::Result<()> {
             config.obp_api.base_url.clone(),
             build_obp_auth(&config.obp_api),
         )
-        .context("failed to build OBP API client")?,
+        .context("failed to build OBP API client")?
+        .with_view_id(config.bank.view_id.clone()),
     );
+
+    // As a Platform App (client credentials), tell OBP-API which Scopes the
+    // node needs, so its administrators can see which are missing.
+    if obp.uses_client_credentials() {
+        tokio::spawn(declare_platform_app(
+            Arc::clone(&obp),
+            config.bank.bank_id.clone(),
+        ));
+    }
 
     // The dispatcher owns the backend and drains the outbox asynchronously.
     let dispatcher = Dispatcher::new(
@@ -688,6 +711,50 @@ fn build_amqp_uri(cfg: &RabbitMqConfig) -> String {
         "amqp://{}:{}@{}:{}/{}",
         cfg.username, cfg.password, cfg.host, cfg.port, vhost
     )
+}
+
+/// Declare the node's Scopes as a Platform App, retrying while OBP-API can't
+/// be reached. A refusal (e.g. the Consumer is not yet marked as a Platform
+/// App) is logged once with what to do; the node runs on regardless, and its
+/// calls fail with OBP-API's missing-Scope error until the Scopes are granted.
+async fn declare_platform_app(obp: Arc<ObpClient>, bank_id: String) {
+    use crate::obp_client::RequiredScope;
+    let scopes = [
+        RequiredScope {
+            role_name: "CanAttachOpenCorridorPromise",
+            bank_id: &bank_id,
+            needed_for: "Reporting each payment's on-chain promise (transaction hash, commitment and salt) back to OBP-API, so the receiving bank can verify it.",
+            optional: false,
+        },
+        RequiredScope {
+            role_name: "CanSettleOpenCorridor",
+            bank_id: &bank_id,
+            needed_for: "Settling the net position with another bank when an operator asks the node to (POST /obp-bank-node/v5.1.0/settlements).",
+            optional: false,
+        },
+    ];
+    let mut delay = std::time::Duration::from_secs(5);
+    for attempt in 1..=12 {
+        match obp
+            .declare_platform_app(env!("CARGO_PKG_VERSION"), &scopes)
+            .await
+        {
+            Ok(()) => {
+                info!(%bank_id, "declared the node's Scopes to OBP-API as a Platform App");
+                return;
+            }
+            Err(e) if e.is_retryable() => {
+                warn!(attempt, error = %e, "could not declare the node's Scopes to OBP-API yet; retrying");
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(std::time::Duration::from_secs(300));
+            }
+            Err(e) => {
+                warn!(error = %e, "OBP-API refused the node's Platform App declaration. An administrator marks the node's Consumer as a Platform App (POST /obp/v7.0.0/management/platform-apps) and grants it the Scopes CanAttachOpenCorridorPromise and CanSettleOpenCorridor at this bank");
+                return;
+            }
+        }
+    }
+    warn!("gave up declaring the node's Scopes to OBP-API; it is retried on the next start");
 }
 
 /// Choose the OBP-API auth scheme from config. Prefer OAuth2 client-credentials

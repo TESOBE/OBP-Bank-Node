@@ -122,6 +122,32 @@ pub struct SetupBank {
     /// node service user). The page grants but never creates users.
     #[serde(default)]
     pub role_grants: Vec<SetupRoleGrant>,
+    /// The bank's Bank Node, as a Platform App: what its Consumer needs at
+    /// this bank. The Consumer itself is created outside this page (its
+    /// secret belongs in the node's config), and found here by name.
+    #[serde(default)]
+    pub node: Option<SetupNode>,
+}
+
+/// The node's Consumer and what it needs: marked as a Platform App, its
+/// Scopes at this bank, and access to `view_id` on each corridor account
+/// (Consumer Account Access). The view is a custom view with only
+/// `can_add_transaction_request_to_any_account`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetupNode {
+    /// The Consumer's name (app_name), e.g. `obp-bank-node-a`.
+    pub consumer_name: String,
+    /// The name administrators know the Platform App by.
+    pub label: String,
+    /// Roles the Consumer holds as Scopes at this bank.
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    /// The view the node creates Transaction Requests through (the node's
+    /// `bank.view_id`).
+    pub view_id: String,
+    /// The corridor accounts the view and the Consumer's access are on.
+    #[serde(default)]
+    pub corridor_accounts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

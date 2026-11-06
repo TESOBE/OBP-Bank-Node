@@ -1,6 +1,34 @@
-# OBP-Bank-Node as a Platform App — parked (2026-11-01)
+# OBP-Bank-Node as a Platform App
 
-Decision for now: **the nodes keep DirectLogin** as their service users (`rt.node.a`, `rt.node.b`, tokens
+## 2026-11-06: done (uncommitted at the time of writing)
+
+The idea below ("account access granted to a consumer_id") is built in OBP-API, as **Consumer
+Account Access**, and the nodes are Platform Apps:
+
+- OBP-API: table `consumer_account_access`; v7.0.0 `POST`/`GET`/`DELETE
+  /banks/BANK_ID/accounts/ACCOUNT_ID/views/VIEW_ID/consumer-account-access[/ID]`, granted with the
+  same view permissions as granting a view to a User (for a custom view: the ManageCustomViews
+  system view). The access counts only for the Consumer's own client-credentials User
+  (`obp-oidc#client`), never for a person logging in through the Consumer or a Consumer Key alone,
+  and only on endpoints whose auth mode admits an application. The owner view and public views
+  can't be granted to a Consumer. `OPEN_CORRIDOR_PROMISE` create is now `UserXORApplication`.
+  Glossary: "Consumer Account Access".
+- Node: `bank.view_id` (default `owner`) is the view Transaction Requests are created through; with
+  client credentials the node declares its Scopes at startup (`PUT /consumers/current/platform-app`).
+- Dev: Consumers `obp-bank-node-a` / `-b` (client credentials at OBP-OIDC); `dev/setup_obp.sh` creates
+  the custom view `_open-corridor-node` (only `can_add_transaction_request_to_any_account`) on each
+  corridor account, grants it to the node's Consumer, marks the Consumers as Platform Apps and adds
+  the Scopes. The `rt.node.*` users and the psql email flip are gone.
+
+Still open from the questions below: who may grant beyond the view rule (fine for now), a challenge
+above the threshold for an application (the OPEN_CORRIDOR_PROMISE default threshold is effectively
+infinite, so none fires unless an operator sets one), and declaring needed account access in the
+Platform App declaration. The UI `/setup` page checks and fixes the node's Consumer (Platform App
+mark, Scopes, view access) since 2026-11-06.
+
+## 2026-11-01: parked
+
+Decision at the time: **the nodes keep DirectLogin** as their service users (`rt.node.a`, `rt.node.b`, tokens
 from `dev/setup_obp.sh` in `dev/env.sh`). Nothing in the node's auth or OBP-API's authModes changes.
 This note records why, so we can pick it up again.
 

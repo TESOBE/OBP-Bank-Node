@@ -37,20 +37,21 @@ up_port() { (exec 3<>"/dev/tcp/localhost/$1") 2>/dev/null; }
 check() {
   FAILED=0
   echo "== tools"
-  for t in cargo python3 curl psql; do command -v "$t" >/dev/null && ok "$t" || bad "$t"; done
+  for t in cargo python3 curl; do command -v "$t" >/dev/null && ok "$t" || bad "$t"; done
+  command -v psql >/dev/null && ok "psql" || warn "psql not found (create_consumers.sh uses it to recover an existing Consumer's secret)"
   python3 -c 'import cryptography' 2>/dev/null && ok "python3 cryptography" || bad "python3 cryptography (pip install cryptography; wallets.py needs it)"
   command -v docker >/dev/null || command -v podman >/dev/null && ok "docker or podman" || bad "docker or podman (for cardano-node + Ogmios)"
 
   echo "== dev/local.env"
   if [ -f "$DIR/local.env" ]; then
-    for v in RT_OBP_PROPS_FILE RT_SA_USER RT_SA_PASS RT_CONSUMER_KEY UI_A_OAUTH_CLIENT_ID UI_A_OAUTH_CLIENT_SECRET UI_B_OAUTH_CLIENT_ID UI_B_OAUTH_CLIENT_SECRET; do
+    for v in RT_OBP_PROPS_FILE RT_SA_USER RT_SA_PASS RT_CONSUMER_KEY \
+             NODE_A_CLIENT_ID NODE_A_CLIENT_SECRET NODE_A_CONSUMER_ID NODE_B_CLIENT_ID NODE_B_CLIENT_SECRET NODE_B_CONSUMER_ID \
+             UI_A_OAUTH_CLIENT_ID UI_A_OAUTH_CLIENT_SECRET UI_B_OAUTH_CLIENT_ID UI_B_OAUTH_CLIENT_SECRET; do
       [ -n "${!v:-}" ] && ok "$v" || bad "$v (see dev/local.env.example; dev/create_consumers.sh writes the Consumer values)"
     done
     if [ -n "${RT_OBP_PROPS_FILE:-}" ] && [ -f "$RT_OBP_PROPS_FILE" ]; then
       grep -qE '^open_corridor_enabled=true' "$RT_OBP_PROPS_FILE" && ok "open_corridor_enabled=true in OBP-API props" \
         || bad "open_corridor_enabled=true in $RT_OBP_PROPS_FILE (then restart OBP-API)"
-      grep -qE '^db.url=jdbc:postgresql' "$RT_OBP_PROPS_FILE" && ok "OBP-API on Postgres" \
-        || bad "OBP-API on Postgres (setup_obp.sh validates the node users' emails with psql)"
     fi
   else
     bad "dev/local.env (cp dev/local.env.example dev/local.env, then dev/create_consumers.sh)"
@@ -64,7 +65,7 @@ check() {
   echo "== services"
   up_http "$OBP/obp/v6.0.0/root" && ok "OBP-API $OBP" || bad "OBP-API $OBP"
   up_http "http://localhost:9000/obp-oidc/.well-known/openid-configuration" && ok "OBP-OIDC :9000" \
-    || warn "OBP-OIDC :9000 not answering (only the UIs' /setup login needs it)"
+    || bad "OBP-OIDC :9000 (the nodes get their client-credentials tokens from it, the UIs' /setup login uses it)"
   up_port 5672 && ok "RabbitMQ :5672" || bad "RabbitMQ :5672"
   up_http "http://localhost:15672/" && ok "RabbitMQ management :15672" || bad "RabbitMQ management :15672 (rabbitmq-plugins enable rabbitmq_management)"
   if health="$(curl -sf --max-time 3 "$OGMIOS_HEALTH")"; then

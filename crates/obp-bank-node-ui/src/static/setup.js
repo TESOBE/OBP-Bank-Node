@@ -42,6 +42,7 @@ const SECTIONS = [
   ["schemes", "Routing schemes"],
   ["banks", "Banks, accounts, FX, brokers"],
   ["grants", "Role grants (existing users)"],
+  ["node", "The Bank Node as a Platform App"],
 ];
 
 // Items an Apply makes sense for; "error" items name a cause the apply
