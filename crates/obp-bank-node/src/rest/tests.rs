@@ -100,6 +100,57 @@ async fn root_status_is_503_json_with_each_check_when_degraded() {
     assert!(v["git_commit"].is_string() && v["uptime_seconds"].is_u64());
 }
 
+async fn status_json_of(app: axum::Router) -> serde_json::Value {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/status")
+                .header("accept", "application/json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    serde_json::from_slice(&body_bytes(resp).await).unwrap()
+}
+
+#[tokio::test]
+async fn root_status_incoming_check_is_ok_when_nothing_open() {
+    let (app, _state) = router_with_state().await;
+    let v = status_json_of(app).await;
+    assert_eq!(v["incoming_settlements"]["status"], "ok");
+    assert_eq!(v["incoming_settlements"]["detail"], "no incoming settlements");
+}
+
+#[tokio::test]
+async fn root_status_warns_on_mismatched_incoming_settlement() {
+    use crate::settlement_store::{incoming_status, IncomingUpdate};
+    let (app, state) = router_with_state().await;
+    state
+        .settlements
+        .record_incoming("set-bad", Some("rt.bank.a"), Some("KES"), Some("50.00"), &["tr-1".into()])
+        .await
+        .unwrap();
+    state
+        .settlements
+        .update_incoming("set-bad", IncomingUpdate {
+            status: incoming_status::MISMATCH,
+            tx_id: Some("tx-9"),
+            asset: None,
+            asset_amount: None,
+            received_amount: None,
+            depth: 0,
+            detail: "nothing arrived",
+        })
+        .await
+        .unwrap();
+    let v = status_json_of(app).await;
+    assert_eq!(v["incoming_settlements"]["status"], "warn");
+    let detail = v["incoming_settlements"]["detail"].as_str().unwrap();
+    assert!(detail.contains("MISMATCH 1") && detail.contains("set-bad"), "{detail}");
+    assert_eq!(v["status"], "degraded", "soft: the overall verdict is the hard checks' alone");
+}
+
 #[tokio::test]
 async fn root_status_is_html_by_default() {
     let resp = get_with_accept("/status", None).await;

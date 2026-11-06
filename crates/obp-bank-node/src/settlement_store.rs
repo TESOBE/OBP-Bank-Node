@@ -549,6 +549,47 @@ impl SettlementStore {
     }
 }
 
+/// What an operator should look at among the incoming settlements, for the
+/// root `/status` page.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct IncomingAttention {
+    /// NETTED rows older than the caller's cutoff: the debtor has not reported
+    /// paying for a long time.
+    pub stale_netted: i64,
+    pub mismatch: i64,
+    /// Up to five ids of the rows counted above, oldest first.
+    pub ids: Vec<String>,
+}
+
+impl SettlementStore {
+    /// Rows needing attention: MISMATCH, and NETTED since before `netted_before`
+    /// (RFC 3339).
+    pub async fn incoming_attention(&self, netted_before: &str) -> Result<IncomingAttention, OutboxError> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT settlement_id, status FROM incoming_settlements \
+             WHERE status = ? OR (status = ? AND received_at < ?) \
+             ORDER BY received_at ASC",
+        )
+        .bind(incoming_status::MISMATCH)
+        .bind(incoming_status::NETTED)
+        .bind(netted_before)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut a = IncomingAttention::default();
+        for (id, status) in rows {
+            if status == incoming_status::MISMATCH {
+                a.mismatch += 1;
+            } else {
+                a.stale_netted += 1;
+            }
+            if a.ids.len() < 5 {
+                a.ids.push(id);
+            }
+        }
+        Ok(a)
+    }
+}
+
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
