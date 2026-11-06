@@ -22,17 +22,17 @@ for row in con.execute(sys.argv[2]):
 ' "$1" "$2" 2>/dev/null
 }
 
-echo "=== 1. POST payment to Node A (KES $AMOUNT, rt.bank.a3 -> rt.bank.b3)"
+echo "=== 1. POST payment to Node A (KES $AMOUNT, rt.bank.a4 -> rt.bank.b4)"
 RESP=$(curl -s -X POST "$NODE_A/obp-bank-node/v5.1.0/transaction-requests" \
   -H 'Content-Type: application/json' -d @- <<EOF
 {
   "value": {"currency": "KES", "amount": "$AMOUNT"},
   "description": "Round-trip test payment",
   "to": {
-    "name": "Beneficiary at rt.bank.b3",
-    "description": "settlement-b at rt.bank.b3",
+    "name": "Beneficiary at rt.bank.b4",
+    "description": "settlement-b at rt.bank.b4",
     "other_bank_routing_scheme": "OBP",
-    "other_bank_routing_address": "rt.bank.b3",
+    "other_bank_routing_address": "rt.bank.b4",
     "other_account_routing_scheme": "OBP",
     "other_account_routing_address": "settlement-b",
     "other_account_secondary_routing_scheme": "",
@@ -62,23 +62,23 @@ for i in $(seq 1 60); do
   sleep 5
 done
 [[ "$ST" == REPORTED* ]] || { echo "TIMEOUT waiting for REPORTED"; exit 1; }
-PROMISE_TX=$(sq "$DIR/data/node-a3/outbox.db" \
+PROMISE_TX=$(sq "$DIR/data/node-a4/outbox.db" \
   "SELECT promise_tx_id FROM outbox WHERE transaction_request_id='$TR_ID'")
 echo "Promise on-chain tx: $PROMISE_TX"
 echo "  https://preprod.cardanoscan.io/transaction/$PROMISE_TX"
 
 echo "=== 3. Settle the pair (admin, from bank A's side)"
-SETTLE=$(curl -s -X POST "$OBP/obp/v7.0.0/banks/rt.bank.a3/open-corridor/settlements" \
+SETTLE=$(curl -s -X POST "$OBP/obp/v7.0.0/banks/rt.bank.a4/open-corridor/settlements" \
   -H "Authorization: DirectLogin token=\"$RT_ADMIN_TOKEN\"" \
   -H 'Content-Type: application/json' \
-  -d '{"other_bank_id":"rt.bank.b3","currency":"KES"}')
+  -d '{"other_bank_id":"rt.bank.b4","currency":"KES"}')
 echo "$SETTLE" | python3 -m json.tool 2>/dev/null || echo "$SETTLE"
 SETTLEMENT_ID=$(echo "$SETTLE" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("settlement_id",""))')
 [ -n "$SETTLEMENT_ID" ] || { echo "FAILED — settle returned no settlement_id"; exit 1; }
 
 echo "=== 4. Waiting for Node A settlement: SETTLING -> SUBMITTED -> FINAL"
 for i in $(seq 1 60); do
-  ROW=$(sq "$DIR/data/node-a3/settlements.db" \
+  ROW=$(sq "$DIR/data/node-a4/settlements.db" \
     "SELECT status||' depth='||last_depth||' tx='||COALESCE(tx_id,'') FROM settlements WHERE idempotency_key='$SETTLEMENT_ID'")
   echo "  [$i] ${ROW:-<no row yet>}"
   case "$ROW" in FINAL*) break;; ERROR*) echo "FAILED — settlement ERROR"; exit 1;; esac
@@ -88,7 +88,7 @@ case "${ROW:-}" in FINAL*) ;; *) echo "TIMEOUT waiting for FINAL"; exit 1;; esac
 
 echo "=== 5. Beneficiary side (Node B)"
 echo "-- evidence store:"
-sq "$DIR/data/node-b3/evidence.db" \
+sq "$DIR/data/node-b4/evidence.db" \
   "SELECT transaction_request_id, verified, substr(promise_commitment,1,16)||'…' FROM evidence"
 echo "-- CBS credits received:"
 tail -n 3 "$DIR/data/cbs_received.jsonl" 2>/dev/null || echo "  (none!)"

@@ -3,7 +3,7 @@
 #
 # The nodes run as Platform Apps: each calls OBP-API as itself, with its own Consumer and OAuth2
 # client credentials (no service user). This script, as the OBP-API super admin, creates:
-#   - banks rt.bank.a3 / rt.bank.b3 and the routing schemes
+#   - banks rt.bank.a4 / rt.bank.b4 and the routing schemes
 #   - each bank's corridor accounts (one per currency in node-*.yaml) and settlement accounts
 #   - on each corridor account, the custom view the node creates Transaction Requests through
 #     (bank.view_id in node-*.yaml), with only can_add_transaction_request_to_any_account,
@@ -30,7 +30,7 @@ missing=""
 [ -n "$SA_USER" ] && [ -n "$SA_PASS" ] || missing+=" RT_SA_USER/RT_SA_PASS"
 [ -z "$missing" ] || { echo "FATAL: set in dev/local.env (dev/create_consumers.sh writes the Consumer values):$missing" >&2; exit 1; }
 
-BANK_A="rt.bank.a3"; BANK_B="rt.bank.b3"
+BANK_A="rt.bank.a4"; BANK_B="rt.bank.b4"
 # Cardano addresses (preprod) of the nodes' wallets, written by dev/wallets.py next to the keys.
 REPO_DIR="$(cd "$SETUP_DIR/.." && pwd)"
 read_addr() { # read_addr <file> -> address
@@ -107,7 +107,7 @@ register_scheme() { # register_scheme <json-body> <name>
 }
 # The three allow-listed global (unprefixed) schemes; country must be INT.
 register_scheme '{"scheme":"OBP","country":"INT","category":"ACCOUNT",
-  "address_pattern":"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$","example_address":"rt.bank.b3",
+  "address_pattern":"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$","example_address":"rt.bank.b4",
   "description":"OBP bank id or account id, as used in OBP account routings.",
   "downstream_rails":[],"status":"ACTIVE"}' OBP
 register_scheme '{"scheme":"IBAN","country":"INT","category":"ACCOUNT",
