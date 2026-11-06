@@ -391,13 +391,36 @@ impl Default for ObpApiConfig {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct OutboxConfig {
     path: PathBuf,
+    /// Finished rows (EXCEPTION, or REPORTED and settled) older than this are
+    /// deleted once an hour. 0 keeps everything.
+    #[serde(default = "default_outbox_retention_days")]
+    retention_days: u32,
+}
+
+fn default_outbox_retention_days() -> u32 {
+    90
 }
 
 impl Default for OutboxConfig {
     fn default() -> Self {
         OutboxConfig {
             path: PathBuf::from("./outbox/obp-bank-node.db"),
+            retention_days: default_outbox_retention_days(),
         }
+    }
+}
+
+/// Once an hour, drop outbox rows that are finished and past retention.
+async fn run_outbox_retention(outbox: OutboxStore, retention_days: u32) {
+    let keep = chrono::Duration::days(i64::from(retention_days));
+    loop {
+        let cutoff = (chrono::Utc::now() - keep).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        match outbox.purge_finished_before(&cutoff).await {
+            Ok(0) => {}
+            Ok(n) => info!(rows = n, cutoff = %cutoff, "outbox retention: deleted finished rows"),
+            Err(e) => warn!(error = %e, "outbox retention failed; will retry in an hour"),
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(60 * 60)).await;
     }
 }
 
@@ -534,6 +557,9 @@ async fn main() -> anyhow::Result<()> {
         DispatcherConfig::default(),
     );
     tokio::spawn(dispatcher.run());
+    if config.outbox.retention_days > 0 {
+        tokio::spawn(run_outbox_retention(outbox.clone(), config.outbox.retention_days));
+    }
 
     // The settlement and evidence stores are opened unconditionally — the
     // south-side read API serves them even when no settlement rail or
@@ -754,6 +780,13 @@ fn validate_config(cfg: &Config) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outbox_retention_defaults_to_90_days_and_can_be_switched_off() {
+        assert_eq!(Config::default().outbox.retention_days, 90);
+        let cfg: OutboxConfig = serde_json::from_str(r#"{"path":"x.db","retention_days":0}"#).unwrap();
+        assert_eq!(cfg.retention_days, 0);
+    }
 
     #[test]
     fn default_config_validates() {

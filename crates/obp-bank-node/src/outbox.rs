@@ -129,6 +129,42 @@ impl OutboxStore {
         sqlx::query("SELECT 1").execute(&self.pool).await.map(|_| ())
     }
 
+    /// Retention: delete rows that are finished and older than `cutoff`
+    /// (RFC3339 UTC). Finished means EXCEPTION (last touched before the
+    /// cutoff) or REPORTED and settled (settled before the cutoff). A
+    /// REPORTED row that is not settled yet is kept however old: the
+    /// settlement that covers it still needs its promise tx id. Returns how
+    /// many rows went.
+    pub async fn purge_finished_before(&self, cutoff: &str) -> Result<u64, OutboxError> {
+        let result = sqlx::query(
+            "DELETE FROM outbox WHERE \
+                (status = ? AND updated_at < ?) \
+             OR (status = ? AND settled_at IS NOT NULL AND settled_at < ?)",
+        )
+        .bind(status::EXCEPTION)
+        .bind(cutoff)
+        .bind(status::REPORTED)
+        .bind(cutoff)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Test only: move a row's timestamps into the past.
+    #[cfg(test)]
+    pub async fn backdate(&self, id: &str, ts: &str) -> Result<(), OutboxError> {
+        sqlx::query(
+            "UPDATE outbox SET updated_at = ?, settled_at = CASE WHEN settled_at IS NULL THEN NULL ELSE ? END \
+             WHERE transaction_request_id = ?",
+        )
+        .bind(ts)
+        .bind(ts)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// How many rows are in each status, for the root `/status` page.
     pub async fn count_by_status(&self) -> Result<Vec<(String, i64)>, OutboxError> {
         let rows: Vec<(String, i64)> =
@@ -837,5 +873,42 @@ mod tests {
         store.insert(entry("tr-3")).await.unwrap();
         store.insert(entry("tr-4")).await.unwrap();
         assert!(store.get_by_idempotency_key("other").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn retention_purges_only_finished_rows_older_than_the_cutoff() {
+        let store = OutboxStore::connect_in_memory().await.unwrap();
+        for id in ["old-exc", "new-exc", "old-settled", "old-unsettled", "old-initiated"] {
+            store
+                .insert(NewEntry {
+                    transaction_request_id: id,
+                    bank_id: "b",
+                    account_id: "a",
+                    request_payload: "{}",
+                    commitment_salt: "s",
+                })
+                .await
+                .unwrap();
+        }
+        for id in ["old-exc", "new-exc"] {
+            store.mark_exception(id, "gave up").await.unwrap();
+        }
+        for id in ["old-settled", "old-unsettled"] {
+            store.mark_submitted(id, Some(&format!("obp-{id}"))).await.unwrap();
+            store.mark_promise_written(id, "tx", "mock").await.unwrap();
+            store.mark_reported(id).await.unwrap();
+        }
+        store.mark_settled(&["obp-old-settled".into()], "settle-1").await.unwrap();
+        for id in ["old-exc", "old-settled", "old-unsettled", "old-initiated"] {
+            store.backdate(id, "2020-01-01T00:00:00Z").await.unwrap();
+        }
+
+        let gone = store.purge_finished_before("2025-01-01T00:00:00Z").await.unwrap();
+        assert_eq!(gone, 2);
+        assert!(store.get("old-exc").await.unwrap().is_none());
+        assert!(store.get("old-settled").await.unwrap().is_none());
+        assert!(store.get("new-exc").await.unwrap().is_some(), "recent exception kept");
+        assert!(store.get("old-unsettled").await.unwrap().is_some(), "unsettled REPORTED kept");
+        assert!(store.get("old-initiated").await.unwrap().is_some(), "in-flight row kept");
     }
 }
