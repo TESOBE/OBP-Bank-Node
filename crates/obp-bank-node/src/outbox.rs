@@ -78,6 +78,13 @@ pub struct OutboxRecord {
     pub promise_tx_id: Option<String>,
     pub promise_blockchain: Option<String>,
     pub exception_reason: Option<String>,
+    /// The on-chain Exception record (see obp_blockchain::ExceptionRecord):
+    /// its salt and `raised_at` are kept so the commitment can be rebuilt from
+    /// this row; the tx id arrives when the write succeeds, which may be later.
+    pub exception_salt: Option<String>,
+    pub exception_raised_at: Option<String>,
+    pub exception_tx_id: Option<String>,
+    pub exception_blockchain: Option<String>,
     /// Why the latest attempt failed, while the row is still being retried.
     /// Cleared when the dispatcher picks the row up again.
     pub last_error: Option<String>,
@@ -196,6 +203,10 @@ impl OutboxStore {
             "settlement_id TEXT",
             "settled_at TEXT",
             "last_error TEXT",
+            "exception_salt TEXT",
+            "exception_raised_at TEXT",
+            "exception_tx_id TEXT",
+            "exception_blockchain TEXT",
         ] {
             if let Err(e) = sqlx::query(&format!("ALTER TABLE outbox ADD COLUMN {col}"))
                 .execute(pool)
@@ -403,6 +414,48 @@ impl OutboxStore {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Remember the salt and timestamp of the Exception record raised for an
+    /// EXCEPTION row, before the chain write is attempted.
+    pub async fn record_exception_salt(&self, id: &str, salt: &str, raised_at: &str) -> Result<(), OutboxError> {
+        sqlx::query(
+            "UPDATE outbox SET exception_salt = ?, exception_raised_at = ? WHERE transaction_request_id = ?",
+        )
+        .bind(salt)
+        .bind(raised_at)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// The Exception record is on chain.
+    pub async fn record_exception_tx(&self, id: &str, tx_id: &str, blockchain: &str) -> Result<(), OutboxError> {
+        sqlx::query(
+            "UPDATE outbox SET exception_tx_id = ?, exception_blockchain = ?, updated_at = ? \
+             WHERE transaction_request_id = ?",
+        )
+        .bind(tx_id)
+        .bind(blockchain)
+        .bind(rfc3339(Utc::now()))
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// EXCEPTION rows whose Exception record has not reached the chain yet,
+    /// oldest first.
+    pub async fn list_exceptions_without_record(&self, limit: i64) -> Result<Vec<OutboxRecord>, OutboxError> {
+        Ok(sqlx::query_as::<_, OutboxRecord>(
+            "SELECT * FROM outbox WHERE status = ? AND exception_salt IS NOT NULL \
+             AND exception_tx_id IS NULL ORDER BY updated_at ASC LIMIT ?",
+        )
+        .bind(status::EXCEPTION)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
     }
 
     async fn set_status(&self, id: &str, new_status: &str) -> Result<(), OutboxError> {

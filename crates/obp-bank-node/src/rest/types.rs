@@ -136,6 +136,9 @@ pub struct TransactionRequestStatus {
     pub last_error: Option<String>,
     /// Why the row stopped in `EXCEPTION`.
     pub exception_reason: Option<String>,
+    /// The on-chain Exception record for a row in `EXCEPTION`, once written.
+    pub exception_id: Option<String>,
+    pub exception_blockchain: Option<String>,
 }
 
 /// Body of `POST .../settlements` — ask this node to trigger bilateral Open

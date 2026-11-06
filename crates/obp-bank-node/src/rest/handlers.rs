@@ -326,6 +326,8 @@ fn status_from_record(rec: OutboxRecord) -> TransactionRequestStatus {
         last_attempted_at: rec.last_attempted_at.as_deref().map(parse_rfc3339),
         last_error: rec.last_error,
         exception_reason: rec.exception_reason,
+        exception_id: rec.exception_tx_id,
+        exception_blockchain: rec.exception_blockchain,
     }
 }
 
