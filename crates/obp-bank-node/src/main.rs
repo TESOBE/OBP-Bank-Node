@@ -697,7 +697,69 @@ fn load_config() -> anyhow::Result<Config> {
         }
     }
 
-    fig.extract().context("failed to parse config")
+    let config: Config = fig.extract().context("failed to parse config")?;
+    validate_config(&config)?;
+    Ok(config)
+}
+
+/// The A2 delivery modes this build can run. The spec also names
+/// `webhook_iso20022`, `database` and `file`; a config asking for one of
+/// those must not quietly behave as `webhook_obp`.
+const CBS_DELIVERY_MODES: &[&str] = &["webhook_obp"];
+
+/// Refuse a config the node would otherwise misread at runtime.
+fn validate_config(cfg: &Config) -> anyhow::Result<()> {
+    let mode = cfg.cbs_delivery.mode.trim();
+    if !mode.is_empty() && !CBS_DELIVERY_MODES.contains(&mode) {
+        anyhow::bail!(
+            "cbs_delivery.mode \"{mode}\" is not implemented in this build; supported: {} \
+             (planned: webhook_iso20022, database, file)",
+            CBS_DELIVERY_MODES.join(", ")
+        );
+    }
+    if cfg.rabbitmq.enabled && cfg.cbs_delivery.webhook.url.trim().is_empty() {
+        anyhow::bail!(
+            "cbs_delivery.webhook.url is empty, but rabbitmq.enabled is true: credit \
+             notifications would have nowhere to go"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_validates() {
+        validate_config(&Config::default()).unwrap();
+    }
+
+    #[test]
+    fn unsupported_cbs_delivery_mode_is_rejected_at_startup() {
+        let mut cfg = Config::default();
+        cfg.cbs_delivery.mode = "database".into();
+        let err = validate_config(&cfg).unwrap_err().to_string();
+        assert!(err.contains("cbs_delivery.mode"), "{err}");
+        assert!(err.contains("\"database\""), "{err}");
+        assert!(err.contains("webhook_obp"), "{err}");
+    }
+
+    #[test]
+    fn empty_cbs_delivery_mode_means_the_default() {
+        let mut cfg = Config::default();
+        cfg.cbs_delivery.mode = String::new();
+        validate_config(&cfg).unwrap();
+    }
+
+    #[test]
+    fn empty_webhook_url_is_rejected_when_interface_c_is_on() {
+        let mut cfg = Config::default();
+        cfg.rabbitmq.enabled = true;
+        cfg.cbs_delivery.webhook.url = " ".into();
+        let err = validate_config(&cfg).unwrap_err().to_string();
+        assert!(err.contains("cbs_delivery.webhook.url"), "{err}");
+    }
 }
 
 /// Build the AMQP URI for the bank's vhost. The vhost path is percent-encoded
