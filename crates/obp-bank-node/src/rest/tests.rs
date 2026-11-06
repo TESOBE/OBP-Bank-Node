@@ -100,6 +100,36 @@ async fn root_status_is_503_json_with_each_check_when_degraded() {
     assert!(v["git_commit"].is_string() && v["uptime_seconds"].is_u64());
 }
 
+#[tokio::test]
+async fn ready_is_503_when_obp_api_is_unreachable() {
+    let resp = get_with_accept("/ready", None).await;
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let v: serde_json::Value = serde_json::from_slice(&body_bytes(resp).await).unwrap();
+    assert_eq!(v["status"], "not_ready");
+    assert_eq!(v["checks"]["database"]["status"], "ok");
+    assert_eq!(v["checks"]["obp_api"]["status"], "fail");
+    assert_eq!(v["checks"]["blockchain"]["status"], "ok");
+    assert!(v["checks"].get("interface_c").is_none(), "readiness ignores Interface C");
+}
+
+#[tokio::test]
+async fn ready_is_200_when_stores_obp_api_and_chain_answer() {
+    let stub = axum::Router::new().route(
+        "/obp/v6.0.0/root",
+        axum::routing::get(|| async { axum::Json(serde_json::json!({"version": "v6.0.0"})) }),
+    );
+    let base = spawn_obp_stub(stub).await;
+    let (app, _state) = router_with_obp(&base).await;
+    let resp = app
+        .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body_bytes(resp).await).unwrap();
+    assert_eq!(v["status"], "ready");
+    assert_eq!(v["checks"]["obp_api"]["status"], "ok");
+}
+
 async fn status_json_of(app: axum::Router) -> serde_json::Value {
     let resp = app
         .oneshot(

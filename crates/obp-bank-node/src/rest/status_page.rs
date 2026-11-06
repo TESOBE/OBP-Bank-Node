@@ -49,6 +49,44 @@ pub async fn health() -> Response {
     json_response(StatusCode::OK, r#"{"status":"ok"}"#.to_string())
 }
 
+/// What a `/ready` probe looks at: the stores, OBP-API and the chain. These
+/// are the dependencies a request needs right now; Open Corridor being
+/// switched on and Interface C having connected are reported by `/status`
+/// but do not take the node out of rotation.
+#[derive(Debug, Serialize)]
+pub struct ReadyChecks {
+    pub database: Check,
+    pub obp_api: Check,
+    pub blockchain: Check,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReadyReport {
+    pub status: &'static str,
+    pub checks: ReadyChecks,
+}
+
+/// Readiness for a load balancer or Kubernetes: 200 `ready` when the stores,
+/// OBP-API and the chain answer, otherwise 503 `not_ready` with each check.
+pub async fn ready(State(state): State<BankNodeState>) -> Response {
+    let (database, obp_api, blockchain) = tokio::join!(
+        check_database(&state),
+        check_obp_api(&state.obp_api_url),
+        check_blockchain(state.blockchain_label, state.chain_health_url.as_deref()),
+    );
+    let checks = ReadyChecks { database, obp_api, blockchain };
+    let all_ok = [&checks.database, &checks.obp_api, &checks.blockchain]
+        .iter()
+        .all(|c| matches!(c.status, "ok" | "disabled"));
+    let (code, status) = if all_ok {
+        (StatusCode::OK, "ready")
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "not_ready")
+    };
+    let body = serde_json::to_string_pretty(&ReadyReport { status, checks }).unwrap_or_default();
+    json_response(code, body)
+}
+
 /// One check: `ok`, `warn`, `fail` or `disabled`, and what was seen.
 #[derive(Debug, Serialize)]
 pub struct Check {

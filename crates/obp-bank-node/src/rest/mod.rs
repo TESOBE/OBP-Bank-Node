@@ -115,6 +115,7 @@ pub fn build_router(state: BankNodeState) -> Router {
         // Same format as OBP-API's: see status_page.
         .route("/alive", get(status_page::alive))
         .route("/health", get(status_page::health))
+        .route("/ready", get(status_page::ready))
         .route("/status", get(status_page::status))
         .with_state(state)
 }
