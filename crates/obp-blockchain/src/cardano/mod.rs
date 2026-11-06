@@ -33,7 +33,7 @@ use crate::{
 };
 
 use self::follower::ChainFollower;
-use self::ogmios::OgmiosClient;
+use self::ogmios::{map_ogmios, OgmiosClient};
 use self::wallet::Wallet;
 
 /// Every field has a default matching the bundled installation package, so a
@@ -256,12 +256,4 @@ impl BlockchainBackend for CardanoBackend {
     }
 }
 
-fn map_ogmios(e: ogmios::OgmiosError) -> BlockchainError {
-    match e {
-        ogmios::OgmiosError::Rpc { code, message } => {
-            BlockchainError::Rejected(format!("ogmios rpc {code}: {message}"))
-        }
-        other => BlockchainError::Transport(other.to_string()),
-    }
-}
 

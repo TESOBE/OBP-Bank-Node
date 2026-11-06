@@ -22,7 +22,7 @@ use tokio::sync::Mutex;
 use tracing::info;
 
 use crate::cardano::follower::ChainFollower;
-use crate::cardano::ogmios::{OgmiosClient, OgmiosError};
+use crate::cardano::ogmios::{map_ogmios, OgmiosClient};
 use crate::cardano::wallet::Wallet;
 use crate::cardano::{tx, CardanoBackend};
 use crate::settlement::{FxSource, SettlementBackend, SettlementInstruction, SettlementOutcome};
@@ -288,14 +288,6 @@ pub fn fiat_minor_to_lovelace(net_amount_minor: u128, minor_per_whole_asset: u12
         .map_err(|_| BlockchainError::Rejected("settlement exceeds u64 lovelace domain".into()))
 }
 
-fn map_ogmios(e: OgmiosError) -> BlockchainError {
-    match e {
-        OgmiosError::Rpc { code, message } => {
-            BlockchainError::Rejected(format!("ogmios rpc {code}: {message}"))
-        }
-        other => BlockchainError::Transport(other.to_string()),
-    }
-}
 
 #[cfg(test)]
 mod tests {
