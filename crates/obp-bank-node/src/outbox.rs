@@ -43,6 +43,9 @@ pub mod status {
 pub enum OutboxError {
     #[error("outbox database error: {0}")]
     Db(#[from] sqlx::Error),
+    /// Another row already carries this caller-supplied `Idempotency-Key`.
+    #[error("a transaction request with this idempotency key already exists")]
+    DuplicateIdempotencyKey,
     #[error("failed to prepare outbox directory {path}: {source}")]
     Dir {
         path: String,
@@ -85,6 +88,9 @@ pub struct OutboxRecord {
     pub exception_raised_at: Option<String>,
     pub exception_tx_id: Option<String>,
     pub exception_blockchain: Option<String>,
+    /// The caller's `Idempotency-Key`, when the request carried one: a repeat
+    /// with the same key and body is answered with this row instead of a new one.
+    pub idempotency_key: Option<String>,
     /// Why the latest attempt failed, while the row is still being retried.
     /// Cleared when the dispatcher picks the row up again.
     pub last_error: Option<String>,
@@ -207,6 +213,7 @@ impl OutboxStore {
             "exception_raised_at TEXT",
             "exception_tx_id TEXT",
             "exception_blockchain TEXT",
+            "idempotency_key TEXT",
         ] {
             if let Err(e) = sqlx::query(&format!("ALTER TABLE outbox ADD COLUMN {col}"))
                 .execute(pool)
@@ -217,6 +224,12 @@ impl OutboxStore {
                 }
             }
         }
+        // NULLs are distinct to SQLite, so rows without a key are unaffected.
+        sqlx::query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_idempotency_key ON outbox(idempotency_key)",
+        )
+        .execute(pool)
+        .await?;
 
         // Backoff scans filter by status then by last_attempted_at.
         sqlx::query(
@@ -250,6 +263,50 @@ impl OutboxStore {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Like [`Self::insert`], recording the caller's `Idempotency-Key`. A
+    /// second row with the same key is refused with
+    /// [`OutboxError::DuplicateIdempotencyKey`].
+    pub async fn insert_with_idempotency_key(
+        &self,
+        entry: NewEntry<'_>,
+        idempotency_key: &str,
+    ) -> Result<(), OutboxError> {
+        let now = rfc3339(Utc::now());
+        let result = sqlx::query(
+            "INSERT INTO outbox \
+                (transaction_request_id, status, bank_id, account_id, request_payload, \
+                 commitment_salt, attempt_count, created_at, updated_at, idempotency_key) \
+             VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
+        )
+        .bind(entry.transaction_request_id)
+        .bind(status::INITIATED)
+        .bind(entry.bank_id)
+        .bind(entry.account_id)
+        .bind(entry.request_payload)
+        .bind(entry.commitment_salt)
+        .bind(&now)
+        .bind(&now)
+        .bind(idempotency_key)
+        .execute(&self.pool)
+        .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(sqlx::Error::Database(e))
+                if e.is_unique_violation() && e.message().contains("idempotency_key") =>
+            {
+                Err(OutboxError::DuplicateIdempotencyKey)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub async fn get_by_idempotency_key(&self, key: &str) -> Result<Option<OutboxRecord>, OutboxError> {
+        Ok(sqlx::query_as::<_, OutboxRecord>("SELECT * FROM outbox WHERE idempotency_key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?)
     }
 
     pub async fn get(&self, id: &str) -> Result<Option<OutboxRecord>, OutboxError> {
@@ -757,5 +814,28 @@ mod tests {
             due.is_empty(),
             "row attempted after the cutoff must not be due"
         );
+    }
+
+    #[tokio::test]
+    async fn duplicate_idempotency_key_is_rejected_as_such() {
+        let store = OutboxStore::connect_in_memory().await.unwrap();
+        let entry = |id: &'static str| NewEntry {
+            transaction_request_id: id,
+            bank_id: "b",
+            account_id: "a",
+            request_payload: "{}",
+            commitment_salt: "s",
+        };
+        store.insert_with_idempotency_key(entry("tr-1"), "key-1").await.unwrap();
+        let err = store.insert_with_idempotency_key(entry("tr-2"), "key-1").await.unwrap_err();
+        assert!(matches!(err, OutboxError::DuplicateIdempotencyKey), "{err:?}");
+        assert_eq!(
+            store.get_by_idempotency_key("key-1").await.unwrap().unwrap().transaction_request_id,
+            "tr-1"
+        );
+        // Rows without a key never collide with each other.
+        store.insert(entry("tr-3")).await.unwrap();
+        store.insert(entry("tr-4")).await.unwrap();
+        assert!(store.get_by_idempotency_key("other").await.unwrap().is_none());
     }
 }

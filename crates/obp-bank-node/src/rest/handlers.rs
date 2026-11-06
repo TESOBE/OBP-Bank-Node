@@ -14,7 +14,7 @@
 
 use axum::{
     extract::{rejection::JsonRejection, Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -120,10 +120,29 @@ fn validate(req: &InitiateRequest) -> Result<(), (StatusCode, &'static str, Stri
     Ok(())
 }
 
+/// The header a caller sends to make a `POST .../transaction-requests` safe
+/// to repeat: the same key with the same body returns the first request's
+/// 202 again (with `Idempotency-Replayed: true`); the same key with a
+/// different body is refused.
+pub const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
+const IDEMPOTENCY_KEY_MAX_LEN: usize = 255;
+
 pub async fn initiate_payment(
     State(state): State<BankNodeState>,
+    headers: HeaderMap,
     body: Result<Json<InitiateRequest>, JsonRejection>,
 ) -> Response {
+    let idempotency_key = match headers.get(IDEMPOTENCY_KEY_HEADER).map(|v| v.to_str()) {
+        None => None,
+        Some(Ok(k)) if !k.trim().is_empty() && k.len() <= IDEMPOTENCY_KEY_MAX_LEN => Some(k.trim().to_string()),
+        Some(_) => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "OBP-10001",
+                format!("Idempotency-Key must be 1 to {IDEMPOTENCY_KEY_MAX_LEN} printable characters"),
+            )
+        }
+    };
     // Malformed JSON or a missing required field surfaces as a deserialization
     // rejection — map it to OBP-10001 rather than axum's default plain-text 4xx.
     let Json(req) = match body {
@@ -194,27 +213,59 @@ pub async fn initiate_payment(
         }
     };
 
+    // A repeated request: answer from the row the key already names.
+    if let Some(key) = idempotency_key.as_deref() {
+        match state.outbox.get_by_idempotency_key(key).await {
+            Ok(Some(existing)) => return replay_or_refuse(&state, existing, &request_payload),
+            Ok(None) => {}
+            Err(e) => {
+                error!(error = %e, "failed to look up the idempotency key");
+                return error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "OBP-BANK-NODE-PLATFORM-001",
+                    "failed to persist transaction request",
+                );
+            }
+        }
+    }
+
     // Persist to the outbox BEFORE returning — this is what makes the 202
     // durable. The dispatcher takes it from here (OBP-API submit, Promise
     // write). A 128-bit salt is minted now for the eventual Promise commitment.
     let salt = Uuid::new_v4().simple().to_string();
-    if let Err(e) = state
-        .outbox
-        .insert(NewEntry {
-            transaction_request_id: &id,
-            bank_id: &state.bank_id,
-            account_id: &account_id,
-            request_payload: &request_payload,
-            commitment_salt: &salt,
-        })
-        .await
-    {
-        error!(transaction_request_id = %id, error = %e, "failed to persist to outbox");
-        return error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "OBP-BANK-NODE-PLATFORM-001",
-            "failed to persist transaction request",
-        );
+    let entry = NewEntry {
+        transaction_request_id: &id,
+        bank_id: &state.bank_id,
+        account_id: &account_id,
+        request_payload: &request_payload,
+        commitment_salt: &salt,
+    };
+    let inserted = match idempotency_key.as_deref() {
+        Some(key) => state.outbox.insert_with_idempotency_key(entry, key).await,
+        None => state.outbox.insert(entry).await,
+    };
+    match inserted {
+        Ok(()) => {}
+        // Two identical requests raced: the other one won; answer from its row.
+        Err(crate::outbox::OutboxError::DuplicateIdempotencyKey) => {
+            let key = idempotency_key.as_deref().unwrap_or_default();
+            return match state.outbox.get_by_idempotency_key(key).await {
+                Ok(Some(existing)) => replay_or_refuse(&state, existing, &request_payload),
+                _ => error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "OBP-BANK-NODE-PLATFORM-001",
+                    "failed to persist transaction request",
+                ),
+            };
+        }
+        Err(e) => {
+            error!(transaction_request_id = %id, error = %e, "failed to persist to outbox");
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "OBP-BANK-NODE-PLATFORM-001",
+                "failed to persist transaction request",
+            );
+        }
     }
 
     info!(
@@ -230,10 +281,20 @@ pub async fn initiate_payment(
     // Echo the caller's inline routing and originator back in the 202. The
     // promise_id stays null here; it is filled asynchronously once the
     // dispatcher writes the Promise commitment (queryable via the status route).
+    (StatusCode::ACCEPTED, Json(initiated_response(&state, id, account_id, req, Utc::now()))).into_response()
+}
+
+/// The 202 body for a freshly accepted (or replayed) request.
+fn initiated_response(
+    state: &BankNodeState,
+    id: String,
+    account_id: String,
+    req: InitiateRequest,
+    start_date: DateTime<Utc>,
+) -> InitiatedResponse {
     let mut originator = req.originator;
     originator.source = Some("explicit".into());
-
-    let body = InitiatedResponse {
+    InitiatedResponse {
         transaction_request_id: id,
         kind: "OPEN_CORRIDOR_PROMISE",
         from: FromAccount {
@@ -247,10 +308,55 @@ pub async fn initiate_payment(
         status: "INITIATED",
         promise_id: None,
         promise_blockchain: None,
-        start_date: Utc::now(),
+        start_date,
         challenge: None,
+    }
+}
+
+/// Answer a repeated `Idempotency-Key`: the same body gets the original
+/// request back (its id, with the current status), a different body is refused.
+fn replay_or_refuse(state: &BankNodeState, existing: OutboxRecord, request_payload: &str) -> Response {
+    if existing.request_payload != request_payload {
+        warn!(transaction_request_id = %existing.transaction_request_id, "Idempotency-Key reused with a different body");
+        return error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "OBP-BANK-NODE-IDEMPOTENCY-001",
+            "this Idempotency-Key was already used with a different request body",
+        );
+    }
+    let req: InitiateRequest = match serde_json::from_str(&existing.request_payload) {
+        Ok(r) => r,
+        Err(_) => return Json(status_from_record(existing)).into_response(),
     };
-    (StatusCode::ACCEPTED, Json(body)).into_response()
+    let mut body = initiated_response(
+        state,
+        existing.transaction_request_id.clone(),
+        existing.account_id.clone(),
+        req,
+        parse_rfc3339(&existing.created_at),
+    );
+    body.status = status_label(&existing.status);
+    body.promise_id = existing.promise_tx_id.clone();
+    body.promise_blockchain = existing.promise_blockchain.clone();
+    (
+        StatusCode::ACCEPTED,
+        [("idempotency-replayed", "true")],
+        Json(body),
+    )
+        .into_response()
+}
+
+/// The outbox status as a `'static` label for the 202 body.
+fn status_label(status: &str) -> &'static str {
+    use crate::outbox::status as s;
+    match status {
+        s::INITIATED => "INITIATED",
+        s::SUBMITTED => "SUBMITTED",
+        s::PROMISE_WRITTEN => "PROMISE_WRITTEN",
+        s::REPORTED => "REPORTED",
+        s::EXCEPTION => "EXCEPTION",
+        _ => "INITIATED",
+    }
 }
 
 pub async fn get_transaction_request(
