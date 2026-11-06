@@ -458,6 +458,18 @@ impl OutboxStore {
         .await?)
     }
 
+    /// The promise tx ids of this node's rows that a settlement covered, in a
+    /// stable order (the Settlement Reference record lists them).
+    pub async fn promise_tx_ids_for_settlement(&self, settlement_id: &str) -> Result<Vec<String>, OutboxError> {
+        Ok(sqlx::query_scalar(
+            "SELECT promise_tx_id FROM outbox WHERE settlement_id = ? AND promise_tx_id IS NOT NULL \
+             ORDER BY promise_tx_id",
+        )
+        .bind(settlement_id)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     async fn set_status(&self, id: &str, new_status: &str) -> Result<(), OutboxError> {
         let now = rfc3339(Utc::now());
         sqlx::query(

@@ -74,6 +74,14 @@ pub struct SettlementRow {
     pub created_at: String,
     pub updated_at: String,
     pub finalized_at: Option<String>,
+    /// The on-chain Settlement Reference record (obp_blockchain::SettlementRecord),
+    /// written once the settlement is FINAL: its salt and `settled_at` are kept
+    /// so the commitment can be rebuilt from this row and the outbox; the tx id
+    /// arrives when the write succeeds, which may be later.
+    pub record_salt: Option<String>,
+    pub record_settled_at: Option<String>,
+    pub record_tx_id: Option<String>,
+    pub record_blockchain: Option<String>,
     /// `PLATFORM_FEE` for fee-sweep settlements; NULL = corridor settlement.
     pub purpose: Option<String>,
 }
@@ -176,6 +184,10 @@ impl SettlementStore {
             "fx_source TEXT",
             "fx_as_of TEXT",
             "purpose TEXT",
+            "record_salt TEXT",
+            "record_settled_at TEXT",
+            "record_tx_id TEXT",
+            "record_blockchain TEXT",
         ] {
             if let Err(e) = sqlx::query(&format!("ALTER TABLE settlements ADD COLUMN {col}"))
                 .execute(pool)
@@ -549,6 +561,46 @@ impl SettlementStore {
     }
 }
 
+impl SettlementStore {
+    /// Remember the salt and timestamp of the Settlement Reference record for a
+    /// FINAL row, before the chain write is attempted.
+    pub async fn record_settlement_salt(&self, idempotency_key: &str, salt: &str, settled_at: &str) -> Result<(), OutboxError> {
+        sqlx::query("UPDATE settlements SET record_salt = ?, record_settled_at = ? WHERE idempotency_key = ?")
+            .bind(salt)
+            .bind(settled_at)
+            .bind(idempotency_key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// The Settlement Reference record is on chain.
+    pub async fn record_settlement_tx(&self, idempotency_key: &str, tx_id: &str, blockchain: &str) -> Result<(), OutboxError> {
+        sqlx::query(
+            "UPDATE settlements SET record_tx_id = ?, record_blockchain = ?, updated_at = ? WHERE idempotency_key = ?",
+        )
+        .bind(tx_id)
+        .bind(blockchain)
+        .bind(now())
+        .bind(idempotency_key)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// FINAL rows whose Settlement Reference record is not on chain yet, oldest first.
+    pub async fn list_final_without_record(&self, limit: i64) -> Result<Vec<SettlementRow>, OutboxError> {
+        Ok(sqlx::query_as::<_, SettlementRow>(
+            "SELECT * FROM settlements WHERE status = ? AND record_tx_id IS NULL \
+             ORDER BY finalized_at ASC LIMIT ?",
+        )
+        .bind(status::FINAL)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+}
+
 /// What an operator should look at among the incoming settlements, for the
 /// root `/status` page.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -862,6 +914,33 @@ mod tests {
         let work = s.list_submitted(10).await.unwrap();
         assert_eq!(work.len(), 1);
         assert_eq!(work[0].idempotency_key, "a");
+    }
+
+    #[tokio::test]
+    async fn final_without_record_worklist() {
+        let s = SettlementStore::connect_in_memory().await.unwrap();
+        for key in ["f1", "f2", "sub"] {
+            s.claim(NewClaim {
+                idempotency_key: key,
+                settlement_id: Some("set"),
+                snapshot_id: None,
+                currency: "KES",
+                net_amount_minor: 1,
+                creditor_address: "addr",
+                purpose: None,
+            })
+            .await
+            .unwrap();
+            s.mark_submitted(key, "tx", "cardano", "ADA", "1", None).await.unwrap();
+        }
+        s.mark_final("f1", 20).await.unwrap();
+        s.mark_final("f2", 20).await.unwrap();
+        s.record_settlement_salt("f1", "salt", "2026-11-07T00:00:00Z").await.unwrap();
+        s.record_settlement_tx("f1", "rec-tx", "mock").await.unwrap();
+        let keys: Vec<String> = s.list_final_without_record(10).await.unwrap().into_iter().map(|r| r.idempotency_key).collect();
+        assert_eq!(keys, vec!["f2"], "only FINAL rows without a record; SUBMITTED ones are not due yet");
+        let f1 = s.get("f1").await.unwrap().unwrap();
+        assert_eq!((f1.record_salt.as_deref(), f1.record_tx_id.as_deref()), (Some("salt"), Some("rec-tx")));
     }
 
     #[tokio::test]

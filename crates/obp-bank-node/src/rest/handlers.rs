@@ -410,6 +410,8 @@ fn settlement_view(row: SettlementRow, finality_depth: u32) -> SettlementView {
         created_at: row.created_at,
         updated_at: row.updated_at,
         finalized_at: row.finalized_at,
+        record_tx_id: row.record_tx_id,
+        record_blockchain: row.record_blockchain,
     }
 }
 

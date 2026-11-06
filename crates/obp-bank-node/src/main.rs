@@ -523,6 +523,8 @@ async fn main() -> anyhow::Result<()> {
         ));
     }
 
+    // The finality watcher writes Settlement Reference records with the same notary.
+    let backend_for_records = Arc::clone(&backend);
     // The dispatcher owns the backend and drains the outbox asynchronously.
     let dispatcher = Dispatcher::new(
         outbox.clone(),
@@ -554,6 +556,9 @@ async fn main() -> anyhow::Result<()> {
             let watcher = FinalityWatcher {
                 store: settlement_store.clone(),
                 backend: Arc::clone(backend),
+                notary: Arc::clone(&backend_for_records),
+                outbox: outbox.clone(),
+                bank_id: config.bank.bank_id.clone(),
                 finality_depth: config.settlement.finality_depth,
                 poll_interval: std::time::Duration::from_secs(config.settlement.finality_poll_secs),
             };

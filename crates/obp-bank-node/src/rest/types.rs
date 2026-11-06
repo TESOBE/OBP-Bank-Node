@@ -185,6 +185,9 @@ pub struct SettlementView {
     pub created_at: String,
     pub updated_at: String,
     pub finalized_at: Option<String>,
+    /// The on-chain Settlement Reference record, once written after FINAL.
+    pub record_tx_id: Option<String>,
+    pub record_blockchain: Option<String>,
 }
 
 /// One row of the beneficiary-side evidence store, as returned by
