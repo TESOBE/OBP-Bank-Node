@@ -80,7 +80,7 @@ impl Router {
                 self.settlement_instruction(correlation_id, body).await
             }
             message_id::NETTING_SNAPSHOT => self.netting_snapshot(correlation_id, body),
-            message_id::STATUS_UPDATE => self.status_update(correlation_id, body),
+            message_id::STATUS_UPDATE => self.status_update(correlation_id, body).await,
             other => {
                 warn!(message_id = %other, "Interface C: unrecognised MessageId");
                 ReplyEnvelope::error(
@@ -670,18 +670,36 @@ impl Router {
         }
     }
 
-    /// `obp_status_update`: a TR's status changed. Logged for now; reconciling it
-    /// onto the local outbox lifecycle is future work.
-    fn status_update(&self, correlation_id: &str, body: &[u8]) -> ReplyEnvelope {
+    /// `obp_status_update`: a TR's status changed. Stored on the matching
+    /// outbox row as `obp_status` (by OBP-API's id, else by the node's own)
+    /// so A1.2 shows it; the node's own lifecycle is not touched. The reply
+    /// says whether a row matched, so an update for an unknown id is visible
+    /// on the OBP-API side.
+    async fn status_update(&self, correlation_id: &str, body: &[u8]) -> ReplyEnvelope {
         match serde_json::from_slice::<StatusUpdate>(body) {
             Ok(su) => {
+                let matched = match self
+                    .outbox
+                    .record_obp_status(&su.transaction_request_id, &su.status)
+                    .await
+                {
+                    Ok(m) => m,
+                    Err(e) => {
+                        return ReplyEnvelope::error(
+                            correlation_id,
+                            error_code::PLATFORM,
+                            format!("recording status_update: {e}"),
+                        )
+                    }
+                };
                 info!(
                     bank_id = %self.bank_id,
                     transaction_request_id = %su.transaction_request_id,
                     status = %su.status,
+                    matched,
                     "status_update received"
                 );
-                ReplyEnvelope::ok(correlation_id, serde_json::json!({ "recorded": true }))
+                ReplyEnvelope::ok(correlation_id, serde_json::json!({ "recorded": true, "matched": matched }))
             }
             Err(e) => ReplyEnvelope::error(
                 correlation_id,
@@ -1307,6 +1325,35 @@ mod tests {
             )
             .await;
         assert!(u.is_ok());
+        assert_eq!(u.data["matched"], false, "no outbox row carries tr-1");
+    }
+
+    #[tokio::test]
+    async fn status_update_is_stored_on_the_matching_outbox_row() {
+        let r = router_with_cbs("http://127.0.0.1:1/credit").await;
+        r.outbox
+            .insert(crate::outbox::NewEntry {
+                transaction_request_id: "local-1",
+                bank_id: "ke.01.kcs",
+                account_id: "acct",
+                request_payload: "{}",
+                commitment_salt: "s",
+            })
+            .await
+            .unwrap();
+        r.outbox.mark_submitted("local-1", Some("obp-1")).await.unwrap();
+        let u = r
+            .handle(
+                message_id::STATUS_UPDATE,
+                "c",
+                br#"{"transaction_request_id":"obp-1","status":"COMPLETED"}"#,
+            )
+            .await;
+        assert!(u.is_ok());
+        assert_eq!(u.data["matched"], true);
+        let row = r.outbox.get("local-1").await.unwrap().unwrap();
+        assert_eq!(row.obp_status.as_deref(), Some("COMPLETED"));
+        assert_eq!(row.status, crate::outbox::status::SUBMITTED);
     }
 
     fn settlement_body(idem: &str) -> String {

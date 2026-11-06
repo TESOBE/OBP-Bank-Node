@@ -139,6 +139,10 @@ pub struct TransactionRequestStatus {
     /// The on-chain Exception record for a row in `EXCEPTION`, once written.
     pub exception_id: Option<String>,
     pub exception_blockchain: Option<String>,
+    /// The latest status OBP-API pushed for this request over Interface C,
+    /// and when; absent until the first `obp_status_update` arrives.
+    pub obp_status: Option<String>,
+    pub obp_status_at: Option<DateTime<Utc>>,
 }
 
 /// Body of `POST .../settlements` — ask this node to trigger bilateral Open

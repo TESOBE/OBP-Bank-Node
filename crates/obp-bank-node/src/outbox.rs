@@ -91,6 +91,11 @@ pub struct OutboxRecord {
     /// The caller's `Idempotency-Key`, when the request carried one: a repeat
     /// with the same key and body is answered with this row instead of a new one.
     pub idempotency_key: Option<String>,
+    /// The latest status OBP-API pushed over Interface C (`obp_status_update`)
+    /// for this request, and when it arrived. Informational: the node's own
+    /// lifecycle stays in `status`.
+    pub obp_status: Option<String>,
+    pub obp_status_at: Option<String>,
     /// Why the latest attempt failed, while the row is still being retried.
     /// Cleared when the dispatcher picks the row up again.
     pub last_error: Option<String>,
@@ -127,6 +132,29 @@ impl OutboxStore {
     /// Whether the database answers, for the root `/status` page.
     pub async fn ping(&self) -> Result<(), sqlx::Error> {
         sqlx::query("SELECT 1").execute(&self.pool).await.map(|_| ())
+    }
+
+    /// Record a status OBP-API pushed for a request. `obp_tr_id` is matched
+    /// against the OBP-side id first, then against the node's own id (OBP-API
+    /// echoes whichever it was given). Returns whether a row matched.
+    pub async fn record_obp_status(&self, obp_tr_id: &str, status: &str) -> Result<bool, OutboxError> {
+        let now = rfc3339(Utc::now());
+        let result = sqlx::query(
+            "UPDATE outbox SET obp_status = ?, obp_status_at = ? \
+             WHERE transaction_request_id = ( \
+                SELECT transaction_request_id FROM outbox \
+                WHERE obp_transaction_request_id = ? OR transaction_request_id = ? \
+                ORDER BY CASE WHEN obp_transaction_request_id = ? THEN 0 ELSE 1 END \
+                LIMIT 1)",
+        )
+        .bind(status)
+        .bind(&now)
+        .bind(obp_tr_id)
+        .bind(obp_tr_id)
+        .bind(obp_tr_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     /// Retention: delete rows that are finished and older than `cutoff`
@@ -250,6 +278,8 @@ impl OutboxStore {
             "exception_tx_id TEXT",
             "exception_blockchain TEXT",
             "idempotency_key TEXT",
+            "obp_status TEXT",
+            "obp_status_at TEXT",
         ] {
             if let Err(e) = sqlx::query(&format!("ALTER TABLE outbox ADD COLUMN {col}"))
                 .execute(pool)
@@ -910,5 +940,34 @@ mod tests {
         assert!(store.get("new-exc").await.unwrap().is_some(), "recent exception kept");
         assert!(store.get("old-unsettled").await.unwrap().is_some(), "unsettled REPORTED kept");
         assert!(store.get("old-initiated").await.unwrap().is_some(), "in-flight row kept");
+    }
+
+    #[tokio::test]
+    async fn obp_status_is_recorded_by_obp_id_then_by_local_id() {
+        let store = OutboxStore::connect_in_memory().await.unwrap();
+        for id in ["tr-a", "tr-b"] {
+            store
+                .insert(NewEntry {
+                    transaction_request_id: id,
+                    bank_id: "b",
+                    account_id: "a",
+                    request_payload: "{}",
+                    commitment_salt: "s",
+                })
+                .await
+                .unwrap();
+        }
+        store.mark_submitted("tr-a", Some("obp-a")).await.unwrap();
+
+        assert!(store.record_obp_status("obp-a", "COMPLETED").await.unwrap());
+        let a = store.get("tr-a").await.unwrap().unwrap();
+        assert_eq!(a.obp_status.as_deref(), Some("COMPLETED"));
+        assert!(a.obp_status_at.is_some());
+        assert_eq!(a.status, status::SUBMITTED, "the node's own lifecycle is untouched");
+
+        assert!(store.record_obp_status("tr-b", "REJECTED").await.unwrap(), "falls back to the local id");
+        assert_eq!(store.get("tr-b").await.unwrap().unwrap().obp_status.as_deref(), Some("REJECTED"));
+
+        assert!(!store.record_obp_status("nope", "X").await.unwrap());
     }
 }

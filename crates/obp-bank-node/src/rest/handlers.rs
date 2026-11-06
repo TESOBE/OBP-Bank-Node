@@ -434,6 +434,8 @@ fn status_from_record(rec: OutboxRecord) -> TransactionRequestStatus {
         exception_reason: rec.exception_reason,
         exception_id: rec.exception_tx_id,
         exception_blockchain: rec.exception_blockchain,
+        obp_status: rec.obp_status,
+        obp_status_at: rec.obp_status_at.as_deref().map(parse_rfc3339),
     }
 }
 
