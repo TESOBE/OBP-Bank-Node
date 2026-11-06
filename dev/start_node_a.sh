@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Start Bank Node A (rt.bank.a3, :8088, Cardano preprod; the debtor side of the demo).
+# Start Bank Node A (rt.bank.a4, :8088, Cardano preprod; the debtor side of the demo).
 # The node is a Platform App: it calls OBP-API as itself with OAuth2 client credentials from
 # OBP-OIDC, Consumer 'obp-bank-node-a' (dev/create_consumers.sh writes NODE_A_CLIENT_ID /
 # NODE_A_CLIENT_SECRET to dev/local.env). Prereqs: OBP-API on :8080, OBP-OIDC on :9000,
-# RabbitMQ with the /bank.rt.bank.a3 vhost, cardano-node + Ogmios on :1337, and
+# RabbitMQ with the /bank.rt.bank.a4 vhost, cardano-node + Ogmios on :1337, and
 # dev/setup_obp.sh run once (Scopes, the node's view and its access).
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"

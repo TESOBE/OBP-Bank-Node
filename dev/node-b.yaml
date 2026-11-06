@@ -1,4 +1,4 @@
-# Round-trip test — Bank Node B (rt.bank.b3, Cardano preprod rail — symmetric
+# Round-trip test — Bank Node B (rt.bank.b4, Cardano preprod rail — symmetric
 # with node A so B can also write promises and settle as debtor; wallet is
 # secrets/creditor.skey, address in secrets/creditor.addr).
 # Start from the repo root: dev/start_node_b.sh (it passes the node's OAuth2 client
@@ -8,7 +8,7 @@ server:
   bind: "0.0.0.0:8089"
 
 bank:
-  bank_id: "rt.bank.b3"
+  bank_id: "rt.bank.b4"
   account_id: "settlement-b"
   # One corridor account per sending currency (created via the app's setup
   # page). Authoritative when non-empty: a currency not listed here is
@@ -39,10 +39,10 @@ blockchain:
     query_timeout_secs: 90
 
 outbox:
-  path: "./dev/data/node-b3/outbox.db"
+  path: "./dev/data/node-b4/outbox.db"
 
 evidence:
-  path: "./dev/data/node-b3/evidence.db"
+  path: "./dev/data/node-b4/evidence.db"
 
 rabbitmq:
   enabled: true
@@ -50,7 +50,7 @@ rabbitmq:
   port: 5672
   username: "bank_b_node"
   password: "rtpass-b"
-  virtual_host: "/bank.rt.bank.b3"
+  virtual_host: "/bank.rt.bank.b4"
   request_queue: "obp_rpc_queue"
 
 cbs_delivery:

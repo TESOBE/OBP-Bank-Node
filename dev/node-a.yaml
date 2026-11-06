@@ -1,4 +1,4 @@
-# Round-trip test — Bank Node A (debtor, rt.bank.a3, Cardano preprod).
+# Round-trip test — Bank Node A (debtor, rt.bank.a4, Cardano preprod).
 # Start from the repo root: dev/start_node_a.sh (it passes the node's OAuth2 client
 # credentials from dev/local.env).
 
@@ -6,7 +6,7 @@ server:
   bind: "0.0.0.0:8088"
 
 bank:
-  bank_id: "rt.bank.a3"
+  bank_id: "rt.bank.a4"
   account_id: "settlement-a"
   # One corridor account per sending currency (created via the app's setup
   # page). Authoritative when non-empty: a currency not listed here is
@@ -37,10 +37,10 @@ blockchain:
     query_timeout_secs: 90
 
 outbox:
-  path: "./dev/data/node-a3/outbox.db"
+  path: "./dev/data/node-a4/outbox.db"
 
 evidence:
-  path: "./dev/data/node-a3/evidence.db"
+  path: "./dev/data/node-a4/evidence.db"
 
 rabbitmq:
   enabled: true
@@ -48,7 +48,7 @@ rabbitmq:
   port: 5672
   username: "bank_a_node"
   password: "rtpass-a"
-  virtual_host: "/bank.rt.bank.a3"
+  virtual_host: "/bank.rt.bank.a4"
   request_queue: "obp_rpc_queue"
 
 cbs_delivery:
@@ -66,7 +66,7 @@ settlement:
   # Fast finality for the test run (2 blocks ≈ 40 s on preprod).
   finality_depth: 2
   finality_poll_secs: 10
-  store_path: "./dev/data/node-a3/settlements.db"
+  store_path: "./dev/data/node-a4/settlements.db"
   ada_rate_minor_per_whole_ada: 2122
 
 local_secret: "rt-local-secret"

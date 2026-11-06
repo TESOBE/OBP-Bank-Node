@@ -1,4 +1,4 @@
-# Bank Node UI for bank A — locked to its own node (rt.bank.a3), exactly as
+# Bank Node UI for bank A — locked to its own node (rt.bank.a4), exactly as
 # a bank client using Open Corridor would deploy it. The localhost demo runs
 # a second instance (ui-b.yaml) so both banks' views sit side by side.
 # Start from the repo root:
@@ -15,10 +15,10 @@ nodes:
 # Out-of-band knowledge of the demo topology — the app never enumerates the
 # other bank's accounts.
 ui_defaults:
-  beneficiary_name: "Beneficiary at rt.bank.b3"
-  other_bank: "rt.bank.b3"
+  beneficiary_name: "Beneficiary at rt.bank.b4"
+  other_bank: "rt.bank.b4"
   other_account: "settlement-b"
-  other_bank_id: "rt.bank.b3"
+  other_bank_id: "rt.bank.b4"
 
 # --- /setup operator page -------------------------------------------------
 # OBP-API + OIDC client for the setup page (the Portal's login scheme: the
@@ -51,7 +51,7 @@ setup:
       country: "INT"
       category: "ACCOUNT"
       address_pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
-      example_address: "rt.bank.b3"
+      example_address: "rt.bank.b4"
       description: "OBP bank id or account id, as used in OBP account routings."
       downstream_rails: []
       status: "ACTIVE"
@@ -89,8 +89,8 @@ setup:
       status: "RESERVED"
 
   bank:
-    id: "rt.bank.a3"
-    full_name: "Round-trip rt.bank.a3"
+    id: "rt.bank.a4"
+    full_name: "Round-trip rt.bank.a4"
     accounts:
       - id: "settlement-a"
         label: "Node A corridor account"
@@ -121,7 +121,7 @@ setup:
     broker:
       host: "localhost"
       port: 5672
-      virtual_host: "/bank.rt.bank.a3"
+      virtual_host: "/bank.rt.bank.a4"
       username: "bank_a_node"
       password: "rtpass-a"
       use_ssl: false
@@ -130,7 +130,7 @@ setup:
     # node's view (bank.view_id in node-a.yaml) on each corridor account.
     node:
       consumer_name: "obp-bank-node-a"
-      label: "OBP Bank Node A (rt.bank.a3)"
+      label: "OBP Bank Node A (rt.bank.a4)"
       scopes: ["CanAttachOpenCorridorPromise", "CanSettleOpenCorridor"]
       view_id: "_open-corridor-node"
       corridor_accounts: ["settlement-a", "settlement-a-ngn", "settlement-a-usd", "settlement-a-eur"]
