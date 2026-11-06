@@ -108,8 +108,9 @@ cargo run --release -p obp-bank-node-ui
 ```
 
 For a full two-bank round trip — two nodes, two UIs, OBP-API, RabbitMQ,
-and a stub CBS — see the scripts and configs in [`dev/`](dev/), starting with
-`dev/run_roundtrip.sh`.
+a real `cardano-node` on preprod, and a stub CBS, all on one machine —
+follow [`dev/README.md`](dev/README.md): prerequisites, a Mithril snapshot
+for the Cardano node, wallets and test ADA, then `dev/up.sh`.
 
 ## Licence
 

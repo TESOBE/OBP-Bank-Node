@@ -1,4 +1,8 @@
-# Localhost round-trip test — living status
+# Localhost round-trip test — history (July 2026)
+
+> **History, not instructions.** This is the log of the first localhost round trip
+> (July 2026). Bank ids, ports, paths and the setup steps have changed since. To run
+> it today, follow [`README.md`](README.md) in this folder.
 
 **COMPLETE 2026-07-31 ~10:28 UTC — full round trip achieved on preprod.
 Evidence log at the bottom. Four real defects were found and fixed on the

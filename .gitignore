@@ -26,3 +26,7 @@ dev/__pycache__/
 
 # Runtime pid file
 node.pid
+
+# Per-machine settings for dev/ (Consumer secrets, admin login), and their backups
+dev/local.env
+dev/local.env.bak.*

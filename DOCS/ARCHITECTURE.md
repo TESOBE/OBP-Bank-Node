@@ -181,8 +181,9 @@ blockchain:
 
 The `CardanoBackend` impl talks to a **real `cardano-node`** running on the
 **preprod testnet**, with **Ogmios** in front of it for JSON-RPC over
-WebSocket. Cardano-node syncs from genesis (one-time, ~2–4 h on preprod),
-then resumes in seconds on every restart.
+WebSocket. A new node starts from a certified Mithril snapshot of the chain
+(`docker/cardano-bootstrap.sh mithril`, about an hour) or syncs from genesis
+(12–20 h or more on preprod), then resumes in seconds on every restart.
 
 Preprod (not preview) was chosen because preview's Mithril aggregator
 (`pre-release-preview`) requires pre-release client builds that aren't
@@ -193,11 +194,16 @@ for anything heading to mainnet. The only material difference vs preview is
 block time (~20s instead of ~2s), which doesn't affect OBP Bank Node's
 metadata-only transaction flow.
 
-Mithril (the fast-bootstrap snapshot protocol) was attempted but ran into
-client/aggregator version skew that the published Docker tags didn't cover.
-Genesis sync is the reliable path for now. Mithril can be revisited later
-when versioning is pinned to a known-good pair; the wrestling isn't worth it
-for a one-time-per-developer cost.
+Mithril (the fast-bootstrap snapshot protocol) is the default way to bring
+a dev node up: `docker/cardano-bootstrap.sh mithril` downloads the latest
+snapshot certified by the preprod aggregator, checks it against Mithril's
+genesis and ancillary verification keys, and swaps it in as the chain DB.
+An earlier attempt ran into client/aggregator version skew; the script now
+pins the client image (`MITHRIL_CLIENT_IMAGE`) to a known-good version.
+The snapshot can come from a newer cardano-node than the one the dev image
+runs; the node then rebuilds its ledger state from the downloaded blocks,
+which is slower but needs no network sync. Genesis sync stays available
+(`up` on an empty volume) for anyone who wants no trust in the snapshot.
 
 ```
 Bank Node (Rust)

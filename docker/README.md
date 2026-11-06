@@ -53,7 +53,29 @@ SELinux relabel flag for RHEL-family hosts.
 Runs only the `cardano-node` + Ogmios container, for developing the Bank Node
 natively (`cargo run`) against a local chain.
 
-Network: **preprod** testnet. See `../ARCHITECTURE.md` for why preprod and not preview, and why no Mithril fast-bootstrap.
+Network: **preprod** testnet. See `../DOCS/ARCHITECTURE.md` for why preprod and not preview.
+
+## Fast start: a Mithril snapshot (recommended)
+
+```bash
+./docker/cardano-bootstrap.sh up            # create the stack and its chain DB volume
+./docker/cardano-bootstrap.sh mithril -y    # replace the chain DB with a certified snapshot
+./docker/cardano-bootstrap.sh status        # until networkSynchronization is 1.0
+```
+
+`mithril` stops the stack, downloads the latest preprod snapshot (about
+20 GB) with a pinned `mithril-client` image, verifies it against Mithril's
+published genesis and ancillary keys, swaps it in as the chain DB (a failed
+download leaves the current DB untouched) and starts the stack again. The
+node then only catches up the last few hours of chain. Altogether that takes
+about an hour instead of the 12–20 h of a genesis sync.
+
+The snapshot may come from a newer cardano-node than this image runs. If the
+logs say the ledger is being replayed, the node is rebuilding its ledger
+state from the downloaded blocks: slower, but not stuck, and no network sync.
+
+The rest of this file describes the genesis sync, which is what `up` does on
+an empty volume if you skip `mithril`.
 
 ## What the sync is doing
 
@@ -67,7 +89,7 @@ This is the **safe, no-trust-required** way to bring a node up: every block
 is verified against the consensus rules, every UTxO transition checked. The
 node trusts no one — it derives chain state from genesis.
 
-**Time:** typically **2–4 hours** end-to-end on preprod with an SSD and
+**Time:** **12–20 hours or more** end-to-end on preprod with an SSD and
 reasonable bandwidth. Most of the time is CPU-bound block validation rather
 than network download.
 
@@ -130,7 +152,8 @@ CPU for something else / I'm going on holiday."
 ```
 
 Stops the container *and* deletes the `docker_cardano-db` volume, reclaiming
-the 30–50 GB of disk. Next `up` re-syncs from genesis (~2–4 h again).
+the 30–50 GB of disk. Next `up` re-syncs from genesis (12–20 h), unless you
+run `mithril` again (about an hour).
 
 Use this when:
 - You want to reclaim the disk space permanently.
@@ -150,7 +173,7 @@ re-done on next start. No filesystem-level repair tools are needed.
 
 ## Connecting code to the running node
 
-The Bank Node (when it exists) and any `cardano-cli` / library calls reach
+The Bank Node and any `cardano-cli` / library calls reach
 the node through **Ogmios** on the host:
 
 - WebSocket / JSON-RPC: `ws://localhost:1337`
@@ -164,9 +187,8 @@ container, and Ogmios is the documented public surface anyway.
 If anything looks wedged, the fast reset is:
 
 ```bash
-./cardano-bootstrap.sh nuke   # confirm with y
-./cardano-bootstrap.sh up
+./cardano-bootstrap.sh mithril   # confirm with y: replaces the chain DB with a fresh snapshot
 ```
 
-That's a ~2–4 h cost; the alternative is debugging volume / config drift,
-which is usually worse.
+That's about an hour; the alternative is debugging volume / config drift,
+which is usually worse. (`nuke` + `up` does the same from genesis, 12–20 h.)

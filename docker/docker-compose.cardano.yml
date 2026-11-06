@@ -3,19 +3,19 @@
 # Network: PREPROD. Preprod mirrors mainnet config, uses released tooling,
 # and is the recommended staging environment for anything heading to mainnet.
 #
-# Sync: from genesis. We previously tried bootstrapping via Mithril snapshots,
-# but ran into client/aggregator version skew that the published Docker tags
-# didn't cover. Genesis sync is reliable; it just takes 2-4 h the first time,
-# then resumes in seconds on every restart.
+# Sync: from a certified Mithril snapshot (`cardano-bootstrap.sh mithril`,
+# about an hour), or from genesis if you skip that (12-20 h or more). Either
+# way it resumes in seconds on every restart.
 #
 # Usage:
 #   ./docker/cardano-bootstrap.sh up       # start, don't wait
+#   ./docker/cardano-bootstrap.sh mithril  # replace the chain DB with a snapshot
 #   ./docker/cardano-bootstrap.sh status   # show sync progress
 #   ./docker/cardano-bootstrap.sh down     # stop, keep chain DB
 #   ./docker/cardano-bootstrap.sh nuke     # stop + delete chain DB
 #
 # Volumes:
-#   cardano-db  — chain DB (built by cardano-node syncing from genesis)
+#   cardano-db  — chain DB (from a Mithril snapshot, or synced from genesis)
 #
 # Ports:
 #   1337  — Ogmios JSON-RPC over WebSocket / HTTP

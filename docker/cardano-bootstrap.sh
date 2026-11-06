@@ -108,7 +108,7 @@ case "$cmd" in
 
   nuke)
     echo "==> Stopping stack AND deleting chain DB volume"
-    read -r -p "    Are you sure? Next 'up' will re-sync from genesis (~2-4 h). [y/N] " ans
+    read -r -p "    Are you sure? Next 'up' will re-sync from genesis (12-20 h; or run 'mithril', about an hour). [y/N] " ans
     case "$ans" in
       y|Y|yes|YES)
         compose down -v

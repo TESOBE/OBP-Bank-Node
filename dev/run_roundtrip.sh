@@ -62,7 +62,7 @@ for i in $(seq 1 60); do
   sleep 5
 done
 [[ "$ST" == REPORTED* ]] || { echo "TIMEOUT waiting for REPORTED"; exit 1; }
-PROMISE_TX=$(sq "$DIR/data/node-a/outbox.db" \
+PROMISE_TX=$(sq "$DIR/data/node-a3/outbox.db" \
   "SELECT promise_tx_id FROM outbox WHERE transaction_request_id='$TR_ID'")
 echo "Promise on-chain tx: $PROMISE_TX"
 echo "  https://preprod.cardanoscan.io/transaction/$PROMISE_TX"
@@ -78,7 +78,7 @@ SETTLEMENT_ID=$(echo "$SETTLE" | python3 -c 'import json,sys;print(json.load(sys
 
 echo "=== 4. Waiting for Node A settlement: SETTLING -> SUBMITTED -> FINAL"
 for i in $(seq 1 60); do
-  ROW=$(sq "$DIR/data/node-a/settlements.db" \
+  ROW=$(sq "$DIR/data/node-a3/settlements.db" \
     "SELECT status||' depth='||last_depth||' tx='||COALESCE(tx_id,'') FROM settlements WHERE idempotency_key='$SETTLEMENT_ID'")
   echo "  [$i] ${ROW:-<no row yet>}"
   case "$ROW" in FINAL*) break;; ERROR*) echo "FAILED — settlement ERROR"; exit 1;; esac
@@ -88,7 +88,7 @@ case "${ROW:-}" in FINAL*) ;; *) echo "TIMEOUT waiting for FINAL"; exit 1;; esac
 
 echo "=== 5. Beneficiary side (Node B)"
 echo "-- evidence store:"
-sq "$DIR/data/node-b/evidence.db" \
+sq "$DIR/data/node-b3/evidence.db" \
   "SELECT transaction_request_id, verified, substr(promise_commitment,1,16)||'…' FROM evidence"
 echo "-- CBS credits received:"
 tail -n 3 "$DIR/data/cbs_received.jsonl" 2>/dev/null || echo "  (none!)"

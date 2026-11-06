@@ -5,15 +5,22 @@
 # Writes DirectLogin tokens to env.sh for the node processes.
 set -uo pipefail
 
-# Per-machine overrides (gitignored): RT_OBP_URL, RT_CONSUMER_KEY, RT_SA_USER, RT_SA_PASS,
-# RT_OBP_PROPS_FILE, RT_PG_DB, RT_PG_USER. Unset ones keep the defaults below.
+# Per-machine settings come from dev/local.env (gitignored; see dev/local.env.example):
+# RT_CONSUMER_KEY (written by dev/create_consumers.sh), RT_SA_USER, RT_SA_PASS, RT_OBP_PROPS_FILE,
+# and optionally RT_OBP_URL, RT_PG_DB, RT_PG_USER.
 SETUP_DIR="$(cd "$(dirname "$0")" && pwd)"
 [ -f "$SETUP_DIR/local.env" ] && source "$SETUP_DIR/local.env"
 
 OBP="${RT_OBP_URL:-http://localhost:8080}"
-CK="${RT_CONSUMER_KEY:-rtkey6a33e2a63adba1658290ecac776ff155}"   # consumer 'obp-bank-node-roundtrip'
-SA_USER="${RT_SA_USER:-TheSuperUserAForTesting}"
-SA_PASS="${RT_SA_PASS:-alk24ahf8au98uropifa8aba}"
+CK="${RT_CONSUMER_KEY:-}"   # consumer 'obp-bank-node-roundtrip'
+SA_USER="${RT_SA_USER:-}"
+SA_PASS="${RT_SA_PASS:-}"
+PROPS_FILE="${RT_OBP_PROPS_FILE:-}"
+missing=""
+[ -n "$CK" ] || missing+=" RT_CONSUMER_KEY (run dev/create_consumers.sh)"
+[ -n "$SA_USER" ] && [ -n "$SA_PASS" ] || missing+=" RT_SA_USER/RT_SA_PASS"
+[ -n "$PROPS_FILE" ] && [ -f "$PROPS_FILE" ] || missing+=" RT_OBP_PROPS_FILE"
+[ -z "$missing" ] || { echo "FATAL: set in dev/local.env:$missing" >&2; exit 1; }
 
 BANK_A="rt.bank.a3"; BANK_B="rt.bank.b3"
 NODE_A_USER="rt.node.a"; NODE_B_USER="rt.node.b"; NODE_PASS="RtNodePass2026!"
@@ -105,11 +112,16 @@ for U in "$NODE_A_USER" "$NODE_B_USER"; do
     >/dev/null
 done
 # DirectLogin refuses unvalidated emails (OBP-20073); no API path for it, so
-# flip the flag in Postgres (password from default.props db.url).
+# flip the flag in Postgres (host, database, user and password from the props' db.url;
+# RT_PG_DB / RT_PG_USER override the database and user).
 echo "  (validating emails in Postgres — needed for DirectLogin)"
-PROPS_FILE="${RT_OBP_PROPS_FILE:-$HOME/Documents/workspace_2024/OBP-API-Simon/OBP-API/obp-api/src/main/resources/props/default.props}"
-PGPASS=$(grep -E '^db.url' "$PROPS_FILE" | head -1 | grep -oP 'password=\K[^&\s]+')
-PGPASSWORD="$PGPASS" psql -h localhost -U "${RT_PG_USER:-obp}" -d "${RT_PG_DB:-sandbox}" -q \
+DB_URL=$(grep -E '^db.url=' "$PROPS_FILE" | head -1 | cut -d= -f2-)
+[[ "$DB_URL" =~ ^jdbc:postgresql://([^:/]+)(:([0-9]+))?/([^?]+)\?(.*)$ ]] \
+  || { echo "FATAL: db.url in $PROPS_FILE is not a jdbc:postgresql URL (OBP-API must run on Postgres, not H2)"; exit 1; }
+PG_HOST="${BASH_REMATCH[1]}"; PG_PORT="${BASH_REMATCH[3]:-5432}"; PG_DB="${RT_PG_DB:-${BASH_REMATCH[4]}}"
+PG_USER="${RT_PG_USER:-$(tr '&' '\n' <<<"${BASH_REMATCH[5]}" | sed -n 's/^user=//p')}"
+PGPASS=$(tr '&' '\n' <<<"${BASH_REMATCH[5]}" | sed -n 's/^password=//p')
+PGPASSWORD="$PGPASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" -q \
   -c "UPDATE authuser SET validated=true WHERE username IN ('$NODE_A_USER','$NODE_B_USER');"
 UA_ID=$(dl "$NODE_A_USER" "$NODE_PASS" >/dev/null; api GET "/obp/v5.1.0/users/username/$NODE_A_USER" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("user_id",""))')
 UB_ID=$(api GET "/obp/v5.1.0/users/username/$NODE_B_USER" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("user_id",""))')
