@@ -12,10 +12,13 @@
 //! point reverts the tx to [`ConfirmationStatus::Pending`] until it reappears
 //! on the new chain.
 //!
-//! The follower starts at the tip it finds at boot: it only observes blocks
-//! from then on. Transactions submitted by an earlier process are unknown to
-//! it — `status()` returns `None` for those and callers fall back to the
-//! coarse UTxO-presence check.
+//! Without a store the follower starts at the tip it finds at boot and only
+//! observes blocks from then on: transactions submitted by an earlier process
+//! are unknown to it (`status()` returns `None` and callers fall back to the
+//! coarse UTxO-presence check), and so are payments that arrived while the
+//! process was down. With a [`FollowerStore`] it resumes from the points it
+//! last processed, replaying the blocks it missed, and the payments it has
+//! recorded survive a restart.
 //!
 //! Scope note: watched entries are never evicted. A node watches its own
 //! submissions only (a few per payment), so growth is bounded by write volume;
@@ -86,6 +89,48 @@ struct Payment {
     slot: u64,
 }
 
+/// A block point as a store keeps it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPoint {
+    pub slot: u64,
+    pub id: String,
+}
+
+/// A payment to a watched address as a store keeps it: what one transaction
+/// paid to the address in total, and the block it was seen in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPayment {
+    /// Lowercase transaction id.
+    pub tx_id: String,
+    pub address: String,
+    pub lovelace: u64,
+    pub height: u64,
+    pub slot: u64,
+}
+
+/// What a store hands back at start-up.
+#[derive(Debug, Clone, Default)]
+pub struct FollowerSnapshot {
+    /// Oldest first, as the follower processed them.
+    pub points: Vec<StoredPoint>,
+    pub payments: Vec<StoredPayment>,
+}
+
+/// Durable memory for the follower: the points it last processed and the
+/// payments it has recorded. Implemented by the node over its database; the
+/// follower calls it after every block and never lets a store error stop the
+/// stream.
+#[async_trait::async_trait]
+pub trait FollowerStore: Send + Sync {
+    async fn load(&self) -> crate::Result<FollowerSnapshot>;
+    /// Replace the stored points with these (oldest first); empty forgets them.
+    async fn save_points(&self, points: &[StoredPoint]) -> crate::Result<()>;
+    /// Insert or replace the payment for `payment.tx_id`.
+    async fn save_payment(&self, payment: &StoredPayment) -> crate::Result<()>;
+    /// A rollback: drop payments seen after `slot` (`None` = all of them).
+    async fn drop_payments_after(&self, slot: Option<u64>) -> crate::Result<()>;
+}
+
 
 
 /// A processed `nextBlock` step.
@@ -116,19 +161,62 @@ impl FollowerState {
         self.watched.remove(&tx_id.to_lowercase());
     }
 
-    fn apply_forward(&mut self, block: BlockSummary, tip_height: Option<u64>) {
+    /// Restore what a store kept from an earlier process.
+    fn seed(&mut self, points: Vec<StoredPoint>, payments: Vec<StoredPayment>) {
+        self.recent_points = points
+            .into_iter()
+            .map(|p| Point { slot: p.slot, id: p.id })
+            .collect();
+        while self.recent_points.len() > RECENT_POINTS_CAP {
+            self.recent_points.pop_front();
+        }
+        for p in payments {
+            self.payments.insert(
+                p.tx_id.to_lowercase(),
+                Payment { address: p.address, lovelace: p.lovelace, height: p.height, slot: p.slot },
+            );
+        }
+    }
+
+    /// Drop the remembered points, so the next intersection starts at the tip
+    /// (the server did not recognise any of them).
+    fn forget_points(&mut self) {
+        self.recent_points.clear();
+    }
+
+    /// Apply a forward step; returns the payments to watched addresses this
+    /// block added to, one per transaction, with their running totals.
+    fn apply_forward(&mut self, block: BlockSummary, tip_height: Option<u64>) -> Vec<StoredPayment> {
+        let mut recorded: Vec<String> = Vec::new();
         for (tx_id, address, lovelace) in &block.outputs {
             if self.watched_addresses.contains(address) {
-                let p = self.payments.entry(tx_id.to_lowercase()).or_insert(Payment {
+                let key = tx_id.to_lowercase();
+                let p = self.payments.entry(key.clone()).or_insert(Payment {
                     address: address.clone(),
                     lovelace: 0,
                     height: block.height,
                     slot: block.slot,
                 });
                 p.lovelace += lovelace;
+                if !recorded.contains(&key) {
+                    recorded.push(key);
+                }
                 info!(tx_id = %tx_id, %address, lovelace, height = block.height, "payment to a watched address");
             }
         }
+        let seen = recorded
+            .into_iter()
+            .filter_map(|key| {
+                let p = self.payments.get(&key)?;
+                Some(StoredPayment {
+                    tx_id: key.clone(),
+                    address: p.address.clone(),
+                    lovelace: p.lovelace,
+                    height: p.height,
+                    slot: p.slot,
+                })
+            })
+            .collect();
         for id in &block.tx_ids {
             if let Some(w) = self.watched.get_mut(&id.to_lowercase()) {
                 info!(tx_id = %id, height = block.height, slot = block.slot, "watched tx included on chain");
@@ -142,6 +230,15 @@ impl FollowerState {
         // The tip in a forward step is at least this block; prefer the
         // server-reported tip so depth is right while catching up.
         self.tip_height = Some(tip_height.unwrap_or(block.height).max(block.height));
+        seen
+    }
+
+    /// The remembered points as a store keeps them (oldest first).
+    fn stored_points(&self) -> Vec<StoredPoint> {
+        self.recent_points
+            .iter()
+            .map(|p| StoredPoint { slot: p.slot, id: p.id.clone() })
+            .collect()
     }
 
     fn apply_backward(&mut self, rollback_slot: Option<u64>, tip_height: Option<u64>) {
@@ -212,7 +309,29 @@ impl ChainFollower {
     /// `None` (callers fall back) until the follower is live.
     pub fn spawn(ogmios_url: String) -> Arc<Self> {
         let state = Arc::new(Mutex::new(FollowerState::default()));
-        tokio::spawn(run(ogmios_url, Arc::clone(&state)));
+        tokio::spawn(run(ogmios_url, Arc::clone(&state), None));
+        Arc::new(Self { state })
+    }
+
+    /// Like [`Self::spawn`], but resume from what `store` kept: the stored
+    /// payments are known before the first block arrives, and the chain is
+    /// followed again from the last stored point. A store that fails to load
+    /// is logged and the follower starts at the tip, as without a store.
+    pub async fn spawn_with_store(ogmios_url: String, store: Arc<dyn FollowerStore>) -> Arc<Self> {
+        let mut state = FollowerState::default();
+        match store.load().await {
+            Ok(snapshot) => {
+                info!(
+                    points = snapshot.points.len(),
+                    payments = snapshot.payments.len(),
+                    "chain follower resuming from its store"
+                );
+                state.seed(snapshot.points, snapshot.payments);
+            }
+            Err(e) => warn!(error = %e, "chain follower store unreadable; starting at the tip"),
+        }
+        let state = Arc::new(Mutex::new(state));
+        tokio::spawn(run(ogmios_url, Arc::clone(&state), Some(store)));
         Arc::new(Self { state })
     }
 
@@ -249,45 +368,81 @@ impl ChainFollower {
     }
 }
 
-async fn run(url: String, state: Arc<Mutex<FollowerState>>) {
+async fn run(url: String, state: Arc<Mutex<FollowerState>>, store: Option<Arc<dyn FollowerStore>>) {
     loop {
-        if let Err(e) = follow(&url, &state).await {
+        if let Err(e) = follow(&url, &state, store.as_deref()).await {
             warn!(url = %url, error = %e, "chain follower disconnected; reconnecting");
         }
         tokio::time::sleep(RECONNECT_BACKOFF).await;
     }
 }
 
+/// Ogmios's JSON-RPC code when none of the offered points is on its chain.
+const INTERSECTION_NOT_FOUND: i64 = 1000;
+
+/// Negotiate where to continue from: the remembered points, or the current
+/// tip when there are none or the server knows none of them (a store older
+/// than the node's retention, or a fully rolled-back chain).
+async fn intersect(
+    session: &mut OgmiosSession,
+    state: &Arc<Mutex<FollowerState>>,
+    store: Option<&dyn FollowerStore>,
+) -> Result<Value, OgmiosError> {
+    let candidates = state.lock().expect("follower state mutex poisoned").intersection_points();
+    if !candidates.is_empty() {
+        let points: Vec<Value> = candidates
+            .iter()
+            .map(|p| json!({ "slot": p.slot, "id": p.id }))
+            .collect();
+        match session
+            .request("findIntersection", json!({ "points": points }), CALL_WAIT)
+            .await
+        {
+            Ok(intersection) => return Ok(intersection),
+            Err(OgmiosError::Rpc { code: INTERSECTION_NOT_FOUND, .. }) => {
+                warn!(
+                    offered = candidates.len(),
+                    "chain follower: none of the remembered points is on the node's chain; starting at the tip"
+                );
+                state.lock().expect("follower state mutex poisoned").forget_points();
+                if let Some(store) = store {
+                    if let Err(e) = store.save_points(&[]).await {
+                        warn!(error = %e, "chain follower store: forgetting points failed");
+                    }
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    let tip = session
+        .request("queryNetwork/tip", Value::Object(Default::default()), CALL_WAIT)
+        .await?;
+    let (slot, id) = (
+        tip.get("slot").and_then(Value::as_u64),
+        tip.get("id").and_then(Value::as_str),
+    );
+    let point = match (slot, id) {
+        (Some(slot), Some(id)) => json!({ "slot": slot, "id": id }),
+        _ => return Err(OgmiosError::Protocol(format!("tip: unexpected shape {tip}"))),
+    };
+    session
+        .request("findIntersection", json!({ "points": [point] }), CALL_WAIT)
+        .await
+}
+
 /// One connection lifetime: connect, negotiate an intersection, then follow
 /// the chain until the connection errors.
-async fn follow(url: &str, state: &Arc<Mutex<FollowerState>>) -> Result<(), OgmiosError> {
+async fn follow(
+    url: &str,
+    state: &Arc<Mutex<FollowerState>>,
+    store: Option<&dyn FollowerStore>,
+) -> Result<(), OgmiosError> {
     let mut session = OgmiosSession::connect(url).await?;
 
     // Prefer re-intersecting where we left off; a fresh (or fully rolled
     // back) follower intersects at the current tip — it only ever needs to
     // see blocks from now on, since txs are watched before submission.
-    let mut candidates = state.lock().expect("follower state mutex poisoned").intersection_points();
-    if candidates.is_empty() {
-        let tip = session
-            .request("queryNetwork/tip", Value::Object(Default::default()), CALL_WAIT)
-            .await?;
-        let (slot, id) = (
-            tip.get("slot").and_then(Value::as_u64),
-            tip.get("id").and_then(Value::as_str),
-        );
-        match (slot, id) {
-            (Some(slot), Some(id)) => candidates.push(Point { slot, id: id.to_string() }),
-            _ => return Err(OgmiosError::Protocol(format!("tip: unexpected shape {tip}"))),
-        }
-    }
-
-    let points: Vec<Value> = candidates
-        .iter()
-        .map(|p| json!({ "slot": p.slot, "id": p.id }))
-        .collect();
-    let intersection = session
-        .request("findIntersection", json!({ "points": points }), CALL_WAIT)
-        .await?;
+    let intersection = intersect(&mut session, state, store).await?;
     info!(url = %url, ?intersection, "chain follower intersected");
 
     loop {
@@ -298,16 +453,36 @@ async fn follow(url: &str, state: &Arc<Mutex<FollowerState>>) -> Result<(), Ogmi
         match parse_step(&v) {
             Ok(Step::Forward(block)) => {
                 debug!(height = block.height, slot = block.slot, txs = block.tx_ids.len(), "block");
-                state
-                    .lock()
-                    .expect("follower state mutex poisoned")
-                    .apply_forward(block, tip_height);
+                let (seen, points) = {
+                    let mut s = state.lock().expect("follower state mutex poisoned");
+                    let seen = s.apply_forward(block, tip_height);
+                    (seen, s.stored_points())
+                };
+                if let Some(store) = store {
+                    for p in &seen {
+                        if let Err(e) = store.save_payment(p).await {
+                            warn!(tx_id = %p.tx_id, error = %e, "chain follower store: saving a payment failed");
+                        }
+                    }
+                    if let Err(e) = store.save_points(&points).await {
+                        warn!(error = %e, "chain follower store: saving points failed");
+                    }
+                }
             }
             Ok(Step::Backward(slot)) => {
-                state
-                    .lock()
-                    .expect("follower state mutex poisoned")
-                    .apply_backward(slot, tip_height);
+                let points = {
+                    let mut s = state.lock().expect("follower state mutex poisoned");
+                    s.apply_backward(slot, tip_height);
+                    s.stored_points()
+                };
+                if let Some(store) = store {
+                    if let Err(e) = store.drop_payments_after(slot).await {
+                        warn!(error = %e, "chain follower store: dropping rolled-back payments failed");
+                    }
+                    if let Err(e) = store.save_points(&points).await {
+                        warn!(error = %e, "chain follower store: saving points failed");
+                    }
+                }
             }
             // A block we can't parse (unexpected era shape) can't be scanned
             // for watched txs, but the stream itself is healthy — log and
@@ -411,6 +586,125 @@ mod tests {
 
         s.apply_backward(Some(999), Some(99));
         assert_eq!(s.payment("tx-pay", "addr_me"), None, "rolled back off chain");
+    }
+
+    fn stored_point(slot: u64) -> StoredPoint {
+        StoredPoint { slot, id: format!("block-at-{slot}") }
+    }
+
+    #[test]
+    fn seeded_points_are_offered_newest_first_for_intersection() {
+        let mut s = FollowerState::default();
+        s.seed(vec![stored_point(10), stored_point(20), stored_point(30)], Vec::new());
+        let slots: Vec<u64> = s.intersection_points().iter().map(|p| p.slot).collect();
+        assert_eq!(slots, vec![30, 20, 10]);
+    }
+
+    #[test]
+    fn seeded_payments_are_visible_and_rolled_back_like_live_ones() {
+        let mut s = FollowerState::default();
+        s.watched_addresses.insert("addr_me".into());
+        s.seed(
+            vec![stored_point(1000)],
+            vec![StoredPayment {
+                tx_id: "TX-OLD".into(),
+                address: "addr_me".into(),
+                lovelace: 7_000_000,
+                height: 100,
+                slot: 1000,
+            }],
+        );
+        s.apply_forward(block(103, 1060, &[]), Some(103));
+        assert_eq!(
+            s.payment("tx-old", "addr_me"),
+            Some(IncomingPayment { lovelace: 7_000_000, depth: 4 }),
+            "a payment seen by an earlier process counts, with depth from the live tip"
+        );
+        s.apply_backward(Some(999), Some(99));
+        assert_eq!(s.payment("tx-old", "addr_me"), None, "a rollback below it still removes it");
+    }
+
+    #[test]
+    fn apply_forward_reports_newly_recorded_payments_only() {
+        let mut s = FollowerState::default();
+        s.watched_addresses.insert("addr_me".into());
+        let mut b = block(100, 1000, &["tx-pay"]);
+        b.outputs = vec![
+            ("tx-pay".into(), "addr_me".into(), 1_000_000),
+            ("tx-pay".into(), "addr_me".into(), 2_000_000),
+            ("tx-pay".into(), "addr_change".into(), 5),
+        ];
+        let seen = s.apply_forward(b, Some(100));
+        assert_eq!(
+            seen,
+            vec![StoredPayment {
+                tx_id: "tx-pay".into(),
+                address: "addr_me".into(),
+                lovelace: 3_000_000,
+                height: 100,
+                slot: 1000,
+            }],
+            "one entry per tx, with the whole amount it paid to the address"
+        );
+        assert!(s.apply_forward(block(101, 1020, &[]), Some(101)).is_empty());
+    }
+
+    #[test]
+    fn forgetting_points_makes_the_next_intersection_start_at_the_tip() {
+        let mut s = FollowerState::default();
+        s.seed(vec![stored_point(10)], Vec::new());
+        s.forget_points();
+        assert!(s.intersection_points().is_empty());
+    }
+
+    /// A store that keeps everything in memory, for the seeding test.
+    #[derive(Default)]
+    struct InMemoryFollowerStore {
+        snapshot: std::sync::Mutex<FollowerSnapshot>,
+    }
+
+    #[async_trait::async_trait]
+    impl FollowerStore for InMemoryFollowerStore {
+        async fn load(&self) -> crate::Result<FollowerSnapshot> {
+            Ok(self.snapshot.lock().unwrap().clone())
+        }
+        async fn save_points(&self, points: &[StoredPoint]) -> crate::Result<()> {
+            self.snapshot.lock().unwrap().points = points.to_vec();
+            Ok(())
+        }
+        async fn save_payment(&self, payment: &StoredPayment) -> crate::Result<()> {
+            let mut snap = self.snapshot.lock().unwrap();
+            snap.payments.retain(|p| p.tx_id != payment.tx_id);
+            snap.payments.push(payment.clone());
+            Ok(())
+        }
+        async fn drop_payments_after(&self, slot: Option<u64>) -> crate::Result<()> {
+            self.snapshot.lock().unwrap().payments.retain(|p| slot.is_some_and(|cut| p.slot <= cut));
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_follower_started_with_a_store_knows_the_stored_payments_before_any_block() {
+        let store = Arc::new(InMemoryFollowerStore::default());
+        store
+            .save_payment(&StoredPayment {
+                tx_id: "tx-stored".into(),
+                address: "addr_me".into(),
+                lovelace: 42,
+                height: 5,
+                slot: 50,
+            })
+            .await
+            .unwrap();
+        // Port 1 never answers: the background task keeps retrying and the
+        // state must already carry the stored payment.
+        let follower = ChainFollower::spawn_with_store("ws://127.0.0.1:1".into(), store).await;
+        follower.watch_address("addr_me");
+        assert_eq!(
+            follower.payment("tx-stored", "addr_me"),
+            Some(IncomingPayment { lovelace: 42, depth: 1 })
+        );
     }
 
     #[test]
