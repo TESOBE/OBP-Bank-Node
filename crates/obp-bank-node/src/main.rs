@@ -134,6 +134,13 @@ struct SettlementConfig {
     /// Finality watcher poll interval, seconds.
     #[serde(default = "default_finality_poll_secs")]
     finality_poll_secs: u64,
+    /// How often the incoming-settlement watcher checks what this bank is owed.
+    #[serde(default = "default_incoming_poll_secs")]
+    incoming_poll_secs: u64,
+    /// How long a settlement the debtor reports paying may stay unseen at this
+    /// node's address before it is marked MISMATCH for an operator.
+    #[serde(default = "default_incoming_timeout_secs")]
+    incoming_timeout_secs: u64,
     /// Durable settlement idempotency/finality store (SQLite).
     #[serde(default = "default_settlement_store_path")]
     store_path: PathBuf,
@@ -144,6 +151,14 @@ fn default_finality_depth() -> u32 {
 }
 fn default_finality_poll_secs() -> u64 {
     30
+}
+
+fn default_incoming_poll_secs() -> u64 {
+    20
+}
+
+fn default_incoming_timeout_secs() -> u64 {
+    24 * 60 * 60
 }
 fn default_settlement_store_path() -> PathBuf {
     PathBuf::from("./outbox/settlements.db")
@@ -244,6 +259,8 @@ impl Default for SettlementConfig {
             ada_rate_minor_per_whole_ada: 3542,
             finality_depth: default_finality_depth(),
             finality_poll_secs: default_finality_poll_secs(),
+            incoming_poll_secs: default_incoming_poll_secs(),
+            incoming_timeout_secs: default_incoming_timeout_secs(),
             store_path: default_settlement_store_path(),
         }
     }
@@ -550,7 +567,8 @@ async fn main() -> anyhow::Result<()> {
                     backend: Arc::clone(backend),
                     bank_id: config.bank.bank_id.clone(),
                     finality_depth: config.settlement.finality_depth,
-                    poll_interval: std::time::Duration::from_secs(20),
+                    poll_interval: std::time::Duration::from_secs(config.settlement.incoming_poll_secs),
+                    paid_timeout: std::time::Duration::from_secs(config.settlement.incoming_timeout_secs),
                 }
                 .run(),
             );

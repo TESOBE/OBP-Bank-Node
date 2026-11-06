@@ -209,6 +209,15 @@ impl SettlementStore {
         )
         .execute(pool)
         .await?;
+        // Migration for rows created before the paid_at column (same guard as above).
+        if let Err(e) = sqlx::query("ALTER TABLE incoming_settlements ADD COLUMN paid_at TEXT")
+            .execute(pool)
+            .await
+        {
+            if !e.to_string().contains("duplicate column name") {
+                return Err(e.into());
+            }
+        }
 
         // The chain follower's memory (obp_blockchain::cardano::follower::FollowerStore):
         // the points it last processed, and every payment to this node's wallet it
@@ -448,6 +457,8 @@ pub struct IncomingSettlement {
     pub detail: Option<String>,
     pub received_at: String,
     pub updated_at: String,
+    /// When the debtor's node was first seen reporting a payment (tx id known).
+    pub paid_at: Option<String>,
 }
 
 /// What the incoming watcher learnt about one settlement this tick.
@@ -517,7 +528,8 @@ impl SettlementStore {
         sqlx::query(
             "UPDATE incoming_settlements SET status = ?, tx_id = COALESCE(?, tx_id), \
                 asset = COALESCE(?, asset), asset_amount = COALESCE(?, asset_amount), \
-                received_amount = COALESCE(?, received_amount), depth = ?, detail = ?, updated_at = ? \
+                received_amount = COALESCE(?, received_amount), depth = ?, detail = ?, updated_at = ?, \
+                paid_at = COALESCE(paid_at, CASE WHEN ? IS NULL THEN NULL ELSE ? END) \
              WHERE settlement_id = ?",
         )
         .bind(u.status)
@@ -527,6 +539,8 @@ impl SettlementStore {
         .bind(u.received_amount.map(|n| n.to_string()))
         .bind(u.depth as i64)
         .bind(u.detail)
+        .bind(now())
+        .bind(u.tx_id)
         .bind(now())
         .bind(settlement_id)
         .execute(&self.pool)
