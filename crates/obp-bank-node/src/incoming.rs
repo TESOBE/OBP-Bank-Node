@@ -109,10 +109,7 @@ impl IncomingWatcher {
             }
         };
         let Some(p) = payment else {
-            let detail = format!(
-                "{debtor} reports paying; not seen arriving at this node's address yet \
-                 (only payments since this node started are seen)"
-            );
+            let detail = format!("{debtor} reports paying; not seen arriving at this node's address yet");
             self.update(row, IncomingUpdate { detail: &detail, ..base }).await;
             return;
         };

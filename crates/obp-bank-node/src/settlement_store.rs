@@ -21,6 +21,9 @@
 
 use std::path::Path;
 
+use chrono::Utc;
+
+use obp_blockchain::cardano::follower::{FollowerSnapshot, StoredPayment, StoredPoint};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 
@@ -202,6 +205,31 @@ impl SettlementStore {
                 detail            TEXT,
                 received_at       TEXT NOT NULL,
                 updated_at        TEXT NOT NULL
+            )",
+        )
+        .execute(pool)
+        .await?;
+
+        // The chain follower's memory (obp_blockchain::cardano::follower::FollowerStore):
+        // the points it last processed, and every payment to this node's wallet it
+        // has seen, so a restart neither starts at the tip nor forgets a payment.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS chain_cursor (
+                id          INTEGER PRIMARY KEY CHECK (id = 1),
+                points_json TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            )",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS chain_payments (
+                tx_id     TEXT PRIMARY KEY,
+                address   TEXT NOT NULL,
+                lovelace  TEXT NOT NULL,
+                height    INTEGER NOT NULL,
+                slot      INTEGER NOT NULL,
+                seen_at   TEXT NOT NULL
             )",
         )
         .execute(pool)
@@ -553,6 +581,98 @@ mod incoming_tests {
     }
 }
 
+fn store_error(e: impl std::fmt::Display) -> obp_blockchain::BlockchainError {
+    obp_blockchain::BlockchainError::Internal(format!("follower store: {e}"))
+}
+
+#[async_trait::async_trait]
+impl obp_blockchain::cardano::follower::FollowerStore for SettlementStore {
+    async fn load(&self) -> obp_blockchain::Result<FollowerSnapshot> {
+        let points_json: Option<String> =
+            sqlx::query_scalar("SELECT points_json FROM chain_cursor WHERE id = 1")
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(store_error)?;
+        let points: Vec<StoredPoint> = match points_json {
+            Some(json) => {
+                let raw: Vec<(u64, String)> = serde_json::from_str(&json).map_err(store_error)?;
+                raw.into_iter().map(|(slot, id)| StoredPoint { slot, id }).collect()
+            }
+            None => Vec::new(),
+        };
+        let rows: Vec<(String, String, String, i64, i64)> = sqlx::query_as(
+            "SELECT tx_id, address, lovelace, height, slot FROM chain_payments ORDER BY slot",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        let payments = rows
+            .into_iter()
+            .map(|(tx_id, address, lovelace, height, slot)| StoredPayment {
+                tx_id,
+                address,
+                lovelace: lovelace.parse().unwrap_or(0),
+                height: height as u64,
+                slot: slot as u64,
+            })
+            .collect();
+        Ok(FollowerSnapshot { points, payments })
+    }
+
+    async fn save_points(&self, points: &[StoredPoint]) -> obp_blockchain::Result<()> {
+        if points.is_empty() {
+            sqlx::query("DELETE FROM chain_cursor")
+                .execute(&self.pool)
+                .await
+                .map_err(store_error)?;
+            return Ok(());
+        }
+        let raw: Vec<(u64, &str)> = points.iter().map(|p| (p.slot, p.id.as_str())).collect();
+        let json = serde_json::to_string(&raw).map_err(store_error)?;
+        sqlx::query(
+            "INSERT INTO chain_cursor (id, points_json, updated_at) VALUES (1, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET points_json = excluded.points_json,
+                                           updated_at = excluded.updated_at",
+        )
+        .bind(json)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(())
+    }
+
+    async fn save_payment(&self, p: &StoredPayment) -> obp_blockchain::Result<()> {
+        sqlx::query(
+            "INSERT INTO chain_payments (tx_id, address, lovelace, height, slot, seen_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(tx_id) DO UPDATE SET address = excluded.address,
+                                              lovelace = excluded.lovelace,
+                                              height = excluded.height,
+                                              slot = excluded.slot",
+        )
+        .bind(&p.tx_id)
+        .bind(&p.address)
+        .bind(p.lovelace.to_string())
+        .bind(p.height as i64)
+        .bind(p.slot as i64)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(())
+    }
+
+    async fn drop_payments_after(&self, slot: Option<u64>) -> obp_blockchain::Result<()> {
+        let q = match slot {
+            Some(cut) => sqlx::query("DELETE FROM chain_payments WHERE slot > ?").bind(cut as i64),
+            None => sqlx::query("DELETE FROM chain_payments"),
+        };
+        q.execute(&self.pool).await.map_err(store_error)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -687,5 +807,43 @@ mod tests {
         let work = s.list_submitted(10).await.unwrap();
         assert_eq!(work.len(), 1);
         assert_eq!(work[0].idempotency_key, "a");
+    }
+
+    #[tokio::test]
+    async fn follower_store_roundtrips_points_and_payments_and_drops_after_rollback() {
+        use obp_blockchain::cardano::follower::{FollowerStore, StoredPayment, StoredPoint};
+        let s = SettlementStore::connect_in_memory().await.unwrap();
+        assert!(s.load().await.unwrap().points.is_empty(), "empty at first");
+
+        let points: Vec<StoredPoint> = [10u64, 20, 30]
+            .iter()
+            .map(|&slot| StoredPoint { slot, id: format!("b{slot}") })
+            .collect();
+        s.save_points(&points).await.unwrap();
+        let pay = |tx: &str, slot: u64| StoredPayment {
+            tx_id: tx.into(),
+            address: "addr_me".into(),
+            lovelace: slot * 1000,
+            height: slot / 10,
+            slot,
+        };
+        s.save_payment(&pay("tx-1", 10)).await.unwrap();
+        s.save_payment(&pay("tx-2", 30)).await.unwrap();
+        // Saving the same tx again replaces it (its running total grew).
+        s.save_payment(&StoredPayment { lovelace: 99, ..pay("tx-2", 30) }).await.unwrap();
+
+        let snap = s.load().await.unwrap();
+        assert_eq!(snap.points, points, "oldest first, as saved");
+        let mut got = snap.payments.clone();
+        got.sort_by(|a, b| a.tx_id.cmp(&b.tx_id));
+        assert_eq!(got, vec![pay("tx-1", 10), StoredPayment { lovelace: 99, ..pay("tx-2", 30) }]);
+
+        s.drop_payments_after(Some(20)).await.unwrap();
+        assert_eq!(s.load().await.unwrap().payments, vec![pay("tx-1", 10)]);
+        s.drop_payments_after(None).await.unwrap();
+        assert!(s.load().await.unwrap().payments.is_empty(), "rollback to origin drops all");
+
+        s.save_points(&[]).await.unwrap();
+        assert!(s.load().await.unwrap().points.is_empty(), "an empty save forgets the cursor");
     }
 }

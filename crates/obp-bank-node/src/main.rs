@@ -457,7 +457,17 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = load_config()?;
-    let (backend, settlement) = build_backend(&config).await?;
+    // The settlement store is opened first: the chain follower resumes from
+    // the cursor and payments it keeps (see FollowerStore).
+    let settlement_store = SettlementStore::connect(&config.settlement.store_path)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to open settlement store at {}",
+                config.settlement.store_path.display()
+            )
+        })?;
+    let (backend, settlement) = build_backend(&config, &settlement_store).await?;
     let blockchain_label: &'static str = match config.blockchain.kind {
         BlockchainKind::Mock => "mock",
         BlockchainKind::Cardano => "cardano",
@@ -509,14 +519,6 @@ async fn main() -> anyhow::Result<()> {
     // The settlement and evidence stores are opened unconditionally — the
     // south-side read API serves them even when no settlement rail or
     // Interface C consumer is running (e.g. mock mode, consumer off).
-    let settlement_store = SettlementStore::connect(&config.settlement.store_path)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to open settlement store at {}",
-                config.settlement.store_path.display()
-            )
-        })?;
     let evidence = EvidenceStore::connect(&config.evidence.path)
         .await
         .with_context(|| {
@@ -856,13 +858,16 @@ fn ogmios_health_url(ogmios_url: &str) -> String {
     format!("{}/health", base.trim_end_matches('/'))
 }
 
-async fn build_backend(config: &Config) -> anyhow::Result<Backends> {
+async fn build_backend(config: &Config, follower_store: &SettlementStore) -> anyhow::Result<Backends> {
     match config.blockchain.kind {
         BlockchainKind::Mock => Ok((Arc::new(MockBackend::new()), None)),
         BlockchainKind::Cardano => {
-            let c = obp_blockchain::cardano::CardanoBackend::new(config.blockchain.cardano.clone())
-                .await
-                .context("failed to construct CardanoBackend")?;
+            let c = obp_blockchain::cardano::CardanoBackend::with_store(
+                config.blockchain.cardano.clone(),
+                Some(Arc::new(follower_store.clone())),
+            )
+            .await
+            .context("failed to construct CardanoBackend")?;
             // Settlement shares the backend's wallet/Ogmios/submit-lock.
             let fx: Arc<dyn FxSource> = match config.settlement.fx_source {
                 FxSourceKind::Coingecko => {
