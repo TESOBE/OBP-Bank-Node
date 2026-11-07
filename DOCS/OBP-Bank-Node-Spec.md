@@ -713,7 +713,7 @@ The OBP Bank Node maintains a local SQLite outbox for all outbound messages. If 
 
 - Interface A1 calls are acknowledged to the bank with HTTP 202 and queued in the outbox
 - The outbox is replayed on reconnection in strict order
-- Outbox entries are retained for 90 days
+- Outbox entries are kept until the bank decides otherwise: `outbox.retention_days` (default 0, keep everything) deletes finished entries older than that many days. An entry holds the commitment salt and the full payment request, so the period should follow the bank's record-keeping obligations
 - The outbox survives container restarts (mounted as a Docker volume)
 
 This ensures no payment instruction is lost due to intermittent connectivity — important for the African network environments the OBP Bank Node is designed for.

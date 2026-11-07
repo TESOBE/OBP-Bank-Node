@@ -392,13 +392,16 @@ impl Default for ObpApiConfig {
 struct OutboxConfig {
     path: PathBuf,
     /// Finished rows (EXCEPTION, or REPORTED and settled) older than this are
-    /// deleted once an hour. 0 keeps everything.
+    /// deleted once an hour. 0 (the default) keeps everything: a row holds the
+    /// commitment salt and the full payment request with the originator's
+    /// details, the bank's own record of what it committed, so how long to keep
+    /// it is the bank's decision (record-keeping rules usually run to years).
     #[serde(default = "default_outbox_retention_days")]
     retention_days: u32,
 }
 
 fn default_outbox_retention_days() -> u32 {
-    90
+    0
 }
 
 impl Default for OutboxConfig {
@@ -782,10 +785,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn outbox_retention_defaults_to_90_days_and_can_be_switched_off() {
-        assert_eq!(Config::default().outbox.retention_days, 90);
-        let cfg: OutboxConfig = serde_json::from_str(r#"{"path":"x.db","retention_days":0}"#).unwrap();
+    fn outbox_retention_defaults_to_keeping_everything_and_can_be_set() {
+        assert_eq!(Config::default().outbox.retention_days, 0);
+        let cfg: OutboxConfig = serde_json::from_str(r#"{"path":"x.db"}"#).unwrap();
         assert_eq!(cfg.retention_days, 0);
+        let cfg: OutboxConfig = serde_json::from_str(r#"{"path":"x.db","retention_days":90}"#).unwrap();
+        assert_eq!(cfg.retention_days, 90);
     }
 
     #[test]

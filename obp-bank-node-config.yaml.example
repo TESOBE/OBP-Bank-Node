@@ -84,6 +84,10 @@ cbs_delivery:
 # Durable message outbox (Interface A → OBP-API), holds commitment salts.
 outbox:
   path: "./outbox/obp-bank-node.db"
+  # Delete finished rows (EXCEPTION, or REPORTED and settled) older than this many days.
+  # 0 keeps everything. A row holds the commitment salt and the full payment request with the
+  # originator's details: set this from the bank's record-keeping obligations.
+  retention_days: 0
 
 # Beneficiary-side evidence store: received credit notifications + the salts that
 # let this bank open Bank A's on-chain commitment in a dispute (commit–reveal).
