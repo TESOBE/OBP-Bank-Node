@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (C) 2025-2026 TESOBE GmbH
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
 """Round-trip test: stand-in for a bank's CBS (A2 webhook_obp receiver).
 
 Accepts POST /credit-notifications with Bearer rt-local-secret, appends each

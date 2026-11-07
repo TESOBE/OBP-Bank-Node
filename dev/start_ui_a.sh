@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (C) 2025-2026 TESOBE GmbH
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
 # Start the Bank Node UI fronting node A — http://localhost:8091
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"

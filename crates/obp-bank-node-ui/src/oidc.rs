@@ -1,3 +1,7 @@
+// Copyright (C) 2025-2026 TESOBE GmbH
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
+
 //! OIDC login for the `/setup` operator page — the same scheme the OBP
 //! Portal / API Manager use (`OBP-Frontend/packages/shared/src/lib/server/oauth`):
 //!

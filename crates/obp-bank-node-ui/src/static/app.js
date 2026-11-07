@@ -1,3 +1,7 @@
+// Copyright (C) 2025-2026 TESOBE GmbH
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
+
 // OBP Bank Node UI — vanilla JS, no build step.
 // The app displays; the nodes decide. Everything below is fetch + render.
 

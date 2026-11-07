@@ -1,3 +1,7 @@
+// Copyright (C) 2025-2026 TESOBE GmbH
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
+
 //! Evidence store — the beneficiary bank's durable record of received promises.
 //!
 //! When Bank B receives an `obp_credit_notification` over Interface C, it lands

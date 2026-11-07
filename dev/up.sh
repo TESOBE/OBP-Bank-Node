@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (C) 2025-2026 TESOBE GmbH
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
 # Bring up the localhost two-bank round trip: node A + node B, their two UIs, and the CBS stub,
 # against an OBP-API, RabbitMQ and cardano-node + Ogmios that are already running.
 #

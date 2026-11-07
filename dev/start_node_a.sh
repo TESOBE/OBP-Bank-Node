@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (C) 2025-2026 TESOBE GmbH
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
 # Start Bank Node A (rt.bank.a4, :8088, Cardano preprod; the debtor side of the demo).
 # The node is a Platform App: it calls OBP-API as itself with OAuth2 client credentials from
 # OBP-OIDC, Consumer 'obp-bank-node-a' (dev/create_consumers.sh writes NODE_A_CLIENT_ID /

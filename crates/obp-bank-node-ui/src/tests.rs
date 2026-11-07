@@ -1,3 +1,7 @@
+// Copyright (C) 2025-2026 TESOBE GmbH
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
+
 //! Router tests: static serving, the node list, and the proxy's pass-through,
 //! whitelist, and error mapping — against a stub node bound on an ephemeral
 //! port (the proxy goes over real HTTP via reqwest, so `oneshot` alone can't

@@ -1,3 +1,7 @@
+// Copyright (C) 2025-2026 TESOBE GmbH
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
+
 //! South-side REST API (Interface A).
 //!
 //! Mounts four endpoints under `/obp-bank-node/v5.1.0/` plus root `/alive`,

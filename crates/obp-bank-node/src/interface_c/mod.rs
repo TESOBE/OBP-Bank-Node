@@ -1,3 +1,7 @@
+// Copyright (C) 2025-2026 TESOBE GmbH
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
+
 //! Interface C — inbound message channel from OBP-API over RabbitMQ (AMQP).
 //!
 //! OBP-API is the initiator here: it publishes `obp_credit_notification`,

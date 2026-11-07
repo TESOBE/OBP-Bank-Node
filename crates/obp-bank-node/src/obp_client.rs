@@ -1,3 +1,7 @@
+// Copyright (C) 2025-2026 TESOBE GmbH
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
+
 //! Interface B — the client the Bank Node uses to call OBP-API.
 //!
 //! Submits the OPEN_CORRIDOR_PROMISE Transaction Request on the bank's settlement

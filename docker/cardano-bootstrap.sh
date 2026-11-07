@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (C) 2025-2026 TESOBE GmbH
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
 #
 # Manage the local Cardano stack (cardano-node + Ogmios) for OBP Bank Node
 # development. Network: PREPROD. Sync: from genesis (12-20 h or more on a

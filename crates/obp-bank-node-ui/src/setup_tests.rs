@@ -1,3 +1,7 @@
+// Copyright (C) 2025-2026 TESOBE GmbH
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
+
 //! Setup-page tests: the OIDC login flow (well-known → discovery →
 //! authorize redirect → code exchange, PKCE verified end-to-end) and the
 //! check/apply API — against a stub OBP-API + OIDC provider on an ephemeral

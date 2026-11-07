@@ -1,3 +1,7 @@
+// Copyright (C) 2025-2026 TESOBE GmbH
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
+
 //! Root `/alive`, `/health` and `/status`, in the same format as OBP-API's
 //! (`AliveCheckRoutes.scala` and `StatusPage.scala`), so the same monitoring
 //! works on both:

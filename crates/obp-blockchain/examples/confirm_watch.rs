@@ -1,3 +1,7 @@
+// Copyright (C) 2025-2026 TESOBE GmbH
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
+
 //! Live end-to-end check of chain-sync confirmation depth.
 //!
 //! Drives the full production path against a real node: `CardanoBackend::new`

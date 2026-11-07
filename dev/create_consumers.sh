@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (C) 2025-2026 TESOBE GmbH
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
 # Create the OBP-API Consumers the localhost round trip needs, and write their
 # credentials into dev/local.env (idempotent: safe to re-run).
 #

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (C) 2025-2026 TESOBE GmbH
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
 # Round-trip test: OBP-API data setup (idempotent — safe to re-run).
 #
 # The nodes run as Platform Apps: each calls OBP-API as itself, with its own Consumer and OAuth2

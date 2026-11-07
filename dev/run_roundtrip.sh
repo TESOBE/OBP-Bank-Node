@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (C) 2025-2026 TESOBE GmbH
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
 # Round-trip driver: fires one payment at Node A and watches every stage.
 # This drives the real stack — two Bank Nodes, OBP-API, RabbitMQ, and a real
 # cardano-node + Ogmios on preprod. The only mock is the bank CBS (cbs_stub.py);

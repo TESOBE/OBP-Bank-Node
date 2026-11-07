@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (C) 2025-2026 TESOBE GmbH
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
 """Bank Node wallets on Cardano preprod: create the keys, print the addresses, get test ADA.
 
     python3 dev/wallets.py              # create missing keys, print addresses, request test ADA

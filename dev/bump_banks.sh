@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (C) 2025-2026 TESOBE GmbH
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
 # Bump the demo bank generation: rt.bank.aN / rt.bank.bN  ->  aN+1 / bN+1.
 #
 # Rewrites every dev config and script to a fresh pair of bank ids and fresh

@@ -1,3 +1,7 @@
+// Copyright (C) 2025-2026 TESOBE GmbH
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
+
 //! Stamp the build with its git commit, branch, dirtiness and time, for the
 //! root `/status` page (as OBP-API's `git.properties` does). Each falls back to
 //! "unknown" when git is unavailable, e.g. building from a source tarball.

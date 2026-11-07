@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (C) 2025-2026 TESOBE GmbH
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
 # Round-trip test: per-bank RabbitMQ vhosts + users (idempotent).
 # Convention: vhost /bank.{bank_id}, one service user per bank's Bank Node.
 set -euo pipefail
