@@ -652,7 +652,7 @@ impl Router {
                     warn!(error = %se, "settlement store: mark_error failed");
                 }
                 warn!(error = %e, settlement_id = ?si.settlement_id, retryable, "settlement failed");
-                ReplyEnvelope::error(correlation_id, error_code::SETTLEMENT_FAILED, e.to_string())
+                ReplyEnvelope::error(correlation_id, failure_code(&e.to_string()), e.to_string())
             }
         }
     }
@@ -718,19 +718,26 @@ impl Router {
 /// never a new payment. `SETTLING`/`SUBMITTED`/`FINAL` are ok-replies with an
 /// explicit `status` (this is how OBP-API polls finality); a sticky `ERROR`
 /// repeats the recorded failure.
+/// The error code for a failed settlement, from its message (also the stored
+/// reason, so a redelivery answers with the same code).
+fn failure_code(reason: &str) -> &'static str {
+    if reason.starts_with(obp_blockchain::BELOW_MINIMUM_PREFIX) {
+        error_code::SETTLEMENT_BELOW_MINIMUM
+    } else {
+        error_code::SETTLEMENT_FAILED
+    }
+}
+
 fn reply_for_existing(
     correlation_id: &str,
     row: &SettlementRow,
     finality_depth: u32,
 ) -> ReplyEnvelope {
     match row.status.as_str() {
-        settlement_store::status::ERROR => ReplyEnvelope::error(
-            correlation_id,
-            error_code::SETTLEMENT_FAILED,
-            row.error_reason
-                .clone()
-                .unwrap_or_else(|| "settlement failed".into()),
-        ),
+        settlement_store::status::ERROR => {
+            let reason = row.error_reason.clone().unwrap_or_else(|| "settlement failed".into());
+            ReplyEnvelope::error(correlation_id, failure_code(&reason), reason)
+        }
         status => ReplyEnvelope::ok(
             correlation_id,
             serde_json::json!({
@@ -1585,6 +1592,35 @@ mod tests {
             1,
             "no automatic second attempt"
         );
+    }
+
+    #[tokio::test]
+    async fn below_minimum_is_a_distinct_final_failure() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let backend = Arc::new(FlakyImpl {
+            error: || {
+                obp_blockchain::BlockchainError::BelowMinimum(
+                    "net KES 20.00 is 940_000 lovelace; the minimum output is 1_000_000 lovelace (KES 21.22)".into(),
+                )
+            },
+            fail_times: 1,
+            calls: calls.clone(),
+        });
+        let (r, _) = router_with("http://127.0.0.1:1/credit", Some(backend)).await;
+        let body = settlement_body("idem-min");
+
+        let first = r
+            .handle(message_id::SETTLEMENT_INSTRUCTION, "c1", body.as_bytes())
+            .await;
+        assert_eq!(first.status.error_code, error_code::SETTLEMENT_BELOW_MINIMUM);
+
+        // Retrying cannot help (the amount is fixed), so redelivery repeats the
+        // same answer and never calls the chain again.
+        let second = r
+            .handle(message_id::SETTLEMENT_INSTRUCTION, "c2", body.as_bytes())
+            .await;
+        assert_eq!(second.status.error_code, error_code::SETTLEMENT_BELOW_MINIMUM);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "no second attempt");
     }
 
     #[test]

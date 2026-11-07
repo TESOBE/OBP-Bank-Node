@@ -21,6 +21,11 @@ pub enum BlockchainError {
     Transport(String),
     #[error("transaction rejected: {0}")]
     Rejected(String),
+    /// The amount is below what the chain accepts in one output (Cardano's
+    /// min-UTxO). Never reached the chain, and retrying cannot help: the
+    /// amount is fixed by the instruction.
+    #[error("below the chain minimum: {0}")]
+    BelowMinimum(String),
     #[error("not found: {0}")]
     NotFound(String),
     #[error("internal error: {0}")]
@@ -28,6 +33,10 @@ pub enum BlockchainError {
 }
 
 pub type Result<T> = std::result::Result<T, BlockchainError>;
+
+/// How a [`BlockchainError::BelowMinimum`] message starts, so a stored error
+/// reason can be recognised again later.
+pub const BELOW_MINIMUM_PREFIX: &str = "below the chain minimum";
 
 /// The commitment hash shared by every notary record type: hex SHA-256 over
 /// `salt ‖ canonical_bytes`. The single definition of the scheme — writers
