@@ -34,8 +34,37 @@ pub enum OgmiosError {
     Protocol(String),
     #[error("timeout after {0:?}")]
     Timeout(Duration),
-    #[error("rpc error {code}: {message}")]
-    Rpc { code: i64, message: String },
+    /// A JSON-RPC error from Ogmios. `data` is the server's `error.data`
+    /// as compact JSON, cut to [`RPC_DATA_MAX_BYTES`]: for a refused
+    /// transaction submission that is where the ledger's reason lives
+    /// (e.g. "All inputs are spent", or the under-funded outputs).
+    #[error("rpc error {code}: {message}{}", rpc_data_suffix(data))]
+    Rpc {
+        code: i64,
+        message: String,
+        data: Option<String>,
+    },
+}
+
+/// Most of an Ogmios `error.data` is kept; a long one (a UTxO listing) is cut
+/// so an error message stays readable in logs and status rows.
+pub const RPC_DATA_MAX_BYTES: usize = 600;
+
+fn rpc_data_suffix(data: &Option<String>) -> String {
+    match data {
+        Some(d) => format!(" | data: {d}"),
+        None => String::new(),
+    }
+}
+
+/// Map an Ogmios failure onto the backend error classes: a JSON-RPC error is
+/// the node's verdict on the request (rejected); everything else is the
+/// connection (transport).
+pub(crate) fn map_ogmios(e: OgmiosError) -> crate::BlockchainError {
+    match e {
+        OgmiosError::Rpc { .. } => crate::BlockchainError::Rejected(e.to_string()),
+        other => crate::BlockchainError::Transport(other.to_string()),
+    }
 }
 
 pub type Result<T> = std::result::Result<T, OgmiosError>;
@@ -227,15 +256,32 @@ struct JsonRpcEnvelope {
 struct JsonRpcErrorBody {
     code: i64,
     message: String,
+    #[serde(default)]
+    data: Option<Value>,
 }
 
 fn parse_response(text: &str) -> Result<Value> {
     let env: JsonRpcEnvelope = serde_json::from_str(text)
         .map_err(|e| OgmiosError::Protocol(format!("response decode: {e}")))?;
     if let Some(err) = env.error {
+        let data = err.data.as_ref().map(|d| {
+            let compact = d.to_string();
+            if compact.len() <= RPC_DATA_MAX_BYTES {
+                compact
+            } else {
+                let end = compact
+                    .char_indices()
+                    .map(|(i, _)| i)
+                    .take_while(|&i| i <= RPC_DATA_MAX_BYTES)
+                    .last()
+                    .unwrap_or(0);
+                format!("{}…", &compact[..end])
+            }
+        });
         return Err(OgmiosError::Rpc {
             code: err.code,
             message: err.message,
+            data,
         });
     }
     env.result
@@ -278,11 +324,52 @@ mod tests {
     fn parse_error_response() {
         let text = r#"{"jsonrpc":"2.0","error":{"code":-32602,"message":"bad params"},"id":"1"}"#;
         match parse_response(text) {
-            Err(OgmiosError::Rpc { code, message }) => {
+            Err(OgmiosError::Rpc { code, message, data }) => {
                 assert_eq!(code, -32602);
                 assert_eq!(message, "bad params");
+                assert_eq!(data, None);
             }
             other => panic!("expected Rpc error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_error_response_keeps_data() {
+        // The shape cardano-node gives for a resubmitted transaction: the
+        // reason is only in `data`.
+        let text = r#"{"jsonrpc":"2.0","method":"submitTransaction","error":{"code":3997,"message":"The transaction couldn't be added to the mempool. A justification is given as 'data.error'.","data":{"error":"All inputs are spent. Transaction has probably already been included"}},"id":"1"}"#;
+        let err = parse_response(text).unwrap_err();
+        match &err {
+            OgmiosError::Rpc { code, data, .. } => {
+                assert_eq!(*code, 3997);
+                assert_eq!(
+                    data.as_deref(),
+                    Some(r#"{"error":"All inputs are spent. Transaction has probably already been included"}"#)
+                );
+            }
+            other => panic!("expected Rpc error, got {other:?}"),
+        }
+        let shown = err.to_string();
+        assert!(shown.contains("rpc error 3997"), "{shown}");
+        assert!(shown.contains("All inputs are spent"), "{shown}");
+    }
+
+    #[test]
+    fn parse_error_response_truncates_long_data() {
+        let outputs: Vec<String> = (0..60)
+            .map(|i| format!(r#"{{"output":{{"address":"addr_test1_{i:040}","value":{{"ada":{{"lovelace":1}}}}}},"minimumRequiredValue":{{"ada":{{"lovelace":969750}}}}}}"#))
+            .collect();
+        let text = format!(
+            r#"{{"jsonrpc":"2.0","error":{{"code":3125,"message":"Some outputs have an insufficient amount of Ada attached to them.","data":{{"insufficientlyFundedOutputs":[{}]}}}},"id":"1"}}"#,
+            outputs.join(",")
+        );
+        match parse_response(&text) {
+            Err(OgmiosError::Rpc { data: Some(data), .. }) => {
+                assert!(data.ends_with('…'), "long data is cut: {data}");
+                assert!(data.len() <= RPC_DATA_MAX_BYTES + '…'.len_utf8());
+                assert!(data.starts_with(r#"{"insufficientlyFundedOutputs""#));
+            }
+            other => panic!("expected Rpc error with data, got {other:?}"),
         }
     }
 

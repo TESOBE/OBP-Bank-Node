@@ -15,6 +15,7 @@ use crate::{
 #[derive(Debug, Default)]
 pub struct MockBackend {
     writes: Mutex<Vec<TxReference>>,
+    kinds: Mutex<Vec<&'static str>>,
 }
 
 impl MockBackend {
@@ -25,6 +26,17 @@ impl MockBackend {
     /// Snapshot every TxReference returned so far. Test-only helper.
     pub fn writes(&self) -> Vec<TxReference> {
         self.writes.lock().expect("mock backend mutex poisoned").clone()
+    }
+
+    /// The kind of every write so far, in order: `promise`, `settlement` or
+    /// `exception`.
+    pub fn written_kinds(&self) -> Vec<&'static str> {
+        self.kinds.lock().expect("mock backend mutex poisoned").clone()
+    }
+
+    fn record(&self, kind: &'static str, r: &TxReference) {
+        self.writes.lock().expect("mutex poisoned").push(r.clone());
+        self.kinds.lock().expect("mutex poisoned").push(kind);
     }
 }
 
@@ -44,19 +56,19 @@ fn make_ref(kind: &str, id: &str) -> TxReference {
 impl BlockchainBackend for MockBackend {
     async fn write_promise(&self, p: &PromiseRecord) -> Result<TxReference> {
         let r = make_ref("promise", &p.commitment);
-        self.writes.lock().expect("mutex poisoned").push(r.clone());
+        self.record("promise", &r);
         Ok(r)
     }
 
     async fn write_settlement(&self, s: &SettlementRecord, salt: &[u8]) -> Result<TxReference> {
         let r = make_ref("settlement", &s.commit_v1(salt));
-        self.writes.lock().expect("mutex poisoned").push(r.clone());
+        self.record("settlement", &r);
         Ok(r)
     }
 
     async fn write_exception(&self, e: &ExceptionRecord, salt: &[u8]) -> Result<TxReference> {
         let r = make_ref("exception", &e.commit_v1(salt));
-        self.writes.lock().expect("mutex poisoned").push(r.clone());
+        self.record("exception", &r);
         Ok(r)
     }
 

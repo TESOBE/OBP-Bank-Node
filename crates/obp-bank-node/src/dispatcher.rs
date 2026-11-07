@@ -33,7 +33,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use obp_blockchain::{BlockchainBackend, PromiseRecord};
+use chrono::{SecondsFormat, Timelike};
+use obp_blockchain::{BlockchainBackend, ExceptionRecord, PromiseRecord};
 use tracing::{error, info, warn};
 
 use crate::obp_client::{ObpClient, PromiseEvidence};
@@ -119,6 +120,7 @@ impl Dispatcher {
                 advanced += 1;
             }
         }
+        self.write_pending_exception_records().await?;
         Ok(advanced)
     }
 
@@ -172,7 +174,7 @@ impl Dispatcher {
                         error = %e,
                         "OBP-API rejected the request (terminal) — marking EXCEPTION"
                     );
-                    self.store.mark_exception(id, &e.to_string()).await?;
+                    self.raise_exception(row, &e.to_string()).await?;
                     return Ok(true);
                 }
             }
@@ -227,13 +229,12 @@ impl Dispatcher {
                     promise_tx_id = ?promise_tx_id,
                     "cannot report promise evidence — marking EXCEPTION"
                 );
-                self.store
-                    .mark_exception(
-                        id,
-                        "cannot report promise evidence to OBP-API: the OBP transaction \
-                         request id or the promise tx hash was never recorded",
-                    )
-                    .await?;
+                self.raise_exception(
+                    row,
+                    "cannot report promise evidence to OBP-API: the OBP transaction \
+                     request id or the promise tx hash was never recorded",
+                )
+                .await?;
                 return Ok(true);
             };
             let preimage = self.canonical_preimage(row);
@@ -287,7 +288,7 @@ impl Dispatcher {
                         error = %e,
                         "OBP-API refused the promise evidence (terminal) — marking EXCEPTION"
                     );
-                    self.store.mark_exception(id, &e.to_string()).await?;
+                    self.raise_exception(row, &e.to_string()).await?;
                     advanced = true;
                 }
             }
@@ -324,7 +325,84 @@ impl Dispatcher {
             limit_hours = self.config.max_retry_duration.as_secs() / 3600,
         );
         warn!(transaction_request_id = %row.transaction_request_id, %reason, "retry limit reached — marking EXCEPTION");
-        self.store.mark_exception(&row.transaction_request_id, &reason).await
+        self.raise_exception(row, &reason).await
+    }
+
+    /// Move a row to `EXCEPTION` and raise the on-chain Exception record for it
+    /// (Record 4): the salt and timestamp are stored first, so the record can
+    /// be rebuilt from the row, then the chain write is attempted. The write
+    /// is best-effort: a failure is retried on later ticks and never changes
+    /// the row's outcome.
+    async fn raise_exception(
+        &self,
+        row: &OutboxRecord,
+        reason: &str,
+    ) -> Result<(), crate::outbox::OutboxError> {
+        let id = &row.transaction_request_id;
+        self.store.mark_exception(id, reason).await?;
+        let salt = uuid::Uuid::new_v4().simple().to_string();
+        // Whole seconds: the stored text must re-serialize to the same bytes
+        // the commitment was computed over.
+        let raised_at = Utc::now().with_nanosecond(0).unwrap_or_else(Utc::now);
+        self.store
+            .record_exception_salt(id, &salt, &raised_at.to_rfc3339_opts(SecondsFormat::Secs, true))
+            .await?;
+        let record = ExceptionRecord {
+            bank_id: row.bank_id.clone(),
+            transaction_request_id: id.clone(),
+            reason: reason.to_string(),
+            raised_at,
+        };
+        self.write_exception_record(&record, &salt).await
+    }
+
+    async fn write_exception_record(
+        &self,
+        record: &ExceptionRecord,
+        salt: &str,
+    ) -> Result<(), crate::outbox::OutboxError> {
+        let id = &record.transaction_request_id;
+        match self.backend.write_exception(record, salt.as_bytes()).await {
+            Ok(tx) => {
+                info!(transaction_request_id = %id, exception_tx_id = %tx.tx_id, blockchain = %tx.chain, "Exception record written");
+                self.store.record_exception_tx(id, &tx.tx_id, &tx.chain).await
+            }
+            Err(e) => {
+                warn!(transaction_request_id = %id, error = %e, "Exception record write failed; will retry");
+                Ok(())
+            }
+        }
+    }
+
+    /// Retry the Exception records that did not reach the chain when their
+    /// rows were marked, up to `max_retry_duration` after they were raised.
+    async fn write_pending_exception_records(&self) -> Result<(), crate::outbox::OutboxError> {
+        let limit = chrono::Duration::from_std(self.config.max_retry_duration)
+            .unwrap_or_else(|_| chrono::Duration::days(1));
+        for row in self.store.list_exceptions_without_record(self.config.batch_size).await? {
+            let (Some(salt), Some(raised_at), Some(reason)) = (
+                row.exception_salt.as_deref(),
+                row.exception_raised_at.as_deref(),
+                row.exception_reason.as_deref(),
+            ) else {
+                continue;
+            };
+            let Ok(raised_at) = chrono::DateTime::parse_from_rfc3339(raised_at) else {
+                continue;
+            };
+            let raised_at = raised_at.with_timezone(&Utc);
+            if Utc::now().signed_duration_since(raised_at) >= limit {
+                continue;
+            }
+            let record = ExceptionRecord {
+                bank_id: row.bank_id.clone(),
+                transaction_request_id: row.transaction_request_id.clone(),
+                reason: reason.to_string(),
+                raised_at,
+            };
+            self.write_exception_record(&record, salt).await?;
+        }
+        Ok(())
     }
 
     /// The canonical preimage for this row's commitment: a deterministic JSON
@@ -632,11 +710,7 @@ mod tests {
         let rec = store.get("tr-2").await.unwrap().unwrap();
         assert_eq!(rec.status, status::EXCEPTION);
         assert!(rec.exception_reason.unwrap().contains("OBP-30018"));
-        assert_eq!(
-            backend.writes().len(),
-            0,
-            "no Promise on a rejected request"
-        );
+        assert!(!backend.written_kinds().contains(&"promise"), "no Promise on a rejected request");
     }
 
     #[tokio::test]
@@ -710,7 +784,7 @@ mod tests {
         let reason = rec.exception_reason.unwrap();
         assert!(reason.contains("submitting the transaction request to OBP-API"), "{reason}");
         assert!(reason.contains("OBP-50000"), "the last error is recorded: {reason}");
-        assert_eq!(backend.writes().len(), 0, "no Promise for a request OBP-API never accepted");
+        assert!(!backend.written_kinds().contains(&"promise"), "no Promise for a request OBP-API never accepted");
 
         assert_eq!(disp.process_due_once().await.unwrap(), 0, "an EXCEPTION row is not retried");
     }
@@ -748,7 +822,11 @@ mod tests {
             rec.exception_reason.unwrap().contains("reporting the promise evidence to OBP-API"),
             "the step that kept failing is named"
         );
-        assert_eq!(backend.writes().len(), 1, "the Promise was written before the report step gave up");
+        assert_eq!(
+            backend.written_kinds(),
+            vec!["promise", "exception"],
+            "the Promise was written before the report step gave up, then the Exception record"
+        );
     }
 
     #[tokio::test]
@@ -766,6 +844,105 @@ mod tests {
         assert_eq!(rec.status, status::EXCEPTION);
         assert_eq!(rec.attempt_count, 1);
         assert!(rec.exception_reason.unwrap().contains("OBP-30014"));
-        assert_eq!(backend.writes().len(), 0);
+        assert!(!backend.written_kinds().contains(&"promise"));
+    }
+
+    /// A notary whose first `fail_times` writes fail, then behaves as the mock.
+    struct FailingNotary {
+        inner: MockBackend,
+        remaining: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl BlockchainBackend for FailingNotary {
+        async fn write_promise(&self, p: &PromiseRecord) -> obp_blockchain::Result<obp_blockchain::TxReference> {
+            self.inner.write_promise(p).await
+        }
+        async fn write_settlement(
+            &self,
+            r: &obp_blockchain::SettlementRecord,
+            salt: &[u8],
+        ) -> obp_blockchain::Result<obp_blockchain::TxReference> {
+            self.inner.write_settlement(r, salt).await
+        }
+        async fn write_exception(
+            &self,
+            e: &obp_blockchain::ExceptionRecord,
+            salt: &[u8],
+        ) -> obp_blockchain::Result<obp_blockchain::TxReference> {
+            if self.remaining.fetch_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |n| n.checked_sub(1),
+            ).is_ok() {
+                return Err(obp_blockchain::BlockchainError::Transport("ogmios unreachable".into()));
+            }
+            self.inner.write_exception(e, salt).await
+        }
+        async fn confirm(&self, r: &obp_blockchain::TxReference) -> obp_blockchain::Result<obp_blockchain::ConfirmationStatus> {
+            self.inner.confirm(r).await
+        }
+    }
+
+    /// The mock's tx id for an Exception record, recomputed from the outbox
+    /// row alone: proves the record can be rebuilt and verified later.
+    async fn expected_exception_tx_id(rec: &OutboxRecord) -> String {
+        let record = obp_blockchain::ExceptionRecord {
+            bank_id: rec.bank_id.clone(),
+            transaction_request_id: rec.transaction_request_id.clone(),
+            reason: rec.exception_reason.clone().unwrap(),
+            raised_at: chrono::DateTime::parse_from_rfc3339(rec.exception_raised_at.as_deref().unwrap())
+                .unwrap()
+                .with_timezone(&Utc),
+        };
+        // The mock's tx id is a function of (kind, commitment) only.
+        MockBackend::new()
+            .write_exception(&record, rec.exception_salt.as_deref().unwrap().as_bytes())
+            .await
+            .unwrap()
+            .tx_id
+    }
+
+    #[tokio::test]
+    async fn terminal_obp_rejection_writes_an_exception_record() {
+        let store = OutboxStore::connect_in_memory().await.unwrap();
+        insert_row(&store, "tr-x1").await;
+        let backend = Arc::new(MockBackend::new());
+        let base = spawn_obp_stub(rejecting_obp()).await;
+        let disp = dispatcher(store.clone(), base, backend.clone());
+
+        disp.process_due_once().await.unwrap();
+
+        let rec = store.get("tr-x1").await.unwrap().unwrap();
+        assert_eq!(rec.status, status::EXCEPTION);
+        assert_eq!(backend.written_kinds(), vec!["exception"], "an Exception record, no Promise");
+        assert_eq!(rec.exception_tx_id.as_deref(), Some(backend.writes()[0].tx_id.as_str()));
+        assert_eq!(rec.exception_blockchain.as_deref(), Some("mock"));
+        assert_eq!(rec.exception_tx_id.clone().unwrap(), expected_exception_tx_id(&rec).await);
+    }
+
+    #[tokio::test]
+    async fn exception_record_write_failure_does_not_block_and_is_retried() {
+        let store = OutboxStore::connect_in_memory().await.unwrap();
+        insert_row(&store, "tr-x2").await;
+        // The tick that marks the row also retries once, so two failures keep
+        // the record off the chain until the next tick.
+        let backend = Arc::new(FailingNotary {
+            inner: MockBackend::new(),
+            remaining: std::sync::atomic::AtomicUsize::new(2),
+        });
+        let base = spawn_obp_stub(rejecting_obp()).await;
+        let disp = dispatcher(store.clone(), base, backend.clone());
+
+        disp.process_due_once().await.unwrap();
+        let rec = store.get("tr-x2").await.unwrap().unwrap();
+        assert_eq!(rec.status, status::EXCEPTION, "the outcome does not wait for the chain");
+        assert!(rec.exception_salt.is_some(), "the salt is kept for the retry");
+        assert!(rec.exception_tx_id.is_none());
+
+        disp.process_due_once().await.unwrap();
+        let rec = store.get("tr-x2").await.unwrap().unwrap();
+        assert_eq!(rec.exception_tx_id.clone().unwrap(), expected_exception_tx_id(&rec).await);
+        assert!(store.list_exceptions_without_record(10).await.unwrap().is_empty());
     }
 }

@@ -190,6 +190,56 @@ impl ObpClient {
         }
     }
 
+    /// Forget the cached bearer token so the next call fetches a fresh one.
+    async fn invalidate_token(&self) {
+        *self.token.lock().await = None;
+    }
+
+    /// Authorize and send a request, returning the status and body text.
+    ///
+    /// A cached client-credentials token can be refused before its lifetime
+    /// is up: OBP-OIDC signs with a new key after every restart, so OBP-API
+    /// answers 401 (`OBP-20206`) to a token it accepted a minute earlier. On a
+    /// 401 the cached token is dropped and the request is sent once more with
+    /// a fresh one; a second 401 is handed back to the caller unchanged.
+    async fn send_authorized(
+        &self,
+        req: reqwest::RequestBuilder,
+    ) -> Result<(reqwest::StatusCode, String), ObpClientError> {
+        let retry = if self.uses_client_credentials() {
+            req.try_clone()
+        } else {
+            None
+        };
+        let (status, text) = self.send_once(req).await?;
+        if status != reqwest::StatusCode::UNAUTHORIZED {
+            return Ok((status, text));
+        }
+        let Some(retry) = retry else {
+            return Ok((status, text));
+        };
+        debug!("OBP-API refused the cached bearer token; fetching a fresh one and retrying once");
+        self.invalidate_token().await;
+        self.send_once(retry).await
+    }
+
+    async fn send_once(
+        &self,
+        req: reqwest::RequestBuilder,
+    ) -> Result<(reqwest::StatusCode, String), ObpClientError> {
+        let req = self.authorize(req).await?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ObpClientError::Transport(e.to_string()))?;
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| ObpClientError::Transport(format!("reading response body: {e}")))?;
+        Ok((status, text))
+    }
+
     /// Return a valid client-credentials bearer token, fetching a fresh one when
     /// the cache is empty or close to expiry.
     async fn bearer_token(&self) -> Result<String, ObpClientError> {
@@ -282,18 +332,7 @@ impl ObpClient {
             .post(&url)
             .header("Content-Type", "application/json")
             .body(body_json.to_owned());
-        let req = self.authorize(req).await?;
-
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| ObpClientError::Transport(e.to_string()))?;
-
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| ObpClientError::Transport(format!("reading response body: {e}")))?;
+        let (status, text) = self.send_authorized(req).await?;
 
         if status.is_success() {
             let obp_transaction_request_id = extract_tr_id(&text);
@@ -331,17 +370,7 @@ impl ObpClient {
             "currency": currency,
         });
         let req = self.http.post(&url).json(&body);
-        let req = self.authorize(req).await?;
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| ObpClientError::Transport(e.to_string()))?;
-
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| ObpClientError::Transport(format!("reading response body: {e}")))?;
+        let (status, text) = self.send_authorized(req).await?;
         if status.is_success() {
             return parse_settlement_response(&text);
         }
@@ -359,17 +388,7 @@ impl ObpClient {
         let url = format!("{}/{}", self.settlements_url(bank_id), settlement_id);
         debug!(%url, "reading Open Corridor settlement from OBP-API");
         let req = self.http.get(&url);
-        let req = self.authorize(req).await?;
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| ObpClientError::Transport(e.to_string()))?;
-
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| ObpClientError::Transport(format!("reading response body: {e}")))?;
+        let (status, text) = self.send_authorized(req).await?;
         if status.is_success() {
             return parse_settlement_response(&text);
         }
@@ -405,18 +424,7 @@ impl ObpClient {
         debug!(%url, "reporting Promise evidence to OBP-API");
 
         let req = self.http.post(&url).json(evidence);
-        let req = self.authorize(req).await?;
-
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| ObpClientError::Transport(e.to_string()))?;
-
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| ObpClientError::Transport(format!("reading response body: {e}")))?;
+        let (status, text) = self.send_authorized(req).await?;
 
         if status.is_success() {
             return Ok(());
@@ -444,16 +452,7 @@ impl ObpClient {
             "required_scopes": required_scopes,
         });
         let req = self.http.put(&url).json(&body);
-        let req = self.authorize(req).await?;
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| ObpClientError::Transport(e.to_string()))?;
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| ObpClientError::Transport(format!("reading response body: {e}")))?;
+        let (status, text) = self.send_authorized(req).await?;
         if status.is_success() {
             return Ok(());
         }
@@ -476,17 +475,7 @@ impl ObpClient {
             );
             debug!(%url, "fetching routing-scheme registry page from OBP-API");
             let req = self.http.get(&url);
-            let req = self.authorize(req).await?;
-            let resp = req
-                .send()
-                .await
-                .map_err(|e| ObpClientError::Transport(e.to_string()))?;
-
-            let status = resp.status();
-            let text = resp
-                .text()
-                .await
-                .map_err(|e| ObpClientError::Transport(format!("reading response body: {e}")))?;
+            let (status, text) = self.send_authorized(req).await?;
             if !status.is_success() {
                 return Err(classify_failure(status, &text));
             }
@@ -651,12 +640,18 @@ fn parse_obp_error(body: &str) -> (String, String) {
     ("OBP-UNKNOWN".to_string(), truncate(body, 500))
 }
 
+/// Cut `s` to at most `max` bytes without splitting a multi-byte character.
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max])
+        return s.to_string();
     }
+    let end = s
+        .char_indices()
+        .map(|(i, _)| i)
+        .take_while(|&i| i <= max)
+        .last()
+        .unwrap_or(0);
+    format!("{}…", &s[..end])
 }
 
 #[cfg(test)]
@@ -664,6 +659,8 @@ mod tests {
     use super::*;
     use axum::{routing::post, Json, Router};
     use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     /// Spin up a throwaway OBP-API stand-in and return its base URL. The handler
     /// is supplied by the caller so each test shapes its own response.
@@ -1032,5 +1029,93 @@ mod tests {
             r#"{"code":404,"message":"OBP-10404: 404 Not Found. The server could not find the requested URI."}"#,
         );
         assert!(err.is_retryable(), "OBP-10404 means a setup problem, not a wrong payment: {err:?}");
+    }
+
+    /// An OBP-API stand-in with a client-credentials token endpoint whose grants
+    /// are numbered (`t1`, `t2`, ...) and counted, and a transaction-request
+    /// route that accepts only the bearers in `accepted`.
+    async fn spawn_token_stub(accepted: &'static [&'static str]) -> (String, Arc<AtomicUsize>) {
+        use axum::http::{HeaderMap, StatusCode};
+        let grants = Arc::new(AtomicUsize::new(0));
+        let counter = grants.clone();
+        let router = Router::new()
+            .route(
+                "/token",
+                post(move || {
+                    let counter = counter.clone();
+                    async move {
+                        let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                        Json(serde_json::json!({ "access_token": format!("t{n}"), "expires_in": 3600 }))
+                    }
+                }),
+            )
+            .route(
+                "/obp/v7.0.0/banks/:bank/accounts/:acct/owner/transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests",
+                post(move |headers: HeaderMap| async move {
+                    let bearer = headers
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.strip_prefix("Bearer "))
+                        .unwrap_or("");
+                    if accepted.contains(&bearer) {
+                        (StatusCode::CREATED, Json(serde_json::json!({ "transaction_request_id": "obp-tr-1" })))
+                    } else {
+                        (
+                            StatusCode::UNAUTHORIZED,
+                            Json(serde_json::json!({ "code": 401, "message": "OBP-20206: Bad JSON Object Signing and Encryption (JOSE) exception. The ID token is invalid or expired." })),
+                        )
+                    }
+                }),
+            );
+        (spawn_stub(router).await, grants)
+    }
+
+    fn client_credentials_client(base: &str) -> ObpClient {
+        ObpClient::new(
+            base,
+            ObpAuth::ClientCredentials {
+                token_url: format!("{base}/token"),
+                client_id: "node-a".into(),
+                client_secret: "secret".into(),
+                scope: None,
+            },
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn stale_bearer_token_is_refreshed_once_on_401() {
+        // OBP-OIDC restarted with a new signing key: the cached token is still
+        // within its lifetime but OBP-API refuses it. One refresh must recover.
+        let (base, grants) = spawn_token_stub(&["t2"]).await;
+        let client = client_credentials_client(&base);
+
+        let accepted = client
+            .submit_open_corridor("ke.01.kcs", "acct-1", "{}")
+            .await
+            .unwrap();
+        assert_eq!(accepted.obp_transaction_request_id.as_deref(), Some("obp-tr-1"));
+        assert_eq!(grants.load(Ordering::SeqCst), 2, "the first token is replaced exactly once");
+    }
+
+    #[tokio::test]
+    async fn persistent_401_is_a_transport_error_not_a_loop() {
+        let (base, grants) = spawn_token_stub(&[]).await;
+        let client = client_credentials_client(&base);
+
+        let err = client
+            .submit_open_corridor("ke.01.kcs", "acct-1", "{}")
+            .await
+            .unwrap_err();
+        assert!(err.is_retryable(), "a 401 stays operational: {err:?}");
+        assert_eq!(grants.load(Ordering::SeqCst), 2, "one refresh, then give the answer back");
+    }
+
+    #[test]
+    fn truncate_does_not_split_multibyte_chars() {
+        let s = "OBP-20006: 用户缺少角色 CanCreateBank";
+        let cut = truncate(s, 15);
+        assert!(cut.ends_with('…'));
+        assert!(s.starts_with(cut.trim_end_matches('…')));
     }
 }

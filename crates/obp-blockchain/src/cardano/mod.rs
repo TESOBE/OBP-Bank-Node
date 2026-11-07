@@ -32,8 +32,8 @@ use crate::{
     Result, SettlementRecord, TxReference,
 };
 
-use self::follower::ChainFollower;
-use self::ogmios::OgmiosClient;
+use self::follower::{ChainFollower, FollowerStore};
+use self::ogmios::{map_ogmios, OgmiosClient};
 use self::wallet::Wallet;
 
 /// Every field has a default matching the bundled installation package, so a
@@ -101,8 +101,18 @@ pub struct CardanoBackend {
 }
 
 impl CardanoBackend {
-    /// Connect to Ogmios and load the wallet from disk.
+    /// Connect to Ogmios and load the wallet from disk. The chain follower
+    /// starts at the tip; see [`Self::with_store`] to resume from a store.
     pub async fn new(config: CardanoConfig) -> Result<Self> {
+        Self::with_store(config, None).await
+    }
+
+    /// Like [`Self::new`], with a [`FollowerStore`] the chain follower resumes
+    /// from and keeps up to date (points processed, payments to the wallet).
+    pub async fn with_store(
+        config: CardanoConfig,
+        store: Option<Arc<dyn FollowerStore>>,
+    ) -> Result<Self> {
         let ogmios = OgmiosClient::with_timeout(
             &config.ogmios_url,
             std::time::Duration::from_secs(config.query_timeout_secs),
@@ -123,7 +133,10 @@ impl CardanoBackend {
             .map_err(|e| BlockchainError::Internal(format!("wallet load failed: {e}")))?;
         info!(address = %wallet.address, "wallet loaded");
 
-        let follower = ChainFollower::spawn(config.ogmios_url);
+        let follower = match store {
+            Some(store) => ChainFollower::spawn_with_store(config.ogmios_url, store).await,
+            None => ChainFollower::spawn(config.ogmios_url),
+        };
         // Payments into the wallet (settlements this bank receives as creditor)
         // are recorded as they arrive, so they can be checked after being spent.
         follower.watch_address(&wallet.address);
@@ -256,12 +269,4 @@ impl BlockchainBackend for CardanoBackend {
     }
 }
 
-fn map_ogmios(e: ogmios::OgmiosError) -> BlockchainError {
-    match e {
-        ogmios::OgmiosError::Rpc { code, message } => {
-            BlockchainError::Rejected(format!("ogmios rpc {code}: {message}"))
-        }
-        other => BlockchainError::Transport(other.to_string()),
-    }
-}
 

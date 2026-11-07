@@ -101,6 +101,87 @@ async fn root_status_is_503_json_with_each_check_when_degraded() {
 }
 
 #[tokio::test]
+async fn ready_is_503_when_obp_api_is_unreachable() {
+    let resp = get_with_accept("/ready", None).await;
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let v: serde_json::Value = serde_json::from_slice(&body_bytes(resp).await).unwrap();
+    assert_eq!(v["status"], "not_ready");
+    assert_eq!(v["checks"]["database"]["status"], "ok");
+    assert_eq!(v["checks"]["obp_api"]["status"], "fail");
+    assert_eq!(v["checks"]["blockchain"]["status"], "ok");
+    assert!(v["checks"].get("interface_c").is_none(), "readiness ignores Interface C");
+}
+
+#[tokio::test]
+async fn ready_is_200_when_stores_obp_api_and_chain_answer() {
+    let stub = axum::Router::new().route(
+        "/obp/v6.0.0/root",
+        axum::routing::get(|| async { axum::Json(serde_json::json!({"version": "v6.0.0"})) }),
+    );
+    let base = spawn_obp_stub(stub).await;
+    let (app, _state) = router_with_obp(&base).await;
+    let resp = app
+        .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body_bytes(resp).await).unwrap();
+    assert_eq!(v["status"], "ready");
+    assert_eq!(v["checks"]["obp_api"]["status"], "ok");
+}
+
+async fn status_json_of(app: axum::Router) -> serde_json::Value {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/status")
+                .header("accept", "application/json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    serde_json::from_slice(&body_bytes(resp).await).unwrap()
+}
+
+#[tokio::test]
+async fn root_status_incoming_check_is_ok_when_nothing_open() {
+    let (app, _state) = router_with_state().await;
+    let v = status_json_of(app).await;
+    assert_eq!(v["incoming_settlements"]["status"], "ok");
+    assert_eq!(v["incoming_settlements"]["detail"], "no incoming settlements");
+}
+
+#[tokio::test]
+async fn root_status_warns_on_mismatched_incoming_settlement() {
+    use crate::settlement_store::{incoming_status, IncomingUpdate};
+    let (app, state) = router_with_state().await;
+    state
+        .settlements
+        .record_incoming("set-bad", Some("rt.bank.a"), Some("KES"), Some("50.00"), &["tr-1".into()])
+        .await
+        .unwrap();
+    state
+        .settlements
+        .update_incoming("set-bad", IncomingUpdate {
+            status: incoming_status::MISMATCH,
+            tx_id: Some("tx-9"),
+            asset: None,
+            asset_amount: None,
+            received_amount: None,
+            depth: 0,
+            detail: "nothing arrived",
+        })
+        .await
+        .unwrap();
+    let v = status_json_of(app).await;
+    assert_eq!(v["incoming_settlements"]["status"], "warn");
+    let detail = v["incoming_settlements"]["detail"].as_str().unwrap();
+    assert!(detail.contains("MISMATCH 1") && detail.contains("set-bad"), "{detail}");
+    assert_eq!(v["status"], "degraded", "soft: the overall verdict is the hard checks' alone");
+}
+
+#[tokio::test]
 async fn root_status_is_html_by_default() {
     let resp = get_with_accept("/status", None).await;
     assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -929,4 +1010,77 @@ async fn transaction_request_status_surfaces_settlement_linkage() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["settlement_id"], "settle-7");
     assert!(!v["settled_at"].is_null());
+}
+
+fn idempotent_payment_body(amount: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "value": { "currency": "KES", "amount": amount },
+        "description": "Invoice INV-7",
+        "to": {
+            "other_bank_routing_scheme": "OBP",
+            "other_bank_routing_address": "ke.01.kcs",
+            "other_account_routing_scheme": "OBP",
+            "other_account_routing_address": "acct-7"
+        },
+        "originator": {
+            "name": "Acme Coffee Ltd",
+            "address": "12 Market Street, Nairobi, Kenya",
+            "account_routing": { "scheme": "IBAN", "address": "KE12KCBL0000009876543210" }
+        }
+    }))
+    .unwrap()
+}
+
+async fn post_payment(app: axum::Router, key: Option<&str>, body: Vec<u8>) -> axum::response::Response {
+    let mut req = Request::builder()
+        .method(Method::POST)
+        .uri("/obp-bank-node/v5.1.0/transaction-requests")
+        .header("content-type", "application/json");
+    if let Some(k) = key {
+        req = req.header("idempotency-key", k);
+    }
+    app.oneshot(req.body(Body::from(body)).unwrap()).await.unwrap()
+}
+
+#[tokio::test]
+async fn initiate_payment_replays_same_idempotency_key_with_same_id() {
+    let (app, _state) = router_with_state().await;
+    let first = post_payment(app.clone(), Some("inv-7"), idempotent_payment_body("100.00")).await;
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+    assert!(first.headers().get("idempotency-replayed").is_none());
+    let first: serde_json::Value = serde_json::from_slice(&body_bytes(first).await).unwrap();
+
+    let again = post_payment(app, Some("inv-7"), idempotent_payment_body("100.00")).await;
+    assert_eq!(again.status(), StatusCode::ACCEPTED);
+    assert_eq!(again.headers().get("idempotency-replayed").unwrap(), "true");
+    let again: serde_json::Value = serde_json::from_slice(&body_bytes(again).await).unwrap();
+    assert_eq!(again["transaction_request_id"], first["transaction_request_id"], "no second payment");
+    assert_eq!(again["status"], "INITIATED");
+}
+
+#[tokio::test]
+async fn initiate_payment_rejects_same_key_with_different_body_422() {
+    let (app, _state) = router_with_state().await;
+    assert_eq!(post_payment(app.clone(), Some("inv-8"), idempotent_payment_body("100.00")).await.status(), StatusCode::ACCEPTED);
+    let resp = post_payment(app, Some("inv-8"), idempotent_payment_body("999.00")).await;
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let v: serde_json::Value = serde_json::from_slice(&body_bytes(resp).await).unwrap();
+    assert_eq!(v["error_code"], "OBP-BANK-NODE-IDEMPOTENCY-001");
+}
+
+#[tokio::test]
+async fn initiate_payment_without_key_creates_distinct_rows() {
+    let (app, state) = router_with_state().await;
+    for _ in 0..2 {
+        assert_eq!(post_payment(app.clone(), None, idempotent_payment_body("100.00")).await.status(), StatusCode::ACCEPTED);
+    }
+    assert_eq!(state.outbox.count_by_status().await.unwrap().iter().map(|(_, n)| n).sum::<i64>(), 2);
+}
+
+#[tokio::test]
+async fn initiate_payment_rejects_an_overlong_idempotency_key() {
+    let (app, _state) = router_with_state().await;
+    let key = "k".repeat(256);
+    let resp = post_payment(app, Some(&key), idempotent_payment_body("100.00")).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }

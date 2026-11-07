@@ -134,6 +134,13 @@ struct SettlementConfig {
     /// Finality watcher poll interval, seconds.
     #[serde(default = "default_finality_poll_secs")]
     finality_poll_secs: u64,
+    /// How often the incoming-settlement watcher checks what this bank is owed.
+    #[serde(default = "default_incoming_poll_secs")]
+    incoming_poll_secs: u64,
+    /// How long a settlement the debtor reports paying may stay unseen at this
+    /// node's address before it is marked MISMATCH for an operator.
+    #[serde(default = "default_incoming_timeout_secs")]
+    incoming_timeout_secs: u64,
     /// Durable settlement idempotency/finality store (SQLite).
     #[serde(default = "default_settlement_store_path")]
     store_path: PathBuf,
@@ -144,6 +151,14 @@ fn default_finality_depth() -> u32 {
 }
 fn default_finality_poll_secs() -> u64 {
     30
+}
+
+fn default_incoming_poll_secs() -> u64 {
+    20
+}
+
+fn default_incoming_timeout_secs() -> u64 {
+    24 * 60 * 60
 }
 fn default_settlement_store_path() -> PathBuf {
     PathBuf::from("./outbox/settlements.db")
@@ -244,6 +259,8 @@ impl Default for SettlementConfig {
             ada_rate_minor_per_whole_ada: 3542,
             finality_depth: default_finality_depth(),
             finality_poll_secs: default_finality_poll_secs(),
+            incoming_poll_secs: default_incoming_poll_secs(),
+            incoming_timeout_secs: default_incoming_timeout_secs(),
             store_path: default_settlement_store_path(),
         }
     }
@@ -374,13 +391,36 @@ impl Default for ObpApiConfig {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct OutboxConfig {
     path: PathBuf,
+    /// Finished rows (EXCEPTION, or REPORTED and settled) older than this are
+    /// deleted once an hour. 0 keeps everything.
+    #[serde(default = "default_outbox_retention_days")]
+    retention_days: u32,
+}
+
+fn default_outbox_retention_days() -> u32 {
+    90
 }
 
 impl Default for OutboxConfig {
     fn default() -> Self {
         OutboxConfig {
             path: PathBuf::from("./outbox/obp-bank-node.db"),
+            retention_days: default_outbox_retention_days(),
         }
+    }
+}
+
+/// Once an hour, drop outbox rows that are finished and past retention.
+async fn run_outbox_retention(outbox: OutboxStore, retention_days: u32) {
+    let keep = chrono::Duration::days(i64::from(retention_days));
+    loop {
+        let cutoff = (chrono::Utc::now() - keep).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        match outbox.purge_finished_before(&cutoff).await {
+            Ok(0) => {}
+            Ok(n) => info!(rows = n, cutoff = %cutoff, "outbox retention: deleted finished rows"),
+            Err(e) => warn!(error = %e, "outbox retention failed; will retry in an hour"),
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(60 * 60)).await;
     }
 }
 
@@ -457,7 +497,17 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = load_config()?;
-    let (backend, settlement) = build_backend(&config).await?;
+    // The settlement store is opened first: the chain follower resumes from
+    // the cursor and payments it keeps (see FollowerStore).
+    let settlement_store = SettlementStore::connect(&config.settlement.store_path)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to open settlement store at {}",
+                config.settlement.store_path.display()
+            )
+        })?;
+    let (backend, settlement) = build_backend(&config, &settlement_store).await?;
     let blockchain_label: &'static str = match config.blockchain.kind {
         BlockchainKind::Mock => "mock",
         BlockchainKind::Cardano => "cardano",
@@ -496,6 +546,8 @@ async fn main() -> anyhow::Result<()> {
         ));
     }
 
+    // The finality watcher writes Settlement Reference records with the same notary.
+    let backend_for_records = Arc::clone(&backend);
     // The dispatcher owns the backend and drains the outbox asynchronously.
     let dispatcher = Dispatcher::new(
         outbox.clone(),
@@ -505,18 +557,13 @@ async fn main() -> anyhow::Result<()> {
         DispatcherConfig::default(),
     );
     tokio::spawn(dispatcher.run());
+    if config.outbox.retention_days > 0 {
+        tokio::spawn(run_outbox_retention(outbox.clone(), config.outbox.retention_days));
+    }
 
     // The settlement and evidence stores are opened unconditionally — the
     // south-side read API serves them even when no settlement rail or
     // Interface C consumer is running (e.g. mock mode, consumer off).
-    let settlement_store = SettlementStore::connect(&config.settlement.store_path)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to open settlement store at {}",
-                config.settlement.store_path.display()
-            )
-        })?;
     let evidence = EvidenceStore::connect(&config.evidence.path)
         .await
         .with_context(|| {
@@ -535,6 +582,9 @@ async fn main() -> anyhow::Result<()> {
             let watcher = FinalityWatcher {
                 store: settlement_store.clone(),
                 backend: Arc::clone(backend),
+                notary: Arc::clone(&backend_for_records),
+                outbox: outbox.clone(),
+                bank_id: config.bank.bank_id.clone(),
                 finality_depth: config.settlement.finality_depth,
                 poll_interval: std::time::Duration::from_secs(config.settlement.finality_poll_secs),
             };
@@ -548,7 +598,8 @@ async fn main() -> anyhow::Result<()> {
                     backend: Arc::clone(backend),
                     bank_id: config.bank.bank_id.clone(),
                     finality_depth: config.settlement.finality_depth,
-                    poll_interval: std::time::Duration::from_secs(20),
+                    poll_interval: std::time::Duration::from_secs(config.settlement.incoming_poll_secs),
+                    paid_timeout: std::time::Duration::from_secs(config.settlement.incoming_timeout_secs),
                 }
                 .run(),
             );
@@ -697,7 +748,76 @@ fn load_config() -> anyhow::Result<Config> {
         }
     }
 
-    fig.extract().context("failed to parse config")
+    let config: Config = fig.extract().context("failed to parse config")?;
+    validate_config(&config)?;
+    Ok(config)
+}
+
+/// The A2 delivery modes this build can run. The spec also names
+/// `webhook_iso20022`, `database` and `file`; a config asking for one of
+/// those must not quietly behave as `webhook_obp`.
+const CBS_DELIVERY_MODES: &[&str] = &["webhook_obp"];
+
+/// Refuse a config the node would otherwise misread at runtime.
+fn validate_config(cfg: &Config) -> anyhow::Result<()> {
+    let mode = cfg.cbs_delivery.mode.trim();
+    if !mode.is_empty() && !CBS_DELIVERY_MODES.contains(&mode) {
+        anyhow::bail!(
+            "cbs_delivery.mode \"{mode}\" is not implemented in this build; supported: {} \
+             (planned: webhook_iso20022, database, file)",
+            CBS_DELIVERY_MODES.join(", ")
+        );
+    }
+    if cfg.rabbitmq.enabled && cfg.cbs_delivery.webhook.url.trim().is_empty() {
+        anyhow::bail!(
+            "cbs_delivery.webhook.url is empty, but rabbitmq.enabled is true: credit \
+             notifications would have nowhere to go"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outbox_retention_defaults_to_90_days_and_can_be_switched_off() {
+        assert_eq!(Config::default().outbox.retention_days, 90);
+        let cfg: OutboxConfig = serde_json::from_str(r#"{"path":"x.db","retention_days":0}"#).unwrap();
+        assert_eq!(cfg.retention_days, 0);
+    }
+
+    #[test]
+    fn default_config_validates() {
+        validate_config(&Config::default()).unwrap();
+    }
+
+    #[test]
+    fn unsupported_cbs_delivery_mode_is_rejected_at_startup() {
+        let mut cfg = Config::default();
+        cfg.cbs_delivery.mode = "database".into();
+        let err = validate_config(&cfg).unwrap_err().to_string();
+        assert!(err.contains("cbs_delivery.mode"), "{err}");
+        assert!(err.contains("\"database\""), "{err}");
+        assert!(err.contains("webhook_obp"), "{err}");
+    }
+
+    #[test]
+    fn empty_cbs_delivery_mode_means_the_default() {
+        let mut cfg = Config::default();
+        cfg.cbs_delivery.mode = String::new();
+        validate_config(&cfg).unwrap();
+    }
+
+    #[test]
+    fn empty_webhook_url_is_rejected_when_interface_c_is_on() {
+        let mut cfg = Config::default();
+        cfg.rabbitmq.enabled = true;
+        cfg.cbs_delivery.webhook.url = " ".into();
+        let err = validate_config(&cfg).unwrap_err().to_string();
+        assert!(err.contains("cbs_delivery.webhook.url"), "{err}");
+    }
 }
 
 /// Build the AMQP URI for the bank's vhost. The vhost path is percent-encoded
@@ -794,13 +914,16 @@ fn ogmios_health_url(ogmios_url: &str) -> String {
     format!("{}/health", base.trim_end_matches('/'))
 }
 
-async fn build_backend(config: &Config) -> anyhow::Result<Backends> {
+async fn build_backend(config: &Config, follower_store: &SettlementStore) -> anyhow::Result<Backends> {
     match config.blockchain.kind {
         BlockchainKind::Mock => Ok((Arc::new(MockBackend::new()), None)),
         BlockchainKind::Cardano => {
-            let c = obp_blockchain::cardano::CardanoBackend::new(config.blockchain.cardano.clone())
-                .await
-                .context("failed to construct CardanoBackend")?;
+            let c = obp_blockchain::cardano::CardanoBackend::with_store(
+                config.blockchain.cardano.clone(),
+                Some(Arc::new(follower_store.clone())),
+            )
+            .await
+            .context("failed to construct CardanoBackend")?;
             // Settlement shares the backend's wallet/Ogmios/submit-lock.
             let fx: Arc<dyn FxSource> = match config.settlement.fx_source {
                 FxSourceKind::Coingecko => {

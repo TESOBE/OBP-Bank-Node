@@ -21,6 +21,9 @@
 
 use std::path::Path;
 
+use chrono::Utc;
+
+use obp_blockchain::cardano::follower::{FollowerSnapshot, StoredPayment, StoredPoint};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 
@@ -71,6 +74,14 @@ pub struct SettlementRow {
     pub created_at: String,
     pub updated_at: String,
     pub finalized_at: Option<String>,
+    /// The on-chain Settlement Reference record (obp_blockchain::SettlementRecord),
+    /// written once the settlement is FINAL: its salt and `settled_at` are kept
+    /// so the commitment can be rebuilt from this row and the outbox; the tx id
+    /// arrives when the write succeeds, which may be later.
+    pub record_salt: Option<String>,
+    pub record_settled_at: Option<String>,
+    pub record_tx_id: Option<String>,
+    pub record_blockchain: Option<String>,
     /// `PLATFORM_FEE` for fee-sweep settlements; NULL = corridor settlement.
     pub purpose: Option<String>,
 }
@@ -173,6 +184,10 @@ impl SettlementStore {
             "fx_source TEXT",
             "fx_as_of TEXT",
             "purpose TEXT",
+            "record_salt TEXT",
+            "record_settled_at TEXT",
+            "record_tx_id TEXT",
+            "record_blockchain TEXT",
         ] {
             if let Err(e) = sqlx::query(&format!("ALTER TABLE settlements ADD COLUMN {col}"))
                 .execute(pool)
@@ -202,6 +217,40 @@ impl SettlementStore {
                 detail            TEXT,
                 received_at       TEXT NOT NULL,
                 updated_at        TEXT NOT NULL
+            )",
+        )
+        .execute(pool)
+        .await?;
+        // Migration for rows created before the paid_at column (same guard as above).
+        if let Err(e) = sqlx::query("ALTER TABLE incoming_settlements ADD COLUMN paid_at TEXT")
+            .execute(pool)
+            .await
+        {
+            if !e.to_string().contains("duplicate column name") {
+                return Err(e.into());
+            }
+        }
+
+        // The chain follower's memory (obp_blockchain::cardano::follower::FollowerStore):
+        // the points it last processed, and every payment to this node's wallet it
+        // has seen, so a restart neither starts at the tip nor forgets a payment.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS chain_cursor (
+                id          INTEGER PRIMARY KEY CHECK (id = 1),
+                points_json TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            )",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS chain_payments (
+                tx_id     TEXT PRIMARY KEY,
+                address   TEXT NOT NULL,
+                lovelace  TEXT NOT NULL,
+                height    INTEGER NOT NULL,
+                slot      INTEGER NOT NULL,
+                seen_at   TEXT NOT NULL
             )",
         )
         .execute(pool)
@@ -420,6 +469,8 @@ pub struct IncomingSettlement {
     pub detail: Option<String>,
     pub received_at: String,
     pub updated_at: String,
+    /// When the debtor's node was first seen reporting a payment (tx id known).
+    pub paid_at: Option<String>,
 }
 
 /// What the incoming watcher learnt about one settlement this tick.
@@ -489,7 +540,8 @@ impl SettlementStore {
         sqlx::query(
             "UPDATE incoming_settlements SET status = ?, tx_id = COALESCE(?, tx_id), \
                 asset = COALESCE(?, asset), asset_amount = COALESCE(?, asset_amount), \
-                received_amount = COALESCE(?, received_amount), depth = ?, detail = ?, updated_at = ? \
+                received_amount = COALESCE(?, received_amount), depth = ?, detail = ?, updated_at = ?, \
+                paid_at = COALESCE(paid_at, CASE WHEN ? IS NULL THEN NULL ELSE ? END) \
              WHERE settlement_id = ?",
         )
         .bind(u.status)
@@ -500,10 +552,93 @@ impl SettlementStore {
         .bind(u.depth as i64)
         .bind(u.detail)
         .bind(now())
+        .bind(u.tx_id)
+        .bind(now())
         .bind(settlement_id)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+}
+
+impl SettlementStore {
+    /// Remember the salt and timestamp of the Settlement Reference record for a
+    /// FINAL row, before the chain write is attempted.
+    pub async fn record_settlement_salt(&self, idempotency_key: &str, salt: &str, settled_at: &str) -> Result<(), OutboxError> {
+        sqlx::query("UPDATE settlements SET record_salt = ?, record_settled_at = ? WHERE idempotency_key = ?")
+            .bind(salt)
+            .bind(settled_at)
+            .bind(idempotency_key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// The Settlement Reference record is on chain.
+    pub async fn record_settlement_tx(&self, idempotency_key: &str, tx_id: &str, blockchain: &str) -> Result<(), OutboxError> {
+        sqlx::query(
+            "UPDATE settlements SET record_tx_id = ?, record_blockchain = ?, updated_at = ? WHERE idempotency_key = ?",
+        )
+        .bind(tx_id)
+        .bind(blockchain)
+        .bind(now())
+        .bind(idempotency_key)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// FINAL rows whose Settlement Reference record is not on chain yet, oldest first.
+    pub async fn list_final_without_record(&self, limit: i64) -> Result<Vec<SettlementRow>, OutboxError> {
+        Ok(sqlx::query_as::<_, SettlementRow>(
+            "SELECT * FROM settlements WHERE status = ? AND record_tx_id IS NULL \
+             ORDER BY finalized_at ASC LIMIT ?",
+        )
+        .bind(status::FINAL)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+}
+
+/// What an operator should look at among the incoming settlements, for the
+/// root `/status` page.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct IncomingAttention {
+    /// NETTED rows older than the caller's cutoff: the debtor has not reported
+    /// paying for a long time.
+    pub stale_netted: i64,
+    pub mismatch: i64,
+    /// Up to five ids of the rows counted above, oldest first.
+    pub ids: Vec<String>,
+}
+
+impl SettlementStore {
+    /// Rows needing attention: MISMATCH, and NETTED since before `netted_before`
+    /// (RFC 3339).
+    pub async fn incoming_attention(&self, netted_before: &str) -> Result<IncomingAttention, OutboxError> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT settlement_id, status FROM incoming_settlements \
+             WHERE status = ? OR (status = ? AND received_at < ?) \
+             ORDER BY received_at ASC",
+        )
+        .bind(incoming_status::MISMATCH)
+        .bind(incoming_status::NETTED)
+        .bind(netted_before)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut a = IncomingAttention::default();
+        for (id, status) in rows {
+            if status == incoming_status::MISMATCH {
+                a.mismatch += 1;
+            } else {
+                a.stale_netted += 1;
+            }
+            if a.ids.len() < 5 {
+                a.ids.push(id);
+            }
+        }
+        Ok(a)
     }
 }
 
@@ -550,6 +685,98 @@ mod incoming_tests {
         assert_eq!(row.received_amount.as_deref(), Some("61943319"));
         assert_eq!(row.depth, 15);
         assert!(s.list_open_incoming().await.unwrap().is_empty());
+    }
+}
+
+fn store_error(e: impl std::fmt::Display) -> obp_blockchain::BlockchainError {
+    obp_blockchain::BlockchainError::Internal(format!("follower store: {e}"))
+}
+
+#[async_trait::async_trait]
+impl obp_blockchain::cardano::follower::FollowerStore for SettlementStore {
+    async fn load(&self) -> obp_blockchain::Result<FollowerSnapshot> {
+        let points_json: Option<String> =
+            sqlx::query_scalar("SELECT points_json FROM chain_cursor WHERE id = 1")
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(store_error)?;
+        let points: Vec<StoredPoint> = match points_json {
+            Some(json) => {
+                let raw: Vec<(u64, String)> = serde_json::from_str(&json).map_err(store_error)?;
+                raw.into_iter().map(|(slot, id)| StoredPoint { slot, id }).collect()
+            }
+            None => Vec::new(),
+        };
+        let rows: Vec<(String, String, String, i64, i64)> = sqlx::query_as(
+            "SELECT tx_id, address, lovelace, height, slot FROM chain_payments ORDER BY slot",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        let payments = rows
+            .into_iter()
+            .map(|(tx_id, address, lovelace, height, slot)| StoredPayment {
+                tx_id,
+                address,
+                lovelace: lovelace.parse().unwrap_or(0),
+                height: height as u64,
+                slot: slot as u64,
+            })
+            .collect();
+        Ok(FollowerSnapshot { points, payments })
+    }
+
+    async fn save_points(&self, points: &[StoredPoint]) -> obp_blockchain::Result<()> {
+        if points.is_empty() {
+            sqlx::query("DELETE FROM chain_cursor")
+                .execute(&self.pool)
+                .await
+                .map_err(store_error)?;
+            return Ok(());
+        }
+        let raw: Vec<(u64, &str)> = points.iter().map(|p| (p.slot, p.id.as_str())).collect();
+        let json = serde_json::to_string(&raw).map_err(store_error)?;
+        sqlx::query(
+            "INSERT INTO chain_cursor (id, points_json, updated_at) VALUES (1, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET points_json = excluded.points_json,
+                                           updated_at = excluded.updated_at",
+        )
+        .bind(json)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(())
+    }
+
+    async fn save_payment(&self, p: &StoredPayment) -> obp_blockchain::Result<()> {
+        sqlx::query(
+            "INSERT INTO chain_payments (tx_id, address, lovelace, height, slot, seen_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(tx_id) DO UPDATE SET address = excluded.address,
+                                              lovelace = excluded.lovelace,
+                                              height = excluded.height,
+                                              slot = excluded.slot",
+        )
+        .bind(&p.tx_id)
+        .bind(&p.address)
+        .bind(p.lovelace.to_string())
+        .bind(p.height as i64)
+        .bind(p.slot as i64)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(())
+    }
+
+    async fn drop_payments_after(&self, slot: Option<u64>) -> obp_blockchain::Result<()> {
+        let q = match slot {
+            Some(cut) => sqlx::query("DELETE FROM chain_payments WHERE slot > ?").bind(cut as i64),
+            None => sqlx::query("DELETE FROM chain_payments"),
+        };
+        q.execute(&self.pool).await.map_err(store_error)?;
+        Ok(())
     }
 }
 
@@ -687,5 +914,70 @@ mod tests {
         let work = s.list_submitted(10).await.unwrap();
         assert_eq!(work.len(), 1);
         assert_eq!(work[0].idempotency_key, "a");
+    }
+
+    #[tokio::test]
+    async fn final_without_record_worklist() {
+        let s = SettlementStore::connect_in_memory().await.unwrap();
+        for key in ["f1", "f2", "sub"] {
+            s.claim(NewClaim {
+                idempotency_key: key,
+                settlement_id: Some("set"),
+                snapshot_id: None,
+                currency: "KES",
+                net_amount_minor: 1,
+                creditor_address: "addr",
+                purpose: None,
+            })
+            .await
+            .unwrap();
+            s.mark_submitted(key, "tx", "cardano", "ADA", "1", None).await.unwrap();
+        }
+        s.mark_final("f1", 20).await.unwrap();
+        s.mark_final("f2", 20).await.unwrap();
+        s.record_settlement_salt("f1", "salt", "2026-11-07T00:00:00Z").await.unwrap();
+        s.record_settlement_tx("f1", "rec-tx", "mock").await.unwrap();
+        let keys: Vec<String> = s.list_final_without_record(10).await.unwrap().into_iter().map(|r| r.idempotency_key).collect();
+        assert_eq!(keys, vec!["f2"], "only FINAL rows without a record; SUBMITTED ones are not due yet");
+        let f1 = s.get("f1").await.unwrap().unwrap();
+        assert_eq!((f1.record_salt.as_deref(), f1.record_tx_id.as_deref()), (Some("salt"), Some("rec-tx")));
+    }
+
+    #[tokio::test]
+    async fn follower_store_roundtrips_points_and_payments_and_drops_after_rollback() {
+        use obp_blockchain::cardano::follower::{FollowerStore, StoredPayment, StoredPoint};
+        let s = SettlementStore::connect_in_memory().await.unwrap();
+        assert!(s.load().await.unwrap().points.is_empty(), "empty at first");
+
+        let points: Vec<StoredPoint> = [10u64, 20, 30]
+            .iter()
+            .map(|&slot| StoredPoint { slot, id: format!("b{slot}") })
+            .collect();
+        s.save_points(&points).await.unwrap();
+        let pay = |tx: &str, slot: u64| StoredPayment {
+            tx_id: tx.into(),
+            address: "addr_me".into(),
+            lovelace: slot * 1000,
+            height: slot / 10,
+            slot,
+        };
+        s.save_payment(&pay("tx-1", 10)).await.unwrap();
+        s.save_payment(&pay("tx-2", 30)).await.unwrap();
+        // Saving the same tx again replaces it (its running total grew).
+        s.save_payment(&StoredPayment { lovelace: 99, ..pay("tx-2", 30) }).await.unwrap();
+
+        let snap = s.load().await.unwrap();
+        assert_eq!(snap.points, points, "oldest first, as saved");
+        let mut got = snap.payments.clone();
+        got.sort_by(|a, b| a.tx_id.cmp(&b.tx_id));
+        assert_eq!(got, vec![pay("tx-1", 10), StoredPayment { lovelace: 99, ..pay("tx-2", 30) }]);
+
+        s.drop_payments_after(Some(20)).await.unwrap();
+        assert_eq!(s.load().await.unwrap().payments, vec![pay("tx-1", 10)]);
+        s.drop_payments_after(None).await.unwrap();
+        assert!(s.load().await.unwrap().payments.is_empty(), "rollback to origin drops all");
+
+        s.save_points(&[]).await.unwrap();
+        assert!(s.load().await.unwrap().points.is_empty(), "an empty save forgets the cursor");
     }
 }

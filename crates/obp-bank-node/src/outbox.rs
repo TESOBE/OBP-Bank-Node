@@ -43,6 +43,9 @@ pub mod status {
 pub enum OutboxError {
     #[error("outbox database error: {0}")]
     Db(#[from] sqlx::Error),
+    /// Another row already carries this caller-supplied `Idempotency-Key`.
+    #[error("a transaction request with this idempotency key already exists")]
+    DuplicateIdempotencyKey,
     #[error("failed to prepare outbox directory {path}: {source}")]
     Dir {
         path: String,
@@ -78,6 +81,21 @@ pub struct OutboxRecord {
     pub promise_tx_id: Option<String>,
     pub promise_blockchain: Option<String>,
     pub exception_reason: Option<String>,
+    /// The on-chain Exception record (see obp_blockchain::ExceptionRecord):
+    /// its salt and `raised_at` are kept so the commitment can be rebuilt from
+    /// this row; the tx id arrives when the write succeeds, which may be later.
+    pub exception_salt: Option<String>,
+    pub exception_raised_at: Option<String>,
+    pub exception_tx_id: Option<String>,
+    pub exception_blockchain: Option<String>,
+    /// The caller's `Idempotency-Key`, when the request carried one: a repeat
+    /// with the same key and body is answered with this row instead of a new one.
+    pub idempotency_key: Option<String>,
+    /// The latest status OBP-API pushed over Interface C (`obp_status_update`)
+    /// for this request, and when it arrived. Informational: the node's own
+    /// lifecycle stays in `status`.
+    pub obp_status: Option<String>,
+    pub obp_status_at: Option<String>,
     /// Why the latest attempt failed, while the row is still being retried.
     /// Cleared when the dispatcher picks the row up again.
     pub last_error: Option<String>,
@@ -114,6 +132,65 @@ impl OutboxStore {
     /// Whether the database answers, for the root `/status` page.
     pub async fn ping(&self) -> Result<(), sqlx::Error> {
         sqlx::query("SELECT 1").execute(&self.pool).await.map(|_| ())
+    }
+
+    /// Record a status OBP-API pushed for a request. `obp_tr_id` is matched
+    /// against the OBP-side id first, then against the node's own id (OBP-API
+    /// echoes whichever it was given). Returns whether a row matched.
+    pub async fn record_obp_status(&self, obp_tr_id: &str, status: &str) -> Result<bool, OutboxError> {
+        let now = rfc3339(Utc::now());
+        let result = sqlx::query(
+            "UPDATE outbox SET obp_status = ?, obp_status_at = ? \
+             WHERE transaction_request_id = ( \
+                SELECT transaction_request_id FROM outbox \
+                WHERE obp_transaction_request_id = ? OR transaction_request_id = ? \
+                ORDER BY CASE WHEN obp_transaction_request_id = ? THEN 0 ELSE 1 END \
+                LIMIT 1)",
+        )
+        .bind(status)
+        .bind(&now)
+        .bind(obp_tr_id)
+        .bind(obp_tr_id)
+        .bind(obp_tr_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Retention: delete rows that are finished and older than `cutoff`
+    /// (RFC3339 UTC). Finished means EXCEPTION (last touched before the
+    /// cutoff) or REPORTED and settled (settled before the cutoff). A
+    /// REPORTED row that is not settled yet is kept however old: the
+    /// settlement that covers it still needs its promise tx id. Returns how
+    /// many rows went.
+    pub async fn purge_finished_before(&self, cutoff: &str) -> Result<u64, OutboxError> {
+        let result = sqlx::query(
+            "DELETE FROM outbox WHERE \
+                (status = ? AND updated_at < ?) \
+             OR (status = ? AND settled_at IS NOT NULL AND settled_at < ?)",
+        )
+        .bind(status::EXCEPTION)
+        .bind(cutoff)
+        .bind(status::REPORTED)
+        .bind(cutoff)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Test only: move a row's timestamps into the past.
+    #[cfg(test)]
+    pub async fn backdate(&self, id: &str, ts: &str) -> Result<(), OutboxError> {
+        sqlx::query(
+            "UPDATE outbox SET updated_at = ?, settled_at = CASE WHEN settled_at IS NULL THEN NULL ELSE ? END \
+             WHERE transaction_request_id = ?",
+        )
+        .bind(ts)
+        .bind(ts)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// How many rows are in each status, for the root `/status` page.
@@ -196,6 +273,13 @@ impl OutboxStore {
             "settlement_id TEXT",
             "settled_at TEXT",
             "last_error TEXT",
+            "exception_salt TEXT",
+            "exception_raised_at TEXT",
+            "exception_tx_id TEXT",
+            "exception_blockchain TEXT",
+            "idempotency_key TEXT",
+            "obp_status TEXT",
+            "obp_status_at TEXT",
         ] {
             if let Err(e) = sqlx::query(&format!("ALTER TABLE outbox ADD COLUMN {col}"))
                 .execute(pool)
@@ -206,6 +290,12 @@ impl OutboxStore {
                 }
             }
         }
+        // NULLs are distinct to SQLite, so rows without a key are unaffected.
+        sqlx::query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_idempotency_key ON outbox(idempotency_key)",
+        )
+        .execute(pool)
+        .await?;
 
         // Backoff scans filter by status then by last_attempted_at.
         sqlx::query(
@@ -239,6 +329,50 @@ impl OutboxStore {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Like [`Self::insert`], recording the caller's `Idempotency-Key`. A
+    /// second row with the same key is refused with
+    /// [`OutboxError::DuplicateIdempotencyKey`].
+    pub async fn insert_with_idempotency_key(
+        &self,
+        entry: NewEntry<'_>,
+        idempotency_key: &str,
+    ) -> Result<(), OutboxError> {
+        let now = rfc3339(Utc::now());
+        let result = sqlx::query(
+            "INSERT INTO outbox \
+                (transaction_request_id, status, bank_id, account_id, request_payload, \
+                 commitment_salt, attempt_count, created_at, updated_at, idempotency_key) \
+             VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
+        )
+        .bind(entry.transaction_request_id)
+        .bind(status::INITIATED)
+        .bind(entry.bank_id)
+        .bind(entry.account_id)
+        .bind(entry.request_payload)
+        .bind(entry.commitment_salt)
+        .bind(&now)
+        .bind(&now)
+        .bind(idempotency_key)
+        .execute(&self.pool)
+        .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(sqlx::Error::Database(e))
+                if e.is_unique_violation() && e.message().contains("idempotency_key") =>
+            {
+                Err(OutboxError::DuplicateIdempotencyKey)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub async fn get_by_idempotency_key(&self, key: &str) -> Result<Option<OutboxRecord>, OutboxError> {
+        Ok(sqlx::query_as::<_, OutboxRecord>("SELECT * FROM outbox WHERE idempotency_key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?)
     }
 
     pub async fn get(&self, id: &str) -> Result<Option<OutboxRecord>, OutboxError> {
@@ -403,6 +537,60 @@ impl OutboxStore {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Remember the salt and timestamp of the Exception record raised for an
+    /// EXCEPTION row, before the chain write is attempted.
+    pub async fn record_exception_salt(&self, id: &str, salt: &str, raised_at: &str) -> Result<(), OutboxError> {
+        sqlx::query(
+            "UPDATE outbox SET exception_salt = ?, exception_raised_at = ? WHERE transaction_request_id = ?",
+        )
+        .bind(salt)
+        .bind(raised_at)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// The Exception record is on chain.
+    pub async fn record_exception_tx(&self, id: &str, tx_id: &str, blockchain: &str) -> Result<(), OutboxError> {
+        sqlx::query(
+            "UPDATE outbox SET exception_tx_id = ?, exception_blockchain = ?, updated_at = ? \
+             WHERE transaction_request_id = ?",
+        )
+        .bind(tx_id)
+        .bind(blockchain)
+        .bind(rfc3339(Utc::now()))
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// EXCEPTION rows whose Exception record has not reached the chain yet,
+    /// oldest first.
+    pub async fn list_exceptions_without_record(&self, limit: i64) -> Result<Vec<OutboxRecord>, OutboxError> {
+        Ok(sqlx::query_as::<_, OutboxRecord>(
+            "SELECT * FROM outbox WHERE status = ? AND exception_salt IS NOT NULL \
+             AND exception_tx_id IS NULL ORDER BY updated_at ASC LIMIT ?",
+        )
+        .bind(status::EXCEPTION)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// The promise tx ids of this node's rows that a settlement covered, in a
+    /// stable order (the Settlement Reference record lists them).
+    pub async fn promise_tx_ids_for_settlement(&self, settlement_id: &str) -> Result<Vec<String>, OutboxError> {
+        Ok(sqlx::query_scalar(
+            "SELECT promise_tx_id FROM outbox WHERE settlement_id = ? AND promise_tx_id IS NOT NULL \
+             ORDER BY promise_tx_id",
+        )
+        .bind(settlement_id)
+        .fetch_all(&self.pool)
+        .await?)
     }
 
     async fn set_status(&self, id: &str, new_status: &str) -> Result<(), OutboxError> {
@@ -692,5 +880,94 @@ mod tests {
             due.is_empty(),
             "row attempted after the cutoff must not be due"
         );
+    }
+
+    #[tokio::test]
+    async fn duplicate_idempotency_key_is_rejected_as_such() {
+        let store = OutboxStore::connect_in_memory().await.unwrap();
+        let entry = |id: &'static str| NewEntry {
+            transaction_request_id: id,
+            bank_id: "b",
+            account_id: "a",
+            request_payload: "{}",
+            commitment_salt: "s",
+        };
+        store.insert_with_idempotency_key(entry("tr-1"), "key-1").await.unwrap();
+        let err = store.insert_with_idempotency_key(entry("tr-2"), "key-1").await.unwrap_err();
+        assert!(matches!(err, OutboxError::DuplicateIdempotencyKey), "{err:?}");
+        assert_eq!(
+            store.get_by_idempotency_key("key-1").await.unwrap().unwrap().transaction_request_id,
+            "tr-1"
+        );
+        // Rows without a key never collide with each other.
+        store.insert(entry("tr-3")).await.unwrap();
+        store.insert(entry("tr-4")).await.unwrap();
+        assert!(store.get_by_idempotency_key("other").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn retention_purges_only_finished_rows_older_than_the_cutoff() {
+        let store = OutboxStore::connect_in_memory().await.unwrap();
+        for id in ["old-exc", "new-exc", "old-settled", "old-unsettled", "old-initiated"] {
+            store
+                .insert(NewEntry {
+                    transaction_request_id: id,
+                    bank_id: "b",
+                    account_id: "a",
+                    request_payload: "{}",
+                    commitment_salt: "s",
+                })
+                .await
+                .unwrap();
+        }
+        for id in ["old-exc", "new-exc"] {
+            store.mark_exception(id, "gave up").await.unwrap();
+        }
+        for id in ["old-settled", "old-unsettled"] {
+            store.mark_submitted(id, Some(&format!("obp-{id}"))).await.unwrap();
+            store.mark_promise_written(id, "tx", "mock").await.unwrap();
+            store.mark_reported(id).await.unwrap();
+        }
+        store.mark_settled(&["obp-old-settled".into()], "settle-1").await.unwrap();
+        for id in ["old-exc", "old-settled", "old-unsettled", "old-initiated"] {
+            store.backdate(id, "2020-01-01T00:00:00Z").await.unwrap();
+        }
+
+        let gone = store.purge_finished_before("2025-01-01T00:00:00Z").await.unwrap();
+        assert_eq!(gone, 2);
+        assert!(store.get("old-exc").await.unwrap().is_none());
+        assert!(store.get("old-settled").await.unwrap().is_none());
+        assert!(store.get("new-exc").await.unwrap().is_some(), "recent exception kept");
+        assert!(store.get("old-unsettled").await.unwrap().is_some(), "unsettled REPORTED kept");
+        assert!(store.get("old-initiated").await.unwrap().is_some(), "in-flight row kept");
+    }
+
+    #[tokio::test]
+    async fn obp_status_is_recorded_by_obp_id_then_by_local_id() {
+        let store = OutboxStore::connect_in_memory().await.unwrap();
+        for id in ["tr-a", "tr-b"] {
+            store
+                .insert(NewEntry {
+                    transaction_request_id: id,
+                    bank_id: "b",
+                    account_id: "a",
+                    request_payload: "{}",
+                    commitment_salt: "s",
+                })
+                .await
+                .unwrap();
+        }
+        store.mark_submitted("tr-a", Some("obp-a")).await.unwrap();
+
+        assert!(store.record_obp_status("obp-a", "COMPLETED").await.unwrap());
+        let a = store.get("tr-a").await.unwrap().unwrap();
+        assert_eq!(a.obp_status.as_deref(), Some("COMPLETED"));
+        assert!(a.obp_status_at.is_some());
+        assert_eq!(a.status, status::SUBMITTED, "the node's own lifecycle is untouched");
+
+        assert!(store.record_obp_status("tr-b", "REJECTED").await.unwrap(), "falls back to the local id");
+        assert_eq!(store.get("tr-b").await.unwrap().unwrap().obp_status.as_deref(), Some("REJECTED"));
+
+        assert!(!store.record_obp_status("nope", "X").await.unwrap());
     }
 }

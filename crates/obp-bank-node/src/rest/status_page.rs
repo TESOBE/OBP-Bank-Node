@@ -49,6 +49,44 @@ pub async fn health() -> Response {
     json_response(StatusCode::OK, r#"{"status":"ok"}"#.to_string())
 }
 
+/// What a `/ready` probe looks at: the stores, OBP-API and the chain. These
+/// are the dependencies a request needs right now; Open Corridor being
+/// switched on and Interface C having connected are reported by `/status`
+/// but do not take the node out of rotation.
+#[derive(Debug, Serialize)]
+pub struct ReadyChecks {
+    pub database: Check,
+    pub obp_api: Check,
+    pub blockchain: Check,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReadyReport {
+    pub status: &'static str,
+    pub checks: ReadyChecks,
+}
+
+/// Readiness for a load balancer or Kubernetes: 200 `ready` when the stores,
+/// OBP-API and the chain answer, otherwise 503 `not_ready` with each check.
+pub async fn ready(State(state): State<BankNodeState>) -> Response {
+    let (database, obp_api, blockchain) = tokio::join!(
+        check_database(&state),
+        check_obp_api(&state.obp_api_url),
+        check_blockchain(state.blockchain_label, state.chain_health_url.as_deref()),
+    );
+    let checks = ReadyChecks { database, obp_api, blockchain };
+    let all_ok = [&checks.database, &checks.obp_api, &checks.blockchain]
+        .iter()
+        .all(|c| matches!(c.status, "ok" | "disabled"));
+    let (code, status) = if all_ok {
+        (StatusCode::OK, "ready")
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "not_ready")
+    };
+    let body = serde_json::to_string_pretty(&ReadyReport { status, checks }).unwrap_or_default();
+    json_response(code, body)
+}
+
 /// One check: `ok`, `warn`, `fail` or `disabled`, and what was seen.
 #[derive(Debug, Serialize)]
 pub struct Check {
@@ -102,7 +140,15 @@ pub struct StatusReport {
     /// Soft: outbox rows per status. Does not affect the overall status, but
     /// rows in EXCEPTION need an operator.
     pub outbox: Check,
+    /// Soft: settlements this bank is owed that need an operator — reported
+    /// paid but never seen arriving (MISMATCH), or netted long ago with the
+    /// debtor yet to pay.
+    pub incoming_settlements: Check,
 }
+
+/// A NETTED incoming settlement older than this is worth a look: the debtor's
+/// node normally pays within minutes of the netting.
+const NETTED_STALE_AFTER: Duration = Duration::from_secs(60 * 60);
 
 pub async fn status(State(state): State<BankNodeState>, headers: HeaderMap) -> Response {
     let report = run_checks(&state).await;
@@ -120,12 +166,13 @@ pub async fn status(State(state): State<BankNodeState>, headers: HeaderMap) -> R
 }
 
 pub async fn run_checks(state: &BankNodeState) -> StatusReport {
-    let (database, obp_api, open_corridor, blockchain, outbox) = tokio::join!(
+    let (database, obp_api, open_corridor, blockchain, outbox, incoming_settlements) = tokio::join!(
         check_database(state),
         check_obp_api(&state.obp_api_url),
         check_open_corridor(&state.obp_api_url, &state.bank_id),
         check_blockchain(state.blockchain_label, state.chain_health_url.as_deref()),
         check_outbox(state),
+        check_incoming(state),
     );
     let checks = Checks {
         database,
@@ -147,6 +194,32 @@ pub async fn run_checks(state: &BankNodeState) -> StatusReport {
         uptime_seconds: state.started_at.elapsed().as_secs(),
         checks,
         outbox,
+        incoming_settlements,
+    }
+}
+
+async fn check_incoming(state: &BankNodeState) -> Check {
+    let cutoff = (chrono::Utc::now() - chrono::Duration::from_std(NETTED_STALE_AFTER).unwrap_or_default())
+        .to_rfc3339();
+    match state.settlements.incoming_attention(&cutoff).await {
+        Ok(a) if a.mismatch == 0 && a.stale_netted == 0 => {
+            match state.settlements.list_incoming(1).await {
+                Ok(rows) if rows.is_empty() => Check::ok("no incoming settlements"),
+                Ok(_) => Check::ok("none need attention"),
+                Err(e) => Check::fail(e.to_string()),
+            }
+        }
+        Ok(a) => {
+            let hours = NETTED_STALE_AFTER.as_secs() / 3600;
+            Check::warn(format!(
+                "MISMATCH {} (reported paid, nothing arrived), NETTED for more than {hours} h {} — \
+                 see /obp-bank-node/v5.1.0/incoming-settlements; ids: {}",
+                a.mismatch,
+                a.stale_netted,
+                a.ids.join(", ")
+            ))
+        }
+        Err(e) => Check::fail(e.to_string()),
     }
 }
 
@@ -369,9 +442,9 @@ fn html(r: &StatusReport) -> String {
   <table>
 {database}{obp_api}{open_corridor}{blockchain}{interface_c}  </table>
 
-  <h2>Outbox (soft &mdash; does not affect overall status)</h2>
+  <h2>Outbox and incoming settlements (soft &mdash; do not affect overall status)</h2>
   <table>
-{outbox}  </table>
+{outbox}{incoming}  </table>
 </body>
 </html>"#,
         status = esc(r.status),
@@ -388,5 +461,6 @@ fn html(r: &StatusReport) -> String {
         blockchain = check_row("blockchain", &r.checks.blockchain),
         interface_c = check_row("interface_c", &r.checks.interface_c),
         outbox = check_row("transaction requests", &r.outbox),
+        incoming = check_row("incoming settlements", &r.incoming_settlements),
     )
 }
