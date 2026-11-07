@@ -144,6 +144,7 @@ reports — OBP-API must handle these (do **not** treat the payment as delivered
 | `OBP-BANK-NODE-CBS-DELIVERY-FAILED` | credit did not reach the CBS (transport error / CBS 5xx) — transient, OBP-API retries |
 | `OBP-BANK-NODE-CBS-REJECTED` | CBS answered 4xx: it refuses this beneficiary (unknown account, name mismatch) — permanent, OBP-API parks the row STICKY |
 | `OBP-BANK-NODE-SETTLEMENT-FAILED` | on-chain settlement transfer failed |
+| `OBP-BANK-NODE-SETTLEMENT-BELOW-MINIMUM` | the net sizes to less than one Cardano output may carry (min-UTxO, 1 ADA); nothing was sent — permanent, the same instruction always fails this way |
 | `OBP-BANK-NODE-SETTLEMENT-NOT-CONFIGURED` | that node has no settlement rail |
 | `OBP-BANK-NODE-BAD-MESSAGE` | OBP-API sent a malformed body |
 | `OBP-BANK-NODE-NOT-IMPLEMENTED` | unknown `messageId` |
