@@ -15,22 +15,8 @@ use std::path::{Path, PathBuf};
 
 /// `file|fragment` -> why that path is still below v5.1.0. A line is allowed
 /// when it is in `file` (relative to the workspace root) and contains
-/// `fragment`. Each entry is a call site that still has to move.
-const BELOW_V510: &[(&str, &str)] = &[
-    ("crates/obp-bank-node-ui/src/main.rs|/obp/v2.2.0/banks/{id}/fx", "doc comment for the FX setup entries"),
-    ("crates/obp-bank-node-ui/src/setup.rs|/obp/v2.2.0/banks/{b}/fx/{from}/{to}", "reads an FX rate"),
-    ("crates/obp-bank-node-ui/src/setup.rs|/obp/v3.1.0/management/banks/{bank_id}/accounts/{a}", "updates an account's routings"),
-    ("crates/obp-bank-node-ui/src/setup.rs|/obp/v4.0.0/consumers/{id}/scopes", "reads the node Consumer's Scopes"),
-    ("crates/obp-bank-node-ui/src/setup.rs|/obp/v3.0.0/entitlement-requests", "requests an Entitlement"),
-    ("crates/obp-bank-node-ui/src/setup.rs|/obp/v5.0.0/banks", "creates the bank"),
-    ("crates/obp-bank-node-ui/src/setup.rs|/obp/v2.2.0/banks/{bank_id}/fx", "sets an FX rate"),
-    ("crates/obp-bank-node-ui/src/setup_tests.rs|/obp/v3.0.0/entitlement-requests", "stub OBP-API route"),
-    ("crates/obp-bank-node-ui/src/setup_tests.rs|/obp/v2.2.0/banks/:bank_id/fx/:from/:to", "stub OBP-API route"),
-    ("crates/obp-bank-node-ui/src/setup_tests.rs|/obp/v4.0.0/consumers/:consumer_id/scopes", "stub OBP-API route"),
-    ("crates/obp-bank-node/src/rest/status_page.rs|/obp/v2.1.0/banks/{bank_id}/transaction-request-types", "checks Open Corridor is on"),
-    ("dev/setup_obp.sh|/obp/v5.0.0/banks", "creates the dev banks"),
-    ("dev/setup_obp.sh|/obp/v2.2.0/banks/$B/fx", "sets the dev FX rates"),
-];
+/// `fragment`. Empty: every call has a v5.1.0 or newer equivalent.
+const BELOW_V510: &[(&str, &str)] = &[];
 
 /// Where OBP-API paths are written: Rust code, the UI's static pages, and the
 /// dev scripts and configs.

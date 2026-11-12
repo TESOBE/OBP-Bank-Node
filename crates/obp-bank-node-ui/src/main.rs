@@ -116,7 +116,7 @@ pub struct SetupBank {
     pub full_name: Option<String>,
     #[serde(default)]
     pub accounts: Vec<SetupAccount>,
-    /// One entry per direction for `PUT /obp/v2.2.0/banks/{id}/fx`.
+    /// One entry per direction for `PUT /obp/v5.1.0/banks/{id}/fx`.
     #[serde(default)]
     pub fx: Vec<SetupFxRate>,
     /// Body for `PUT /obp/v7.0.0/banks/{id}/amqp-broker`, verbatim.

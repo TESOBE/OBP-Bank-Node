@@ -73,10 +73,10 @@
   },
   {
    "verb": "GET",
-   "path": "/obp/v2.2.0/banks/BANK_ID/fx/FROM_CURRENCY_CODE/TO_CURRENCY_CODE",
+   "path": "/obp/v5.1.0/banks/BANK_ID/fx/FROM_CURRENCY_CODE/TO_CURRENCY_CODE",
    "source": "crates/obp-bank-node-ui/src/setup.rs",
    "needles": [
-    "\"/obp/v2.2.0/banks/{b}/fx/{from}/{to}\""
+    "\"/obp/v5.1.0/banks/{b}/fx/{from}/{to}\""
    ],
    "reads": [
     "conversion_value"
@@ -131,10 +131,10 @@
   },
   {
    "verb": "PUT",
-   "path": "/obp/v3.1.0/management/banks/BANK_ID/accounts/ACCOUNT_ID",
+   "path": "/obp/v5.1.0/management/banks/BANK_ID/accounts/ACCOUNT_ID",
    "source": "crates/obp-bank-node-ui/src/setup.rs",
    "needles": [
-    "\"/obp/v3.1.0/management/banks/{bank_id}/accounts/{a}\""
+    "\"/obp/v5.1.0/management/banks/{bank_id}/accounts/{a}\""
    ],
    "reads": [],
    "note": "The answer is relayed to the page."
@@ -165,10 +165,10 @@
   },
   {
    "verb": "GET",
-   "path": "/obp/v4.0.0/consumers/CONSUMER_ID/scopes",
+   "path": "/obp/v5.1.0/consumers/CONSUMER_ID/scopes",
    "source": "crates/obp-bank-node-ui/src/setup.rs",
    "needles": [
-    "\"/obp/v4.0.0/consumers/{id}/scopes\""
+    "\"/obp/v5.1.0/consumers/{id}/scopes\""
    ],
    "reads": [
     "list[].role_name",
@@ -226,10 +226,10 @@
   },
   {
    "verb": "POST",
-   "path": "/obp/v3.0.0/entitlement-requests",
+   "path": "/obp/v5.1.0/entitlement-requests",
    "source": "crates/obp-bank-node-ui/src/setup.rs",
    "needles": [
-    "\"/obp/v3.0.0/entitlement-requests\""
+    "\"/obp/v5.1.0/entitlement-requests\""
    ],
    "reads": [],
    "note": "The answer is relayed to the page."
@@ -245,19 +245,19 @@
   },
   {
    "verb": "POST",
-   "path": "/obp/v5.0.0/banks",
+   "path": "/obp/v5.1.0/banks",
    "source": "crates/obp-bank-node-ui/src/setup.rs",
    "needles": [
-    "\"/obp/v5.0.0/banks\""
+    "\"/obp/v5.1.0/banks\""
    ],
    "reads": []
   },
   {
    "verb": "PUT",
-   "path": "/obp/v2.2.0/banks/BANK_ID/fx",
+   "path": "/obp/v5.1.0/banks/BANK_ID/fx",
    "source": "crates/obp-bank-node-ui/src/setup.rs",
    "needles": [
-    "\"/obp/v2.2.0/banks/{bank_id}/fx\""
+    "\"/obp/v5.1.0/banks/{bank_id}/fx\""
    ],
    "reads": []
   },
@@ -317,10 +317,10 @@
   },
   {
    "verb": "GET",
-   "path": "/obp/v2.1.0/banks/BANK_ID/transaction-request-types",
+   "path": "/obp/v5.1.0/banks/BANK_ID/transaction-request-types",
    "source": "crates/obp-bank-node/src/rest/status_page.rs",
    "needles": [
-    "\"{}/obp/v2.1.0/banks/{bank_id}/transaction-request-types\""
+    "\"{}/obp/v5.1.0/banks/{bank_id}/transaction-request-types\""
    ],
    "reads": [
     "transaction_request_types[].transaction_request_type"

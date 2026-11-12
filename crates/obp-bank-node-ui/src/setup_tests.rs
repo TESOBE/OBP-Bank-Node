@@ -156,7 +156,7 @@ fn obp_stub(base: String, captured: Arc<Mutex<Captured>>) -> Router {
             ),
         )
         .route(
-            "/obp/v3.0.0/entitlement-requests",
+            "/obp/v5.1.0/entitlement-requests",
             post(|State(s): State<Stub>, Json(body): Json<Value>| async move {
                 s.captured
                     .lock()
@@ -269,7 +269,7 @@ fn obp_stub(base: String, captured: Arc<Mutex<Captured>>) -> Router {
             ),
         )
         .route(
-            "/obp/v2.2.0/banks/:bank_id/fx/:from/:to",
+            "/obp/v5.1.0/banks/:bank_id/fx/:from/:to",
             get(|| async {
                 (
                     StatusCode::NOT_FOUND,
@@ -300,7 +300,7 @@ fn obp_stub(base: String, captured: Arc<Mutex<Captured>>) -> Router {
             ),
         )
         .route(
-            "/obp/v4.0.0/consumers/:consumer_id/scopes",
+            "/obp/v5.1.0/consumers/:consumer_id/scopes",
             get(|Path(consumer_id): Path<String>| async move {
                 assert_eq!(consumer_id, "node-a-consumer-id");
                 Json(json!({ "list": [

@@ -1,16 +1,12 @@
 {
  "about": "Written by obp-api-contract/snapshot.py; do not edit by hand.",
  "obp_api": {
-  "https://apisandbox.openbankproject.com": {
-   "version": "v5.0.0",
-   "git_commit": "6800ac33197fc564caaa7e0ef169e491edc8e526"
-  },
   "https://k8s.openbankproject.com": {
    "version": "v7.0.0",
    "git_commit": "474d4bcc554f1d8e9516e12d85be121d92410aa5"
   }
  },
- "taken_at": "2026-11-12T11:58:40Z",
+ "taken_at": "2026-11-12T12:08:12Z",
  "endpoints": [
   {
    "verb": "GET",
@@ -138,10 +134,10 @@
   },
   {
    "verb": "GET",
-   "path": "/obp/v2.2.0/banks/BANK_ID/fx/FROM_CURRENCY_CODE/TO_CURRENCY_CODE",
-   "docs_from": "https://apisandbox.openbankproject.com",
+   "path": "/obp/v5.1.0/banks/BANK_ID/fx/FROM_CURRENCY_CODE/TO_CURRENCY_CODE",
+   "docs_from": "https://k8s.openbankproject.com",
    "operation_id": "OBPv2.2.0-getCurrentFxRate",
-   "documented_path": "/obp/v2.2.0/banks/BANK_ID/fx/FROM_CURRENCY_CODE/TO_CURRENCY_CODE",
+   "documented_path": "/obp/v5.1.0/banks/BANK_ID/fx/FROM_CURRENCY_CODE/TO_CURRENCY_CODE",
    "fields": [
     "bank_id",
     "conversion_value",
@@ -234,10 +230,10 @@
   },
   {
    "verb": "PUT",
-   "path": "/obp/v3.1.0/management/banks/BANK_ID/accounts/ACCOUNT_ID",
-   "docs_from": "https://apisandbox.openbankproject.com",
+   "path": "/obp/v5.1.0/management/banks/BANK_ID/accounts/ACCOUNT_ID",
+   "docs_from": "https://k8s.openbankproject.com",
    "operation_id": "OBPv3.1.0-updateAccount",
-   "documented_path": "/obp/v3.1.0/management/banks/BANK_ID/accounts/ACCOUNT_ID",
+   "documented_path": "/obp/v5.1.0/management/banks/BANK_ID/accounts/ACCOUNT_ID",
    "fields": [
     "account_id",
     "account_routings",
@@ -313,10 +309,10 @@
   },
   {
    "verb": "GET",
-   "path": "/obp/v4.0.0/consumers/CONSUMER_ID/scopes",
-   "docs_from": "https://apisandbox.openbankproject.com",
+   "path": "/obp/v5.1.0/consumers/CONSUMER_ID/scopes",
+   "docs_from": "https://k8s.openbankproject.com",
    "operation_id": "OBPv4.0.0-getScopes",
-   "documented_path": "/obp/v4.0.0/consumers/CONSUMER_ID/scopes",
+   "documented_path": "/obp/v5.1.0/consumers/CONSUMER_ID/scopes",
    "fields": [
     "list",
     "list[]",
@@ -555,10 +551,10 @@
   },
   {
    "verb": "POST",
-   "path": "/obp/v3.0.0/entitlement-requests",
-   "docs_from": "https://apisandbox.openbankproject.com",
+   "path": "/obp/v5.1.0/entitlement-requests",
+   "docs_from": "https://k8s.openbankproject.com",
    "operation_id": "OBPv3.0.0-addEntitlementRequest",
-   "documented_path": "/obp/v3.0.0/entitlement-requests",
+   "documented_path": "/obp/v5.1.0/entitlement-requests",
    "fields": [
     "bank_id",
     "created",
@@ -601,10 +597,10 @@
   },
   {
    "verb": "POST",
-   "path": "/obp/v5.0.0/banks",
-   "docs_from": "https://apisandbox.openbankproject.com",
+   "path": "/obp/v5.1.0/banks",
+   "docs_from": "https://k8s.openbankproject.com",
    "operation_id": "OBPv5.0.0-createBank",
-   "documented_path": "/obp/v5.0.0/banks",
+   "documented_path": "/obp/v5.1.0/banks",
    "fields": [
     "attributes",
     "attributes[]",
@@ -623,10 +619,10 @@
   },
   {
    "verb": "PUT",
-   "path": "/obp/v2.2.0/banks/BANK_ID/fx",
-   "docs_from": "https://apisandbox.openbankproject.com",
+   "path": "/obp/v5.1.0/banks/BANK_ID/fx",
+   "docs_from": "https://k8s.openbankproject.com",
    "operation_id": "OBPv2.2.0-createFx",
-   "documented_path": "/obp/v2.2.0/banks/BANK_ID/fx",
+   "documented_path": "/obp/v5.1.0/banks/BANK_ID/fx",
    "fields": [
     "bank_id",
     "conversion_value",
@@ -728,10 +724,10 @@
   },
   {
    "verb": "GET",
-   "path": "/obp/v2.1.0/banks/BANK_ID/transaction-request-types",
-   "docs_from": "https://apisandbox.openbankproject.com",
+   "path": "/obp/v5.1.0/banks/BANK_ID/transaction-request-types",
+   "docs_from": "https://k8s.openbankproject.com",
    "operation_id": "OBPv2.1.0-getTransactionRequestTypesSupportedByBank",
-   "documented_path": "/obp/v2.1.0/banks/BANK_ID/transaction-request-types",
+   "documented_path": "/obp/v5.1.0/banks/BANK_ID/transaction-request-types",
    "fields": [
     "transaction_request_types",
     "transaction_request_types[]",

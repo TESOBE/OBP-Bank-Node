@@ -684,7 +684,7 @@ async fn status(State(state): State<SetupState>, headers: HeaderMap) -> Response
             let (status_str, detail) = match state
                 .obp(
                     Method::GET,
-                    &format!("/obp/v2.2.0/banks/{b}/fx/{from}/{to}"),
+                    &format!("/obp/v5.1.0/banks/{b}/fx/{from}/{to}"),
                     Some(&token),
                     None,
                 )
@@ -957,7 +957,7 @@ async fn create_account(
             return state
                 .obp(
                     Method::PUT,
-                    &format!("/obp/v3.1.0/management/banks/{bank_id}/accounts/{a}"),
+                    &format!("/obp/v5.1.0/management/banks/{bank_id}/accounts/{a}"),
                     Some(token),
                     Some(&json!({
                         "label": label,
@@ -1084,7 +1084,7 @@ async fn node_items(state: &SetupState, token: &str, b: &str, node: &SetupNode) 
             state
                 .obp(
                     Method::GET,
-                    &format!("/obp/v4.0.0/consumers/{id}/scopes"),
+                    &format!("/obp/v5.1.0/consumers/{id}/scopes"),
                     Some(token),
                     None,
                 )
@@ -1285,7 +1285,7 @@ async fn request_entitlement(
     match state
         .obp(
             Method::POST,
-            "/obp/v3.0.0/entitlement-requests",
+            "/obp/v5.1.0/entitlement-requests",
             Some(&token),
             Some(&json!({ "bank_id": req.bank_id, "role_name": req.role })),
         )
@@ -1349,7 +1349,7 @@ async fn apply(
                 state
                     .obp(
                         Method::POST,
-                        "/obp/v5.0.0/banks",
+                        "/obp/v5.1.0/banks",
                         Some(&token),
                         Some(&json!({
                             "id": bank.id,
@@ -1407,7 +1407,7 @@ async fn apply(
                             state
                                 .obp(
                                     Method::PUT,
-                                    &format!("/obp/v2.2.0/banks/{bank_id}/fx"),
+                                    &format!("/obp/v5.1.0/banks/{bank_id}/fx"),
                                     Some(&token),
                                     Some(&json!({
                                         "bank_id": bank_id,
