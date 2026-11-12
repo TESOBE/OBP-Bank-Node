@@ -1,0 +1,405 @@
+{
+ "about": "Every OBP-API call the Bank-Node and its UI make: verb, path (OBP placeholders in capitals), the source file and the text that makes the call (needles), and the response fields the code reads. crates/obp-bank-node-ui/tests/obp_contract.rs checks this list against the source and against snapshot.json, which obp-api-contract/snapshot.py writes from an OBP-API's resource docs.",
+ "calls": [
+  {
+   "verb": "GET",
+   "path": "/obp/v6.0.0/users/current",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v6.0.0/users/current\""
+   ],
+   "reads": [
+    "user_id",
+    "username",
+    "entitlements.list[].bank_id",
+    "entitlements.list[].role_name",
+    "entitlements.list[].created_by_process",
+    "entitlements.list[].granted_by_user_id"
+   ],
+   "undocumented_fields": [
+    "entitlements.list[].created_by_process",
+    "entitlements.list[].granted_by_user_id"
+   ],
+   "note": "OBP-API returns both fields (checked on k8s.openbankproject.com, 2026-11-12); its v6.0.0 docs leave them out."
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v5.1.0/root",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v5.1.0/root\""
+   ],
+   "reads": [
+    "version",
+    "git_commit"
+   ]
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v7.0.0/routing-schemes/SCHEME",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v7.0.0/routing-schemes/{name}\""
+   ],
+   "reads": [
+    "status"
+   ]
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v5.1.0/banks/BANK_ID",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v5.1.0/banks/{b}\""
+   ],
+   "reads": [
+    "full_name"
+   ]
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v6.0.0/banks/BANK_ID/account-directory",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v6.0.0/banks/{b}/account-directory?limit=500\"",
+    "\"/obp/v6.0.0/banks/{}/account-directory?limit=500\""
+   ],
+   "reads": [
+    "accounts[].account_id",
+    "accounts[].label",
+    "accounts[].account_routings[].scheme",
+    "accounts[].account_routings[].address"
+   ]
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v2.2.0/banks/BANK_ID/fx/FROM_CURRENCY_CODE/TO_CURRENCY_CODE",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v2.2.0/banks/{b}/fx/{from}/{to}\""
+   ],
+   "reads": [
+    "conversion_value"
+   ]
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v7.0.0/banks/BANK_ID/amqp-broker",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v7.0.0/banks/{b}/amqp-broker\""
+   ],
+   "reads": [
+    "virtual_host"
+   ],
+   "note": "Also compares every key of the configured broker body except password with the answer."
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v5.1.0/users/username/USERNAME",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v5.1.0/users/username/{}\"",
+    "\"/obp/v5.1.0/users/username/{username}\""
+   ],
+   "reads": [
+    "user_id",
+    "entitlements.list[].bank_id",
+    "entitlements.list[].role_name"
+   ],
+   "undocumented_endpoint": "OBP-API leaves getUserByUsername out of v5.1.0 and later (excludeEndpointsV510: the path has no provider); it still answers through the version bridge. GET /obp/v7.0.0/users?username= returns the same user_id and entitlements."
+  },
+  {
+   "verb": "PUT",
+   "path": "/obp/v7.0.0/banks/BANK_ID/accounts/ACCOUNT_ID",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v7.0.0/banks/{bank_id}/accounts/{a}\""
+   ],
+   "reads": [],
+   "note": "The answer is relayed to the page."
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v7.0.0/banks/BANK_ID/accounts",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v7.0.0/banks/{bank_id}/accounts\""
+   ],
+   "reads": [],
+   "note": "The answer is relayed; an OBP-30208 refusal switches to the account update below."
+  },
+  {
+   "verb": "PUT",
+   "path": "/obp/v3.1.0/management/banks/BANK_ID/accounts/ACCOUNT_ID",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v3.1.0/management/banks/{bank_id}/accounts/{a}\""
+   ],
+   "reads": [],
+   "note": "The answer is relayed to the page."
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v6.0.0/management/consumers",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v6.0.0/management/consumers?limit=1000\""
+   ],
+   "reads": [
+    "consumers[].app_name",
+    "consumers[].consumer_id"
+   ]
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v7.0.0/management/platform-apps",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "Method::GET, \"/obp/v7.0.0/management/platform-apps\""
+   ],
+   "reads": [
+    "platform_apps[].consumer_id",
+    "platform_apps[].state"
+   ]
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v4.0.0/consumers/CONSUMER_ID/scopes",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v4.0.0/consumers/{id}/scopes\""
+   ],
+   "reads": [
+    "list[].role_name",
+    "list[].bank_id"
+   ]
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v7.0.0/banks/BANK_ID/accounts/ACCOUNT_ID/views/VIEW_ID/consumer-account-access",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v7.0.0/banks/{b}/accounts/{a}/views/owner/consumer-account-access\""
+   ],
+   "reads": [
+    "consumer_account_access[].consumer_id",
+    "consumer_account_access[].view_id"
+   ]
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v5.1.0/banks/BANK_ID/accounts/ACCOUNT_ID/views/VIEW_ID/account-access/grant",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v5.1.0/banks/{bank_id}/accounts/{account_id}\"",
+    "\"{base}/views/owner/account-access/grant\""
+   ],
+   "reads": []
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v6.0.0/management/banks/BANK_ID/accounts/ACCOUNT_ID/views",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v6.0.0/management/banks/{bank_id}/accounts/{account_id}/views\""
+   ],
+   "reads": []
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v7.0.0/banks/BANK_ID/accounts/ACCOUNT_ID/views/VIEW_ID/consumer-account-access",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v7.0.0/banks/{bank_id}/accounts/{account_id}/views/ManageCustomViews/consumer-account-access\""
+   ],
+   "reads": []
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v5.1.0/users/USER_ID/entitlements",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v5.1.0/users/{user_id}/entitlements\""
+   ],
+   "reads": []
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v3.0.0/entitlement-requests",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v3.0.0/entitlement-requests\""
+   ],
+   "reads": [],
+   "note": "The answer is relayed to the page."
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v7.0.0/routing-schemes",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v7.0.0/routing-schemes\""
+   ],
+   "reads": []
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v5.0.0/banks",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v5.0.0/banks\""
+   ],
+   "reads": []
+  },
+  {
+   "verb": "PUT",
+   "path": "/obp/v2.2.0/banks/BANK_ID/fx",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v2.2.0/banks/{bank_id}/fx\""
+   ],
+   "reads": []
+  },
+  {
+   "verb": "PUT",
+   "path": "/obp/v7.0.0/banks/BANK_ID/amqp-broker",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v7.0.0/banks/{bank_id}/amqp-broker\""
+   ],
+   "reads": []
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v7.0.0/management/platform-apps",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "                            \"/obp/v7.0.0/management/platform-apps\","
+   ],
+   "reads": []
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v7.0.0/consumers/CONSUMER_ID/scopes",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "\"/obp/v7.0.0/consumers/{consumer_id}/scopes\""
+   ],
+   "reads": []
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v5.1.0/well-known",
+   "source": "crates/obp-bank-node-ui/src/oidc.rs",
+   "needles": [
+    "\"{}/obp/v5.1.0/well-known\""
+   ],
+   "reads": [
+    "well_known_uris[].provider",
+    "well_known_uris[].url"
+   ],
+   "undocumented_fields": [
+    "well_known_uris[].provider",
+    "well_known_uris[].url"
+   ],
+   "note": "OBP-API returns these fields (checked on k8s.openbankproject.com, 2026-11-12); the documented response schema is empty."
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v6.0.0/root",
+   "source": "crates/obp-bank-node/src/rest/status_page.rs",
+   "needles": [
+    "\"{}/obp/v6.0.0/root\""
+   ],
+   "reads": [],
+   "note": "Only the status code is checked."
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v2.1.0/banks/BANK_ID/transaction-request-types",
+   "source": "crates/obp-bank-node/src/rest/status_page.rs",
+   "needles": [
+    "\"{}/obp/v2.1.0/banks/{bank_id}/transaction-request-types\""
+   ],
+   "reads": [
+    "transaction_request_types[].transaction_request_type"
+   ]
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v7.0.0/banks/BANK_ID/accounts/ACCOUNT_ID/VIEW_ID/transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests",
+   "source": "crates/obp-bank-node/src/obp_client.rs",
+   "needles": [
+    "const OBP_API_VERSION: &str = \"v7.0.0\";",
+    "\"{base}/obp/{ver}/banks/{bank}/accounts/{acct}/{view}\\"
+   ],
+   "reads": [
+    "transaction_request_id|id"
+   ],
+   "note": "Reads transaction_request_id, or id when it is absent; OBP-API documents id."
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v7.0.0/banks/BANK_ID/open-corridor/settlements",
+   "source": "crates/obp-bank-node/src/obp_client.rs",
+   "needles": [
+    "const OBP_API_VERSION: &str = \"v7.0.0\";",
+    "\"{base}/obp/{ver}/banks/{bank}/open-corridor/settlements\""
+   ],
+   "reads": [
+    "settlement_id",
+    "covered_transaction_request_ids"
+   ]
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v7.0.0/banks/BANK_ID/open-corridor/settlements/SETTLEMENT_ID",
+   "source": "crates/obp-bank-node/src/obp_client.rs",
+   "needles": [
+    "const OBP_API_VERSION: &str = \"v7.0.0\";",
+    "\"{base}/obp/{ver}/banks/{bank}/open-corridor/settlements\""
+   ],
+   "reads": [
+    "settlement_id",
+    "covered_transaction_request_ids"
+   ]
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v7.0.0/banks/BANK_ID/accounts/ACCOUNT_ID/transaction-requests/TRANSACTION_REQUEST_ID/open-corridor/promise",
+   "source": "crates/obp-bank-node/src/obp_client.rs",
+   "needles": [
+    "const OBP_API_VERSION: &str = \"v7.0.0\";",
+    "\"{base}/obp/{ver}/banks/{bank}/accounts/{acct}\\"
+   ],
+   "reads": []
+  },
+  {
+   "verb": "PUT",
+   "path": "/obp/v7.0.0/consumers/current/platform-app",
+   "source": "crates/obp-bank-node/src/obp_client.rs",
+   "needles": [
+    "const OBP_API_VERSION: &str = \"v7.0.0\";",
+    "\"{}/obp/{}/consumers/current/platform-app\""
+   ],
+   "reads": []
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v7.0.0/routing-schemes",
+   "source": "crates/obp-bank-node/src/obp_client.rs",
+   "needles": [
+    "const OBP_API_VERSION: &str = \"v7.0.0\";",
+    "\"{}/obp/{}/routing-schemes?status=ACTIVE&limit={}&offset={}\""
+   ],
+   "reads": [
+    "routing_schemes[].scheme",
+    "routing_schemes[].status",
+    "routing_schemes[].address_pattern",
+    "routing_schemes[].example_address",
+    "pagination.total"
+   ]
+  }
+ ]
+}
