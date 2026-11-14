@@ -96,18 +96,19 @@
   },
   {
    "verb": "GET",
-   "path": "/obp/v5.1.0/users/username/USERNAME",
+   "path": "/obp/v7.0.0/users",
    "source": "crates/obp-bank-node-ui/src/setup.rs",
    "needles": [
-    "\"/obp/v5.1.0/users/username/{}\"",
-    "\"/obp/v5.1.0/users/username/{username}\""
+    "\"/obp/v7.0.0/users?{query}\""
    ],
    "reads": [
-    "user_id",
-    "entitlements.list[].bank_id",
-    "entitlements.list[].role_name"
+    "users[].username",
+    "users[].is_deleted",
+    "users[].user_id",
+    "users[].entitlements.list[].bank_id",
+    "users[].entitlements.list[].role_name"
    ],
-   "undocumented_endpoint": "OBP-API leaves getUserByUsername out of v5.1.0 and later (excludeEndpointsV510: the path has no provider); it still answers through the version bridge. GET /obp/v7.0.0/users?username= returns the same user_id and entitlements."
+   "note": "Called with ?username=, which OBP-API matches exactly. One live user with that username is the user; none or several is an error."
   },
   {
    "verb": "PUT",

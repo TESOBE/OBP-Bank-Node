@@ -6,7 +6,7 @@
    "git_commit": "474d4bcc554f1d8e9516e12d85be121d92410aa5"
   }
  },
- "taken_at": "2026-11-12T12:08:12Z",
+ "taken_at": "2026-11-14T13:38:16Z",
  "endpoints": [
   {
    "verb": "GET",
@@ -164,9 +164,44 @@
   },
   {
    "verb": "GET",
-   "path": "/obp/v5.1.0/users/username/USERNAME",
+   "path": "/obp/v7.0.0/users",
    "docs_from": "https://k8s.openbankproject.com",
-   "missing": true
+   "operation_id": "OBPv6.0.0-getUsers",
+   "documented_path": "/obp/v7.0.0/users",
+   "fields": [
+    "users",
+    "users[]",
+    "users[].agreements",
+    "users[].agreements[]",
+    "users[].agreements[].text",
+    "users[].agreements[].type",
+    "users[].created_date",
+    "users[].email",
+    "users[].email_validated",
+    "users[].entitlements",
+    "users[].entitlements.list",
+    "users[].entitlements.list[]",
+    "users[].entitlements.list[].bank_id",
+    "users[].entitlements.list[].entitlement_id",
+    "users[].entitlements.list[].role_name",
+    "users[].first_name",
+    "users[].is_deleted",
+    "users[].is_locked",
+    "users[].last_marketing_agreement_signed_date",
+    "users[].last_name",
+    "users[].last_used_locale",
+    "users[].provider",
+    "users[].provider_id",
+    "users[].updated_date",
+    "users[].user_id",
+    "users[].username",
+    "users[].views",
+    "users[].views.list",
+    "users[].views.list[]",
+    "users[].views.list[].account_id",
+    "users[].views.list[].bank_id",
+    "users[].views.list[].view_id"
+   ]
   },
   {
    "verb": "PUT",
