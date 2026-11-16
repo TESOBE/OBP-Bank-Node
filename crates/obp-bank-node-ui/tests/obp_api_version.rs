@@ -8,7 +8,9 @@
 //! path the Bank-Node, its UI and its dev scripts send to OBP-API must use
 //! v5.1.0 or newer. This test reads the sources of the whole workspace and
 //! fails on any `obp/vX.Y.Z` below v5.1.0 that is not listed in
-//! [`BELOW_V510`], so a new call on an old version cannot slip in.
+//! [`BELOW_V510`], so a new call on an old version cannot slip in. It also
+//! reads the `OBP_API_VERSION` constant the Bank-Node builds its URLs from, and
+//! the paths in the contract files, which name the version the calls must use.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,8 +22,8 @@ const BELOW_V510: &[(&str, &str)] = &[];
 
 /// Where OBP-API paths are written: Rust code, the UI's static pages, and the
 /// dev scripts and configs.
-const SOURCE_ROOTS: &[&str] = &["crates", "dev", "docker"];
-const EXTENSIONS: &[&str] = &["rs", "sh", "js", "html", "yaml", "yml", "toml"];
+const SOURCE_ROOTS: &[&str] = &["crates", "dev", "docker", "obp-api-contract"];
+const EXTENSIONS: &[&str] = &["rs", "sh", "js", "html", "yaml", "yml", "toml", "json"];
 const SKIP_DIRS: &[&str] = &["target", "node_modules"];
 /// This file, whose examples and list name old versions on purpose.
 const THIS_FILE: &str = "crates/obp-bank-node-ui/tests/obp_api_version.rs";
@@ -66,6 +68,21 @@ fn versions_below_v510(line: &str) -> Vec<String> {
     found
 }
 
+/// Every `OBP_API_VERSION ... "vX.Y.Z"` in `line` whose version is below v5.1.0: the constant the
+/// Bank-Node puts into the URLs it builds, which carry no literal `obp/vX.Y.Z`.
+fn version_constants_below_v510(line: &str) -> Vec<String> {
+    let Some(at) = line.find("OBP_API_VERSION") else { return vec![] };
+    let after = &line[at + "OBP_API_VERSION".len()..];
+    let Some(quote) = after.find("\"v") else { return vec![] };
+    let version: String = after[quote + 2..].chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let parts: Vec<u32> = version.split('.').filter_map(|p| p.parse().ok()).collect();
+    if parts.len() == 3 && version.split('.').count() == 3 && (parts[0], parts[1], parts[2]) < (5, 1, 0) {
+        vec![format!("OBP_API_VERSION v{version}")]
+    } else {
+        vec![]
+    }
+}
+
 fn calls_below_v510() -> Vec<String> {
     let root = workspace_root();
     let mut files = Vec::new();
@@ -80,7 +97,7 @@ fn calls_below_v510() -> Vec<String> {
         }
         let Ok(text) = fs::read_to_string(&file) else { continue };
         for (i, line) in text.lines().enumerate() {
-            for version in versions_below_v510(line) {
+            for version in versions_below_v510(line).into_iter().chain(version_constants_below_v510(line)) {
                 let allowed = BELOW_V510.iter().any(|(key, _)| {
                     let (key_file, fragment) = key.split_once('|').unwrap();
                     key_file == rel && line.contains(fragment)
@@ -132,4 +149,31 @@ fn recognises_the_ways_a_path_below_v510_can_be_written() {
     assert!(versions_below_v510("/obp/v5.1.0/banks").is_empty());
     assert!(versions_below_v510("/obp/v6.0.0/root and /obp/v7.0.0/routing-schemes").is_empty());
     assert!(versions_below_v510("/obp/dynamic-entity/banks/x").is_empty());
+}
+
+#[test]
+fn recognises_an_old_version_in_the_version_constant() {
+    // Tests the matcher itself: the constant the URLs are built from is read like a literal path.
+    assert_eq!(
+        version_constants_below_v510(r#"const OBP_API_VERSION: &str = "v4.0.0";"#),
+        vec!["OBP_API_VERSION v4.0.0"]
+    );
+    assert!(version_constants_below_v510(r#"const OBP_API_VERSION: &str = "v7.0.0";"#).is_empty());
+    assert!(version_constants_below_v510(r#"const OBP_API_VERSION: &str = "v5.1.0";"#).is_empty());
+    assert!(version_constants_below_v510("ver = OBP_API_VERSION,").is_empty());
+}
+
+#[test]
+fn reads_the_version_constant_and_the_contract() {
+    // Tests that the scan reaches the two places a literal `obp/vX.Y.Z` hides or is recorded: the constant
+    // in obp_client.rs, and the paths in the contract files.
+    let root = workspace_root();
+    let client = fs::read_to_string(root.join("crates/obp-bank-node/src/obp_client.rs")).unwrap();
+    assert!(client.lines().any(|l| l.contains("OBP_API_VERSION: &str = \"v")));
+    let mut files = Vec::new();
+    for dir in SOURCE_ROOTS {
+        source_files(&root.join(dir), &mut files);
+    }
+    let names: Vec<String> = files.iter().map(|f| f.file_name().unwrap().to_string_lossy().to_string()).collect();
+    assert!(names.contains(&"contract.json".to_string()) && names.contains(&"snapshot.json".to_string()));
 }
