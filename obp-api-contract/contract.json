@@ -333,7 +333,8 @@
    "source": "crates/obp-bank-node/src/obp_client.rs",
    "needles": [
     "const OBP_API_VERSION: &str = \"v7.0.0\";",
-    "\"{base}/obp/{ver}/banks/{bank}/accounts/{acct}/{view}\\"
+    "\"{base}/obp/{ver}/banks/{bank}/accounts/{acct}/{view}\\",
+    "             /transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests\""
    ],
    "reads": [
     "transaction_request_id|id"
@@ -359,7 +360,8 @@
    "source": "crates/obp-bank-node/src/obp_client.rs",
    "needles": [
     "const OBP_API_VERSION: &str = \"v7.0.0\";",
-    "\"{base}/obp/{ver}/banks/{bank}/open-corridor/settlements\""
+    "\"{base}/obp/{ver}/banks/{bank}/open-corridor/settlements\"",
+    "\"{}/{}\", self.settlements_url(bank_id), settlement_id"
    ],
    "reads": [
     "settlement_id",
@@ -372,7 +374,8 @@
    "source": "crates/obp-bank-node/src/obp_client.rs",
    "needles": [
     "const OBP_API_VERSION: &str = \"v7.0.0\";",
-    "\"{base}/obp/{ver}/banks/{bank}/accounts/{acct}\\"
+    "\"{base}/obp/{ver}/banks/{bank}/accounts/{acct}\\",
+    "             /transaction-requests/{tr}/open-corridor/promise\""
    ],
    "reads": []
   },
