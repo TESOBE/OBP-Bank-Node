@@ -912,8 +912,10 @@ fn users_by_username_path(username: &str) -> String {
 }
 
 /// Look a user up by username. OBP-API matches the username exactly, but the
-/// same username can exist at several identity providers, and deleted users
-/// are listed too; only one live user counts as found.
+/// same username can exist at several identity providers; only one live user
+/// counts as found. OBP-API lists only users that are not deleted unless the
+/// request asks for `is_deleted=true`, so the `is_deleted` check below only
+/// guards against a server that answers otherwise.
 async fn lookup_user(state: &SetupState, token: &str, username: &str) -> Result<UserLookup, String> {
     let (status, body) = state
         .obp(Method::GET, &users_by_username_path(username), Some(token), None)

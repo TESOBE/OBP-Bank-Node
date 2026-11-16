@@ -60,7 +60,8 @@ fn bearer_ok(headers: &HeaderMap) -> bool {
 /// Stub OBP-API + OIDC provider. Known world: bank `rt.bank.a` (with account
 /// `settlement-a` and a registered broker), scheme `OBP`; bank `rt.bank.b`,
 /// scheme `IBAN`, all FX rates, and every entitlement are absent. User
-/// `rt.node.a` exists with no entitlements (and once more, deleted); `ghost` does not exist; `rt.twin` exists at two
+/// `rt.node.a` exists with no entitlements (and once more, deleted, which the stub lists only when asked for
+/// `is_deleted=true`, as OBP-API does); `ghost` does not exist; `rt.twin` exists at two
 /// identity providers.
 fn obp_stub(base: String, captured: Arc<Mutex<Captured>>) -> Router {
     let state = Stub { base, captured };
@@ -137,7 +138,9 @@ fn obp_stub(base: String, captured: Arc<Mutex<Captured>>) -> Router {
                         "entitlements": { "list": [] },
                     })
                 };
-                // As OBP-API: an exact match on the username, deleted users included.
+                // As OBP-API: an exact match on the username; users that are deleted are listed only when
+                // the request asks for them with `is_deleted=true` (the default is false).
+                let want_deleted = query.get("is_deleted").is_some_and(|v| v == "true");
                 let users = match query.get("username").map(String::as_str) {
                     Some("rt.node.a") => vec![
                         user("node-a-user-id", "rt.node.a", "http://obp", false),
@@ -152,6 +155,10 @@ fn obp_stub(base: String, captured: Arc<Mutex<Captured>>) -> Router {
                     Some("a+b@c.com x") => vec![user("odd-user-id", "a+b@c.com x", "http://obp", false)],
                     _ => vec![],
                 };
+                let users: Vec<Value> = users
+                    .into_iter()
+                    .filter(|u| u["is_deleted"].as_bool() == Some(want_deleted))
+                    .collect();
                 Json(json!({ "users": users }))
             }),
         )
