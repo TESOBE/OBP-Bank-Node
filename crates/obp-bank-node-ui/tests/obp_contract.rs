@@ -4,8 +4,8 @@
 
 //! The contract between the Bank-Node and OBP-API.
 //!
-//! `obp-api-contract/contract.json` lists every OBP-API call the Bank-Node
-//! and its UI make, with the response fields the code reads.
+//! `obp-api-contract/contract.json` lists every OBP-API call the Bank-Node,
+//! its UI and its dev scripts (`dev/*.sh`) make, with the response fields the code reads.
 //! `obp-api-contract/snapshot.json` is what an OBP-API documents for those
 //! calls, written by `obp-api-contract/snapshot.py` from its resource docs.
 //! These tests need no server: they check that the list matches the code, and
@@ -190,6 +190,61 @@ fn unlisted(found: Vec<(String, usize, String)>, calls: &[Value]) -> Vec<String>
         .collect()
 }
 
+/// The OBP-API calls written in a dev script: (file, line number, verb, path as written). The verb is the
+/// one after `-X` or `api` before the path on the line, GET when there is none; `$NAME` stands for a value
+/// the script fills in. Comment lines are skipped.
+fn dev_script_calls(rel: &str, text: &str) -> Vec<(String, usize, String, String)> {
+    const VERBS: &[&str] = &["GET", "POST", "PUT", "PATCH", "DELETE"];
+    let mut out = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        let mut offset = 0;
+        while let Some(at) = line[offset..].find("/obp/v") {
+            let start = offset + at;
+            let path: String = line[start..]
+                .chars()
+                .take_while(|c| !matches!(c, '"' | '\'' | ' ' | '\t' | '?' | '\\' | ')' | '|'))
+                .collect();
+            let mut verb = "GET";
+            let mut words = line[..start].split_whitespace().map(|w| w.trim_matches('"')).peekable();
+            while let Some(word) = words.next() {
+                if word == "-X" || word == "api" {
+                    if let Some(next) = words.peek().filter(|n| VERBS.contains(n)) {
+                        verb = next;
+                    }
+                }
+            }
+            out.push((rel.to_string(), i + 1, verb.to_string(), path.clone()));
+            offset = start + path.len().max(1);
+        }
+    }
+    out
+}
+
+/// Whether a call of the contract is the one a dev script makes: the same verb and version, and every
+/// segment equal, a value the script fills in (`$1`), or an OBP placeholder in capitals in the contract.
+fn same_endpoint(call: &Value, verb: &str, script_path: &str) -> bool {
+    let (a, b): (Vec<&str>, Vec<&str>) = (
+        call["path"].as_str().unwrap().split('/').collect(),
+        script_path.split('/').collect(),
+    );
+    let placeholder = |s: &str| s.chars().next().is_some_and(|c| c.is_ascii_uppercase()) && s.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+    call["verb"].as_str() == Some(verb)
+        && a.len() == b.len()
+        && a.iter().zip(&b).all(|(x, y)| x == y || y.starts_with('$') || placeholder(x))
+}
+
+/// The dev script calls that no call of the contract is.
+fn unlisted_dev_calls(found: Vec<(String, usize, String, String)>, calls: &[Value]) -> Vec<String> {
+    found
+        .into_iter()
+        .filter(|(_, _, verb, path)| !calls.iter().any(|c| same_endpoint(c, verb, path)))
+        .map(|(file, n, verb, path)| format!("{file}:{n} {verb} {path}"))
+        .collect()
+}
+
 fn collect_rs(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
@@ -223,6 +278,54 @@ fn every_obp_api_call_in_the_source_is_in_the_contract() {
     // Tests coverage: a line that builds an OBP-API path must contain a needle of a call listed for that file,
     // so a new call cannot reach OBP-API without its fields being recorded.
     assert_eq!(unlisted(obp_path_lines(), &calls()), Vec::<String>::new());
+}
+
+#[test]
+fn every_obp_api_call_in_the_dev_scripts_is_in_the_contract() {
+    // Tests coverage of dev/*.sh: each OBP-API path a dev script calls, with its verb, is a call of the contract
+    // (the dev-only calls are listed with their script as source), so a script cannot reach an endpoint the
+    // snapshot does not document.
+    let root = workspace_root();
+    let mut found = Vec::new();
+    for entry in fs::read_dir(root.join("dev")).unwrap().flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "sh") {
+            let rel = format!("dev/{}", path.file_name().unwrap().to_string_lossy());
+            found.extend(dev_script_calls(&rel, &fs::read_to_string(&path).unwrap()));
+        }
+    }
+    assert!(found.len() > 15, "found only {} calls in the dev scripts", found.len());
+    assert_eq!(unlisted_dev_calls(found, &calls()), Vec::<String>::new());
+}
+
+#[test]
+fn a_dev_script_call_the_contract_lacks_is_reported() {
+    // Tests the dev script check on sample lines: a call on another version, with another verb, or to another
+    // path is reported; `$1` fills a placeholder, and a comment is no call.
+    let script = r#"
+# api GET /obp/v5.1.0/in-a-comment
+  api PUT "/obp/v5.1.0/banks/$1/accounts/$2" "{}"
+  api PUT "/obp/v7.0.0/banks/$1/accounts/$2" "{}"
+  api POST "/obp/v7.0.0/banks/$1/accounts/$2" "{}"
+  curl -s "$OBP/obp/v5.1.0/banks/$B" -H "$AUTH"
+  curl -s -X POST "$OBP/obp/v5.1.0/management/consumers" -H @"$TMP/auth"
+  curl -sf -o /dev/null "$OBP/obp/v9.0.0/root"
+"#;
+    let calls = vec![
+        serde_json::json!({ "verb": "PUT", "path": "/obp/v7.0.0/banks/BANK_ID/accounts/ACCOUNT_ID" }),
+        serde_json::json!({ "verb": "GET", "path": "/obp/v5.1.0/banks/BANK_ID" }),
+    ];
+    let found = dev_script_calls("dev/x.sh", script);
+    assert_eq!(found.len(), 6, "{found:?}");
+    assert_eq!(
+        unlisted_dev_calls(found, &calls),
+        vec![
+            "dev/x.sh:3 PUT /obp/v5.1.0/banks/$1/accounts/$2",
+            "dev/x.sh:5 POST /obp/v7.0.0/banks/$1/accounts/$2",
+            "dev/x.sh:7 POST /obp/v5.1.0/management/consumers",
+            "dev/x.sh:8 GET /obp/v9.0.0/root",
+        ]
+    );
 }
 
 #[test]

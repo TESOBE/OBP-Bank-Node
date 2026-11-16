@@ -6,7 +6,7 @@
    "git_commit": "474d4bcc554f1d8e9516e12d85be121d92410aa5"
   }
  },
- "taken_at": "2026-11-14T13:38:16Z",
+ "taken_at": "2026-11-16T23:15:37Z",
  "endpoints": [
   {
    "verb": "GET",
@@ -936,6 +936,105 @@
     "routing_schemes[].example_address",
     "routing_schemes[].scheme",
     "routing_schemes[].status"
+   ]
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v5.1.0/users/current",
+   "docs_from": "https://k8s.openbankproject.com",
+   "operation_id": "OBPv3.0.0-getCurrentUser",
+   "documented_path": "/obp/v5.1.0/users/current",
+   "fields": [
+    "email",
+    "entitlements",
+    "entitlements.list",
+    "entitlements.list[]",
+    "entitlements.list[].bank_id",
+    "entitlements.list[].entitlement_id",
+    "entitlements.list[].role_name",
+    "provider",
+    "provider_id",
+    "user_id",
+    "username",
+    "views",
+    "views.list",
+    "views.list[]",
+    "views.list[].account_id",
+    "views.list[].bank_id",
+    "views.list[].view_id"
+   ]
+  },
+  {
+   "verb": "PUT",
+   "path": "/obp/v5.1.0/banks/BANK_ID/accounts/ACCOUNT_ID",
+   "docs_from": "https://k8s.openbankproject.com",
+   "operation_id": "OBPv5.0.0-createAccount",
+   "documented_path": "/obp/v5.1.0/banks/BANK_ID/accounts/NEW_ACCOUNT_ID",
+   "fields": [
+    "account_attributes",
+    "account_attributes[]",
+    "account_attributes[].account_attribute_id",
+    "account_attributes[].name",
+    "account_attributes[].product_code",
+    "account_attributes[].product_instance_code",
+    "account_attributes[].type",
+    "account_attributes[].value",
+    "account_id",
+    "account_routings",
+    "account_routings[]",
+    "account_routings[].address",
+    "account_routings[].scheme",
+    "balance",
+    "balance.amount",
+    "balance.currency",
+    "branch_id",
+    "label",
+    "product_code",
+    "user_id"
+   ]
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v6.0.0/my/logins/direct",
+   "docs_from": "https://k8s.openbankproject.com",
+   "operation_id": "OBPv6.0.0-directLoginEndpoint",
+   "documented_path": "/obp/v6.0.0/my/logins/direct",
+   "fields": [
+    "token"
+   ]
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v5.1.0/management/consumers",
+   "docs_from": "https://k8s.openbankproject.com",
+   "operation_id": "OBPv5.1.0-createConsumer",
+   "documented_path": "/obp/v5.1.0/management/consumers",
+   "fields": [
+    "app_name",
+    "app_type",
+    "certificate_info",
+    "certificate_info.issuer_domain_name",
+    "certificate_info.not_after",
+    "certificate_info.not_before",
+    "certificate_info.roles_info",
+    "certificate_info.subject_domain_name",
+    "certificate_pem",
+    "company",
+    "consumer_id",
+    "consumer_key",
+    "consumer_secret",
+    "created",
+    "created_by_user",
+    "created_by_user.email",
+    "created_by_user.provider",
+    "created_by_user.provider_id",
+    "created_by_user.user_id",
+    "created_by_user.username",
+    "description",
+    "developer_email",
+    "enabled",
+    "logo_url",
+    "redirect_url"
    ]
   }
  ]
