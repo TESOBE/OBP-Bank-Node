@@ -54,8 +54,92 @@ fn undocumented_reads(call: &Value, fields: &BTreeSet<String>) -> Vec<String> {
         .collect()
 }
 
+/// The lines of Rust source outside `#[cfg(test)]` items, with their line numbers (from 1). A test item
+/// runs from its attribute to the brace that closes it (or the `;` that ends it), so code written after
+/// a test module is still returned. Braces inside strings, character literals and comments do not count.
+fn production_lines(text: &str) -> Vec<(usize, &str)> {
+    let mut out = Vec::new();
+    // Inside a test item: (brace depth, whether its opening brace was seen).
+    let mut test_item: Option<(i64, bool)> = None;
+    let mut in_block_comment = false;
+    let mut in_string = false;
+    // Inside a raw string closed by a quote and this many `#`.
+    let mut raw_string: Option<usize> = None;
+    for (i, line) in text.lines().enumerate() {
+        let at_top_level = !in_block_comment && !in_string && raw_string.is_none();
+        if test_item.is_none() && at_top_level && line.trim() == "#[cfg(test)]" {
+            test_item = Some((0, false));
+            continue;
+        }
+        if test_item.is_none() {
+            out.push((i + 1, line));
+        }
+        let chars: Vec<char> = line.chars().collect();
+        let mut j = 0;
+        while j < chars.len() {
+            let c = chars[j];
+            if in_block_comment {
+                if c == '*' && chars.get(j + 1) == Some(&'/') {
+                    in_block_comment = false;
+                    j += 1;
+                }
+            } else if let Some(hashes) = raw_string {
+                if c == '"' && chars[j + 1..].iter().take(hashes).filter(|h| **h == '#').count() == hashes {
+                    raw_string = None;
+                    j += hashes;
+                }
+            } else if in_string {
+                if c == '\\' {
+                    j += 1;
+                } else if c == '"' {
+                    in_string = false;
+                }
+            } else if c == '/' && chars.get(j + 1) == Some(&'/') {
+                break;
+            } else if c == '/' && chars.get(j + 1) == Some(&'*') {
+                in_block_comment = true;
+                j += 1;
+            } else if c == '"' {
+                in_string = true;
+            } else if c == 'r' && (j == 0 || !(chars[j - 1].is_alphanumeric() || chars[j - 1] == '_')) {
+                let hashes = chars[j + 1..].iter().take_while(|h| **h == '#').count();
+                if chars.get(j + 1 + hashes) == Some(&'"') {
+                    raw_string = Some(hashes);
+                    j += 1 + hashes;
+                }
+            } else if c == '\'' {
+                // A character literal ('{', '\n', '\'') is skipped whole; a lifetime has no closing quote.
+                if chars.get(j + 1) == Some(&'\\') {
+                    if let Some(end) = chars[j + 3..].iter().position(|x| *x == '\'') {
+                        j += 3 + end;
+                    }
+                } else if chars.get(j + 2) == Some(&'\'') {
+                    j += 2;
+                }
+            } else if let Some((mut depth, mut opened)) = test_item {
+                match c {
+                    '{' => {
+                        depth += 1;
+                        opened = true;
+                    }
+                    '}' => depth -= 1,
+                    ';' if !opened && depth == 0 => {
+                        test_item = None;
+                    }
+                    _ => {}
+                }
+                if test_item.is_some() {
+                    test_item = if opened && depth == 0 { None } else { Some((depth, opened)) };
+                }
+            }
+            j += 1;
+        }
+    }
+    out
+}
+
 /// Lines of Rust source that build an OBP-API path, skipping comments and
-/// test code: (file relative to the workspace, line number, line).
+/// `#[cfg(test)]` items: (file relative to the workspace, line number, line).
 fn obp_path_lines() -> Vec<(String, usize, String)> {
     let root = workspace_root();
     let mut files = Vec::new();
@@ -69,23 +153,41 @@ fn obp_path_lines() -> Vec<(String, usize, String)> {
         if name == "tests.rs" || name.ends_with("_tests.rs") {
             continue;
         }
-        let text = fs::read_to_string(&file).unwrap();
-        let lines: Vec<&str> = text.lines().collect();
-        for (i, line) in lines.iter().enumerate() {
-            // A `#[cfg(test)] mod tests { .. }` block runs to the end of the file in this workspace.
-            if line.trim() == "#[cfg(test)]" && lines.get(i + 1).is_some_and(|next| next.trim().ends_with('{')) {
-                break;
-            }
-            let code = line.trim_start();
-            if code.starts_with("//") {
-                continue;
-            }
-            if code.contains('"') && (code.contains("/obp/v") || code.contains("/obp/{")) {
-                out.push((rel.clone(), i + 1, line.to_string()));
-            }
+        out.extend(obp_path_lines_of(&rel, &fs::read_to_string(&file).unwrap()));
+    }
+    out
+}
+
+const LOG_MACROS: &[&str] = &["error!(", "warn!(", "info!(", "debug!(", "trace!("];
+
+/// The lines of one source file's production code that build an OBP-API path.
+fn obp_path_lines_of(rel: &str, text: &str) -> Vec<(String, usize, String)> {
+    let mut out = Vec::new();
+    for (n, line) in production_lines(text) {
+        let code = line.trim_start();
+        // A comment, or a log line that names an endpoint to the operator, makes no call.
+        if code.starts_with("//") || LOG_MACROS.iter().any(|m| code.starts_with(m)) {
+            continue;
+        }
+        if code.contains('"') && (code.contains("/obp/v") || code.contains("/obp/{")) {
+            out.push((rel.to_string(), n, line.to_string()));
         }
     }
     out
+}
+
+/// The path lines that no call in `calls` accounts for: a line must contain a needle of a call listed for its file.
+fn unlisted(found: Vec<(String, usize, String)>, calls: &[Value]) -> Vec<String> {
+    found
+        .into_iter()
+        .filter(|(file, _, line)| {
+            !calls.iter().any(|c| {
+                c["source"].as_str() == Some(file.as_str())
+                    && strings(&c["needles"]).iter().any(|n| line.contains(n.trim()))
+            })
+        })
+        .map(|(file, n, line)| format!("{file}:{n} {}", line.trim()))
+        .collect()
 }
 
 fn collect_rs(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -120,18 +222,7 @@ fn every_call_in_the_contract_is_in_its_source_file() {
 fn every_obp_api_call_in_the_source_is_in_the_contract() {
     // Tests coverage: a line that builds an OBP-API path must contain a needle of a call listed for that file,
     // so a new call cannot reach OBP-API without its fields being recorded.
-    let calls = calls();
-    let unlisted: Vec<String> = obp_path_lines()
-        .into_iter()
-        .filter(|(file, _, line)| {
-            !calls.iter().any(|c| {
-                c["source"].as_str() == Some(file.as_str())
-                    && strings(&c["needles"]).iter().any(|n| line.contains(n.trim()))
-            })
-        })
-        .map(|(file, n, line)| format!("{file}:{n} {}", line.trim()))
-        .collect();
-    assert_eq!(unlisted, Vec::<String>::new());
+    assert_eq!(unlisted(obp_path_lines(), &calls()), Vec::<String>::new());
 }
 
 #[test]
@@ -206,4 +297,58 @@ fn a_renamed_or_removed_field_is_reported() {
     let only_id: BTreeSet<String> = ["id".to_string()].into_iter().collect();
     assert!(undocumented_reads(&tr, &only_id).is_empty());
     assert_eq!(undocumented_reads(&tr, &BTreeSet::new()), vec!["transaction_request_id|id"]);
+}
+
+const SOURCE_WITH_CALL_AFTER_TEST_MODULE: &str = r##"
+fn listed(b: &str) -> String { format!("/obp/v5.1.0/banks/{b}") }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const BRACE: &str = "{ not a block";
+    const RAW: &str = r#"} nor this "# ;
+    fn close() -> char { '}' }
+    // an unbalanced { in a comment
+    #[test]
+    fn t() {
+        let _ = format!("/obp/v9.9.9/in-a-test/{}", 1);
+        if true { }
+    }
+}
+
+fn unlisted(x: &str) -> String { format!("/obp/v7.0.0/after-the-test-module/{x}") }
+
+#[cfg(test)]
+fn only_for_tests() { let _ = "/obp/v9.9.9/also-test"; }
+
+fn last(x: &str) -> String { format!("/obp/v7.0.0/the-very-last/{x}") }
+fn log() {
+    warn!(error = %e, "an administrator calls POST /obp/v7.0.0/management/platform-apps");
+}
+"##;
+
+#[test]
+fn production_code_after_a_test_module_is_scanned() {
+    // Tests the scan itself: the OBP-API path lines of a file are those outside `#[cfg(test)]` items, wherever
+    // they are in the file. Braces in strings, raw strings, character literals and comments do not end or
+    // extend a test module, and a `#[cfg(test)]` function ends at its closing brace, and a log line that names an endpoint is no call.
+    let lines: Vec<String> = obp_path_lines_of("x.rs", SOURCE_WITH_CALL_AFTER_TEST_MODULE)
+        .into_iter()
+        .map(|(_, _, line)| line)
+        .collect();
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert!(lines[0].contains("/obp/v5.1.0/banks/{b}"));
+    assert!(lines[1].contains("after-the-test-module"));
+    assert!(lines[2].contains("the-very-last"));
+}
+
+#[test]
+fn a_call_after_a_test_module_is_reported_as_unlisted() {
+    // Tests the coverage check on the sample above: only the first call is listed, so the two calls after the
+    // test module are reported.
+    let listed = vec![serde_json::json!({ "source": "x.rs", "needles": ["\"/obp/v5.1.0/banks/{b}\""] })];
+    let report = unlisted(obp_path_lines_of("x.rs", SOURCE_WITH_CALL_AFTER_TEST_MODULE), &listed);
+    assert_eq!(report.len(), 2, "{report:?}");
+    assert!(report[0].starts_with("x.rs:") && report[0].contains("after-the-test-module"));
+    assert!(report[1].contains("the-very-last"));
 }
