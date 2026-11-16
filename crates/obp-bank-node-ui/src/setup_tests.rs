@@ -147,6 +147,9 @@ fn obp_stub(base: String, captured: Arc<Mutex<Captured>>) -> Router {
                         user("twin-1", "rt.twin", "http://obp", false),
                         user("twin-2", "rt.twin", "https://keycloak", false),
                     ],
+                    // A username with characters that must be percent-encoded in a query: the stub only
+                    // knows it when the decoded value is exactly this.
+                    Some("a+b@c.com x") => vec![user("odd-user-id", "a+b@c.com x", "http://obp", false)],
                     _ => vec![],
                 };
                 Json(json!({ "users": users }))
@@ -977,6 +980,37 @@ async fn a_username_at_several_identity_providers_is_refused_not_guessed() {
     assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
     assert!(body_json(resp).await["message"].as_str().unwrap().contains("2 users are named rt.twin"));
     assert!(captured.lock().unwrap().entitlement_posts.is_empty());
+}
+
+#[tokio::test]
+async fn a_username_with_reserved_characters_reaches_obp_api_unchanged() {
+    // Tests the encoding of GET /obp/v7.0.0/users?username=: `a+b@c.com x` holds a plus, an at sign and a space,
+    // and the stub knows the user only when the decoded query value is exactly that, so the status check
+    // finds the user and reports the grant as missing instead of the user as absent.
+    let captured = Arc::new(Mutex::new(Captured::default()));
+    let base = spawn_obp_stub(captured.clone()).await;
+    let mut setup = setup_config();
+    setup.bank.as_mut().unwrap().role_grants.push(SetupRoleGrant {
+        username: "a+b@c.com x".into(),
+        role: "CanSettleOpenCorridor".into(),
+    });
+    let app = app_with_config(&base, setup);
+    let cookie = log_in(&app, &captured).await;
+    let id = "grant:a+b@c.com x@rt.bank.a:CanSettleOpenCorridor";
+
+    let resp = app
+        .oneshot(get_with_cookie("/api/setup/status", &cookie))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+    let item = v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == id)
+        .expect("the grant is listed");
+    assert_eq!(item["status"], "missing", "the user was not found: {item}");
 }
 
 #[tokio::test]
