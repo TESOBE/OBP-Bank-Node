@@ -258,7 +258,7 @@ async fn check_obp_api(base_url: &str) -> Check {
 /// is true. Without it, OBP-API refuses promises and settlements (OBP-40057).
 async fn check_open_corridor(base_url: &str, bank_id: &str) -> Check {
     let url = format!(
-        "{}/obp/v2.1.0/banks/{bank_id}/transaction-request-types",
+        "{}/obp/v5.1.0/banks/{bank_id}/transaction-request-types",
         base_url.trim_end_matches('/')
     );
     let resp = match http().get(&url).send().await {

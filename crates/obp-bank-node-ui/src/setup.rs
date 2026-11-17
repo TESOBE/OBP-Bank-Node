@@ -684,7 +684,7 @@ async fn status(State(state): State<SetupState>, headers: HeaderMap) -> Response
             let (status_str, detail) = match state
                 .obp(
                     Method::GET,
-                    &format!("/obp/v2.2.0/banks/{b}/fx/{from}/{to}"),
+                    &format!("/obp/v5.1.0/banks/{b}/fx/{from}/{to}"),
                     Some(&token),
                     None,
                 )
@@ -763,17 +763,9 @@ async fn status(State(state): State<SetupState>, headers: HeaderMap) -> Response
         // Role grants at the own bank for pre-existing users (never
         // created here).
         for grant in &bank.role_grants {
-            let (status_str, detail) = match state
-                .obp(
-                    Method::GET,
-                    &format!("/obp/v5.1.0/users/username/{}", grant.username),
-                    Some(&token),
-                    None,
-                )
-                .await
-            {
-                Ok((status, body)) if status.is_success() => {
-                    let held = body["entitlements"]["list"]
+            let (status_str, detail) = match lookup_user(&state, &token, &grant.username).await {
+                Ok(UserLookup::Found(user)) => {
+                    let held = user["entitlements"]["list"]
                         .as_array()
                         .map(|list| {
                             list.iter().any(|e| {
@@ -788,20 +780,7 @@ async fn status(State(state): State<SetupState>, headers: HeaderMap) -> Response
                         ("missing", String::new())
                     }
                 }
-                Ok((status, body)) => {
-                    let (s, d) = classify(status, &body, String::new());
-                    if s == "missing" {
-                        (
-                            "error",
-                            format!(
-                                "user {} does not exist — service users are provisioned outside this app",
-                                grant.username
-                            ),
-                        )
-                    } else {
-                        (s, d)
-                    }
-                }
+                Ok(other) => ("error", other.refusal(&grant.username)),
                 Err(e) => ("error", e),
             };
             items.push(item(
@@ -884,23 +863,78 @@ struct ApplyRequest {
 /// Resolve an existing username to a user_id — a missing user is an error by
 /// design (this page never registers users).
 async fn resolve_user_id(state: &SetupState, token: &str, username: &str) -> Result<String, String> {
+    match lookup_user(state, token, username).await? {
+        UserLookup::Found(user) => user["user_id"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| format!("no user_id in the response for {username}")),
+        other => Err(other.refusal(username)),
+    }
+}
+
+/// What OBP-API knows about a username.
+enum UserLookup {
+    /// The one user with that username.
+    Found(Value),
+    NotFound,
+    /// The same username exists at several identity providers.
+    Several(usize),
+    /// OBP-API refused the lookup (for example the admin lacks CanGetAnyUser).
+    Refused(StatusCode, Value),
+}
+
+impl UserLookup {
+    /// Why no single user came back, for the page.
+    fn refusal(&self, username: &str) -> String {
+        match self {
+            UserLookup::Found(_) => String::new(),
+            UserLookup::NotFound => format!(
+                "user {username} does not exist — service users are provisioned outside this app"
+            ),
+            UserLookup::Several(n) => format!(
+                "{n} users are named {username}, at different identity providers — this page cannot tell which one is meant"
+            ),
+            UserLookup::Refused(status, body) => format!(
+                "cannot look up user {username} — {status}: {}",
+                body["message"].as_str().unwrap_or("")
+            ),
+        }
+    }
+}
+
+/// The path of `GET /obp/v7.0.0/users` filtered to one username.
+fn users_by_username_path(username: &str) -> String {
+    let query = reqwest::Url::parse_with_params("http://obp/", [("username", username)])
+        .ok()
+        .and_then(|url| url.query().map(str::to_owned))
+        .unwrap_or_default();
+    format!("/obp/v7.0.0/users?{query}")
+}
+
+/// Look a user up by username. OBP-API matches the username exactly, but the
+/// same username can exist at several identity providers, and deleted users
+/// are listed too; only one live user counts as found.
+async fn lookup_user(state: &SetupState, token: &str, username: &str) -> Result<UserLookup, String> {
     let (status, body) = state
-        .obp(
-            Method::GET,
-            &format!("/obp/v5.1.0/users/username/{username}"),
-            Some(token),
-            None,
-        )
+        .obp(Method::GET, &users_by_username_path(username), Some(token), None)
         .await?;
     if !status.is_success() {
-        return Err(format!(
-            "user {username} does not exist — service users are provisioned outside this app ({status})"
-        ));
+        return Ok(UserLookup::Refused(status, body));
     }
-    body["user_id"]
-        .as_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| format!("no user_id in the response for {username}"))
+    let users: Vec<&Value> = body["users"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter(|u| u["username"].as_str() == Some(username))
+                .filter(|u| u["is_deleted"].as_bool() != Some(true))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(match users.as_slice() {
+        [] => UserLookup::NotFound,
+        [user] => UserLookup::Found((*user).clone()),
+        several => UserLookup::Several(several.len()),
+    })
 }
 
 /// With an `account_id` the account is created under that id (PUT — the
@@ -957,7 +991,7 @@ async fn create_account(
             return state
                 .obp(
                     Method::PUT,
-                    &format!("/obp/v3.1.0/management/banks/{bank_id}/accounts/{a}"),
+                    &format!("/obp/v5.1.0/management/banks/{bank_id}/accounts/{a}"),
                     Some(token),
                     Some(&json!({
                         "label": label,
@@ -1084,7 +1118,7 @@ async fn node_items(state: &SetupState, token: &str, b: &str, node: &SetupNode) 
             state
                 .obp(
                     Method::GET,
-                    &format!("/obp/v4.0.0/consumers/{id}/scopes"),
+                    &format!("/obp/v5.1.0/consumers/{id}/scopes"),
                     Some(token),
                     None,
                 )
@@ -1285,7 +1319,7 @@ async fn request_entitlement(
     match state
         .obp(
             Method::POST,
-            "/obp/v3.0.0/entitlement-requests",
+            "/obp/v5.1.0/entitlement-requests",
             Some(&token),
             Some(&json!({ "bank_id": req.bank_id, "role_name": req.role })),
         )
@@ -1349,7 +1383,7 @@ async fn apply(
                 state
                     .obp(
                         Method::POST,
-                        "/obp/v5.0.0/banks",
+                        "/obp/v5.1.0/banks",
                         Some(&token),
                         Some(&json!({
                             "id": bank.id,
@@ -1407,7 +1441,7 @@ async fn apply(
                             state
                                 .obp(
                                     Method::PUT,
-                                    &format!("/obp/v2.2.0/banks/{bank_id}/fx"),
+                                    &format!("/obp/v5.1.0/banks/{bank_id}/fx"),
                                     Some(&token),
                                     Some(&json!({
                                         "bank_id": bank_id,

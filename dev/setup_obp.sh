@@ -91,7 +91,7 @@ grant "$SA_ID" ""        CanCreateCustomView
 
 echo "== creating banks"
 for B in "$BANK_A" "$BANK_B"; do
-  api POST /obp/v5.0.0/banks \
+  api POST /obp/v5.1.0/banks \
     "{\"id\":\"$B\",\"bank_code\":\"$B\",\"full_name\":\"Round-trip $B\",\"logo\":\"\",\"website\":\"\",\"bank_routings\":[]}" \
     | grep -qE '"id"|OBP-34000|already exists' && echo "  bank $B ok" || echo "  bank $B — check"
   grant "$SA_ID" "$B" CanCreateAccount
@@ -174,10 +174,10 @@ done
 echo "== creating EUR<->KES FX rates (challenge threshold conversion needs them)"
 for B in "$BANK_A" "$BANK_B"; do
   grant "$SA_ID" "$B" CanCreateFxRate
-  api PUT "/obp/v2.2.0/banks/$B/fx" \
+  api PUT "/obp/v5.1.0/banks/$B/fx" \
     "{\"bank_id\":\"$B\",\"from_currency_code\":\"EUR\",\"to_currency_code\":\"KES\",\"conversion_value\":150.0,\"inverse_conversion_value\":0.006667,\"effective_date\":\"2026-07-31T00:00:00Z\"}" \
     | grep -q from_currency_code && echo "  fx EUR->KES @ $B ok" || echo "  fx EUR->KES @ $B — check"
-  api PUT "/obp/v2.2.0/banks/$B/fx" \
+  api PUT "/obp/v5.1.0/banks/$B/fx" \
     "{\"bank_id\":\"$B\",\"from_currency_code\":\"KES\",\"to_currency_code\":\"EUR\",\"conversion_value\":0.006667,\"inverse_conversion_value\":150.0,\"effective_date\":\"2026-07-31T00:00:00Z\"}" \
     | grep -q from_currency_code && echo "  fx KES->EUR @ $B ok" || echo "  fx KES->EUR @ $B — check"
 done

@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use axum::body::{to_bytes, Body};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, Method, Request, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post, put};
@@ -60,7 +60,8 @@ fn bearer_ok(headers: &HeaderMap) -> bool {
 /// Stub OBP-API + OIDC provider. Known world: bank `rt.bank.a` (with account
 /// `settlement-a` and a registered broker), scheme `OBP`; bank `rt.bank.b`,
 /// scheme `IBAN`, all FX rates, and every entitlement are absent. User
-/// `rt.node.a` exists with no entitlements; `ghost` does not exist.
+/// `rt.node.a` exists with no entitlements (and once more, deleted); `ghost` does not exist; `rt.twin` exists at two
+/// identity providers.
 fn obp_stub(base: String, captured: Arc<Mutex<Captured>>) -> Router {
     let state = Stub { base, captured };
     Router::new()
@@ -125,21 +126,30 @@ fn obp_stub(base: String, captured: Arc<Mutex<Captured>>) -> Router {
             }),
         )
         .route(
-            "/obp/v5.1.0/users/username/:username",
-            get(|Path(username): Path<String>| async move {
-                match username.as_str() {
-                    "rt.node.a" => Json(json!({
-                        "user_id": "node-a-user-id",
-                        "username": "rt.node.a",
+            "/obp/v7.0.0/users",
+            get(|Query(query): Query<HashMap<String, String>>| async move {
+                let user = |user_id: &str, username: &str, provider: &str, is_deleted: bool| {
+                    json!({
+                        "user_id": user_id,
+                        "username": username,
+                        "provider": provider,
+                        "is_deleted": is_deleted,
                         "entitlements": { "list": [] },
-                    }))
-                    .into_response(),
-                    _ => (
-                        StatusCode::NOT_FOUND,
-                        Json(json!({ "message": "OBP-20005: User not found" })),
-                    )
-                        .into_response(),
-                }
+                    })
+                };
+                // As OBP-API: an exact match on the username, deleted users included.
+                let users = match query.get("username").map(String::as_str) {
+                    Some("rt.node.a") => vec![
+                        user("node-a-user-id", "rt.node.a", "http://obp", false),
+                        user("node-a-old-user-id", "rt.node.a", "http://obp", true),
+                    ],
+                    Some("rt.twin") => vec![
+                        user("twin-1", "rt.twin", "http://obp", false),
+                        user("twin-2", "rt.twin", "https://keycloak", false),
+                    ],
+                    _ => vec![],
+                };
+                Json(json!({ "users": users }))
             }),
         )
         .route(
@@ -156,7 +166,7 @@ fn obp_stub(base: String, captured: Arc<Mutex<Captured>>) -> Router {
             ),
         )
         .route(
-            "/obp/v3.0.0/entitlement-requests",
+            "/obp/v5.1.0/entitlement-requests",
             post(|State(s): State<Stub>, Json(body): Json<Value>| async move {
                 s.captured
                     .lock()
@@ -269,7 +279,7 @@ fn obp_stub(base: String, captured: Arc<Mutex<Captured>>) -> Router {
             ),
         )
         .route(
-            "/obp/v2.2.0/banks/:bank_id/fx/:from/:to",
+            "/obp/v5.1.0/banks/:bank_id/fx/:from/:to",
             get(|| async {
                 (
                     StatusCode::NOT_FOUND,
@@ -300,7 +310,7 @@ fn obp_stub(base: String, captured: Arc<Mutex<Captured>>) -> Router {
             ),
         )
         .route(
-            "/obp/v4.0.0/consumers/:consumer_id/scopes",
+            "/obp/v5.1.0/consumers/:consumer_id/scopes",
             get(|Path(consumer_id): Path<String>| async move {
                 assert_eq!(consumer_id, "node-a-consumer-id");
                 Json(json!({ "list": [
@@ -924,6 +934,49 @@ async fn apply_posts_the_configured_bodies_and_grants_roles() {
         .as_str()
         .unwrap()
         .contains("provisioned outside this app"));
+}
+
+#[tokio::test]
+async fn a_username_at_several_identity_providers_is_refused_not_guessed() {
+    // Tests the user lookup (GET /obp/v7.0.0/users?username=): `rt.twin` exists at two identity providers, so
+    // the status check reports an error for its grant, and Apply grants nothing.
+    let captured = Arc::new(Mutex::new(Captured::default()));
+    let base = spawn_obp_stub(captured.clone()).await;
+    let mut setup = setup_config();
+    setup.bank.as_mut().unwrap().role_grants.push(SetupRoleGrant {
+        username: "rt.twin".into(),
+        role: "CanSettleOpenCorridor".into(),
+    });
+    let app = app_with_config(&base, setup);
+    let cookie = log_in(&app, &captured).await;
+
+    let resp = app
+        .clone()
+        .oneshot(get_with_cookie("/api/setup/status", &cookie))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+    let twin = v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == "grant:rt.twin@rt.bank.a:CanSettleOpenCorridor")
+        .expect("the grant is listed");
+    assert_eq!(twin["status"], "error");
+    assert!(twin["detail"].as_str().unwrap().contains("2 users are named rt.twin"));
+
+    let resp = app
+        .oneshot(post_json_with_cookie(
+            "/api/setup/apply",
+            &cookie,
+            json!({ "id": "grant:rt.twin@rt.bank.a:CanSettleOpenCorridor" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    assert!(body_json(resp).await["message"].as_str().unwrap().contains("2 users are named rt.twin"));
+    assert!(captured.lock().unwrap().entitlement_posts.is_empty());
 }
 
 #[tokio::test]

@@ -70,7 +70,7 @@ Node B receives credit notification + evidence and posts to a CBS stub.
    in Postgres, then re-run `setup_obp.sh` to mint tokens.
 3. **Challenge threshold needs an EUR↔KES FX rate** — submit failed with
    `OBP-50206 <- OBP-10006 (EUR to KES not supported)`. Created rates both
-   directions at both banks via `PUT /obp/v2.2.0/banks/{id}/fx` (role
+   directions at both banks via `PUT /obp/v5.1.0/banks/{id}/fx` (role
    `CanCreateFxRate`, rate 150 KES/EUR). `setup_obp.sh` does NOT do this yet.
 4. **`transactionrequestattribute.value` was varchar(255)** — too small for
    the promise preimage JSON, report-back died with a PSQL length error.
