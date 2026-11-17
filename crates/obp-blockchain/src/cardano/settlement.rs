@@ -203,6 +203,19 @@ impl SettlementBackend for CardanoAdaSettlement {
 
         // 2. Size the transfer in lovelace at spot.
         let lovelace = fiat_minor_to_lovelace(instruction.net_amount_minor, quote.minor_per_whole_asset)?;
+        // Cardano refuses an output under min-UTxO (rpc 3125), so a net this
+        // small can never be paid as one transfer. Say so instead of building it.
+        if lovelace < tx::MIN_UTXO_LOVELACE {
+            let ccy = &instruction.currency;
+            return Err(BlockchainError::BelowMinimum(format!(
+                "net {ccy} {} is {lovelace} lovelace at {ccy} {} per ADA; \
+                 a Cardano output must carry at least {} lovelace ({ccy} {})",
+                fmt_minor(instruction.net_amount_minor),
+                fmt_minor(quote.minor_per_whole_asset),
+                tx::MIN_UTXO_LOVELACE,
+                fmt_minor(min_output_in_fiat_minor(quote.minor_per_whole_asset)),
+            )));
+        }
         info!(
             snapshot = %instruction.snapshot_id,
             currency = %instruction.currency,
@@ -266,6 +279,17 @@ impl SettlementBackend for CardanoAdaSettlement {
             ConfirmationStatus::Pending
         })
     }
+}
+
+/// The smallest net (minor units of the book currency) that still sizes to
+/// one min-UTxO output at this rate, rounded up.
+pub fn min_output_in_fiat_minor(minor_per_whole_asset: u128) -> u128 {
+    (u128::from(tx::MIN_UTXO_LOVELACE) * minor_per_whole_asset).div_ceil(LOVELACE_PER_ADA)
+}
+
+/// Minor units as a two-decimal amount, for messages.
+fn fmt_minor(minor: u128) -> String {
+    format!("{}.{:02}", minor / 100, minor % 100)
 }
 
 /// Convert a fiat net (minor units of the book currency) to lovelace at the
@@ -361,6 +385,28 @@ mod tests {
             matches!(err, BlockchainError::Rejected(_)),
             "expected Rejected, got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn net_below_the_minimum_output_is_refused_before_any_chain_call() {
+        // 20.00 KES at 21.22 KES/ADA is about 0.94 ADA: under the 1 ADA an
+        // output must carry, so Cardano would refuse it (rpc 3125). The test
+        // URL has no Ogmios, so reaching the chain would be a transport error.
+        let backend = test_settlement("addr_test1me", 2122);
+        let mut ins = instruction("addr_test1me");
+        ins.net_amount_minor = 2000;
+        let err = backend.settle(&ins).await.unwrap_err();
+        assert!(matches!(err, BlockchainError::BelowMinimum(_)), "got {err:?}");
+        let msg = err.to_string();
+        assert!(msg.starts_with(crate::BELOW_MINIMUM_PREFIX), "{msg}");
+        assert!(msg.contains("KES 20.00") && msg.contains("KES 21.22"), "{msg}");
+    }
+
+    #[test]
+    fn minimum_in_fiat_rounds_up() {
+        // 1 ADA at 2122 minor/ADA is exactly 2122 minor; a fractional result rounds up.
+        assert_eq!(min_output_in_fiat_minor(2122), 2122);
+        assert_eq!(min_output_in_fiat_minor(1), 1);
     }
 
     #[tokio::test]
