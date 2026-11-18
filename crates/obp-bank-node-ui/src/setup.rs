@@ -1484,9 +1484,10 @@ async fn apply(
             None => Err(format!("no broker for bank {bank_id} in the setup config")),
         },
         Some(("grant", rest)) => {
+            // `<user>@<bank>:<role>`, read from the right: a username may hold `@` (an email address).
             match rest
-                .split_once('@')
-                .and_then(|(user, rest)| rest.split_once(':').map(|(b, r)| (user, b, r)))
+                .rsplit_once(':')
+                .and_then(|(head, role)| head.rsplit_once('@').map(|(user, bank)| (user, bank, role)))
             {
                 Some((username, bank_id, role)) => {
                     match setup.bank.as_ref().filter(|b| b.id == bank_id).and_then(|b| {

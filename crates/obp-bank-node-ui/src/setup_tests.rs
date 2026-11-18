@@ -1021,6 +1021,39 @@ async fn a_username_with_reserved_characters_reaches_obp_api_unchanged() {
 }
 
 #[tokio::test]
+async fn test_grant_apply_accepts_a_username_with_an_at_sign() {
+    // The grant id is `grant:<user>@<bank>:<role>`; a username such as an email address holds an `@`
+    // itself, so the id has to be read from the right: the role after the last `:`, the bank after the
+    // last `@` before that.
+    let captured = Arc::new(Mutex::new(Captured::default()));
+    let base = spawn_obp_stub(captured.clone()).await;
+    let mut setup = setup_config();
+    setup.bank.as_mut().unwrap().role_grants.push(SetupRoleGrant {
+        username: "a+b@c.com x".into(),
+        role: "CanSettleOpenCorridor".into(),
+    });
+    let app = app_with_config(&base, setup);
+    let cookie = log_in(&app, &captured).await;
+
+    let resp = app
+        .oneshot(post_json_with_cookie(
+            "/api/setup/apply",
+            &cookie,
+            json!({ "id": "grant:a+b@c.com x@rt.bank.a:CanSettleOpenCorridor" }),
+        ))
+        .await
+        .unwrap();
+    let status = resp.status();
+    let v = body_json(resp).await;
+    assert_eq!(status, StatusCode::CREATED, "the grant was refused: {v}");
+    let c = captured.lock().unwrap();
+    let (user_id, body) = &c.entitlement_posts[0];
+    assert_eq!(user_id, "odd-user-id");
+    assert_eq!(body["bank_id"], "rt.bank.a");
+    assert_eq!(body["role_name"], "CanSettleOpenCorridor");
+}
+
+#[tokio::test]
 async fn test_account_endpoint_creates_an_account_owned_by_me_by_default() {
     let captured = Arc::new(Mutex::new(Captured::default()));
     let base = spawn_obp_stub(captured.clone()).await;
