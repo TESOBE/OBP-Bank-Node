@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use axum::body::{to_bytes, Body};
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, Method, Request, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post, put};
@@ -23,7 +23,7 @@ use tower::ServiceExt;
 
 use crate::proxy::{build_router, AppState};
 use crate::setup::SetupState;
-use crate::{NodeConfig, ObpApiConfig, SetupAccount, SetupBank, SetupConfig, SetupNode, SetupRoleGrant};
+use crate::{NodeConfig, ObpApiConfig, SetupAccount, SetupBank, SetupConfig, SetupNode};
 
 const ACCESS_TOKEN: &str = "test-access-token";
 
@@ -59,10 +59,7 @@ fn bearer_ok(headers: &HeaderMap) -> bool {
 
 /// Stub OBP-API + OIDC provider. Known world: bank `rt.bank.a` (with account
 /// `settlement-a` and a registered broker), scheme `OBP`; bank `rt.bank.b`,
-/// scheme `IBAN`, all FX rates, and every entitlement are absent. User
-/// `rt.node.a` exists with no entitlements (and once more, deleted, which the stub lists only when asked for
-/// `is_deleted=true`, as OBP-API does); `ghost` does not exist; `rt.twin` exists at two
-/// identity providers.
+/// scheme `IBAN`, all FX rates, and every entitlement are absent.
 fn obp_stub(base: String, captured: Arc<Mutex<Captured>>) -> Router {
     let state = Stub { base, captured };
     Router::new()
@@ -119,47 +116,11 @@ fn obp_stub(base: String, captured: Arc<Mutex<Captured>>) -> Router {
                         { "bank_id": "", "role_name": "CanCreateBank",
                           "created_by_process": "manual",
                           "granted_by_user_id": "granter-user-id" },
-                        { "bank_id": "", "role_name": "CanCreateEntitlementAtAnyBank",
+                        { "bank_id": "rt.bank.a", "role_name": "CanCreateAccount",
                           "created_by_process": "super_admin_user_ids" },
                     ]},
                 }))
                 .into_response()
-            }),
-        )
-        .route(
-            "/obp/v7.0.0/users",
-            get(|Query(query): Query<HashMap<String, String>>| async move {
-                let user = |user_id: &str, username: &str, provider: &str, is_deleted: bool| {
-                    json!({
-                        "user_id": user_id,
-                        "username": username,
-                        "provider": provider,
-                        "is_deleted": is_deleted,
-                        "entitlements": { "list": [] },
-                    })
-                };
-                // As OBP-API: an exact match on the username; users that are deleted are listed only when
-                // the request asks for them with `is_deleted=true` (the default is false).
-                let want_deleted = query.get("is_deleted").is_some_and(|v| v == "true");
-                let users = match query.get("username").map(String::as_str) {
-                    Some("rt.node.a") => vec![
-                        user("node-a-user-id", "rt.node.a", "http://obp", false),
-                        user("node-a-old-user-id", "rt.node.a", "http://obp", true),
-                    ],
-                    Some("rt.twin") => vec![
-                        user("twin-1", "rt.twin", "http://obp", false),
-                        user("twin-2", "rt.twin", "https://keycloak", false),
-                    ],
-                    // A username with characters that must be percent-encoded in a query: the stub only
-                    // knows it when the decoded value is exactly this.
-                    Some("a+b@c.com x") => vec![user("odd-user-id", "a+b@c.com x", "http://obp", false)],
-                    _ => vec![],
-                };
-                let users: Vec<Value> = users
-                    .into_iter()
-                    .filter(|u| u["is_deleted"].as_bool() == Some(want_deleted))
-                    .collect();
-                Json(json!({ "users": users }))
             }),
         )
         .route(
@@ -428,7 +389,6 @@ fn setup_config() -> SetupConfig {
                 id: "settlement-a".into(),
                 label: "Node A corridor account".into(),
                 currency: "KES".into(),
-                owner_username: Some("rt.node.a".into()),
                 routings: vec![crate::SetupRouting {
                     scheme: "CARDANO".into(),
                     address: "addr_test1aaa".into(),
@@ -448,16 +408,6 @@ fn setup_config() -> SetupConfig {
                 "password": "secret",
                 "use_ssl": false,
             })),
-            role_grants: vec![
-                SetupRoleGrant {
-                    username: "rt.node.a".into(),
-                    role: "CanSettleOpenCorridor".into(),
-                },
-                SetupRoleGrant {
-                    username: "ghost".into(),
-                    role: "CanSettleOpenCorridor".into(),
-                },
-            ],
             node: None,
         }),
     }
@@ -692,28 +642,15 @@ async fn status_classifies_present_missing_and_broken_items() {
         "manual · granted by granter-user-id"
     );
     assert_eq!(by_id["myrole::CanCreateRoutingScheme"]["status"], "missing");
-    // The virtual CanCreateEntitlementAtAnyBank (super admin) satisfies the
-    // per-bank granting requirement, and the detail says so.
+    // A virtual entitlement (super admin) counts, and the detail says where
+    // it comes from.
+    assert_eq!(by_id["myrole:rt.bank.a:CanCreateAccount"]["status"], "ok");
     assert_eq!(
-        by_id["myrole:rt.bank.a:CanCreateEntitlementAtOneBank"]["status"],
-        "ok"
-    );
-    assert_eq!(
-        by_id["myrole:rt.bank.a:CanCreateEntitlementAtOneBank"]["detail"],
+        by_id["myrole:rt.bank.a:CanCreateAccount"]["detail"],
         "super_admin_user_ids"
     );
-    // rt.node.a exists without the role; ghost does not exist — and the page
-    // must say so rather than offer to create it.
-    assert_eq!(
-        by_id["grant:rt.node.a@rt.bank.a:CanSettleOpenCorridor"]["status"],
-        "missing"
-    );
-    let ghost = &by_id["grant:ghost@rt.bank.a:CanSettleOpenCorridor"];
-    assert_eq!(ghost["status"], "error");
-    assert!(ghost["detail"]
-        .as_str()
-        .unwrap()
-        .contains("provisioned outside this app"));
+    // The setup block names no users, so no item is about a user.
+    assert!(!by_id.keys().any(|k| k.starts_with("grant:")));
 
     // Every item names the role its Apply needs, so the UI can offer
     // "Request role" next to Apply.
@@ -724,10 +661,6 @@ async fn status_classifies_present_missing_and_broken_items() {
     assert_eq!(
         by_id["account:rt.bank.a/settlement-a"]["required_role"],
         json!({ "bank_id": "rt.bank.a", "role": "CanCreateAccount" })
-    );
-    assert_eq!(
-        by_id["grant:rt.node.a@rt.bank.a:CanSettleOpenCorridor"]["required_role"],
-        json!({ "bank_id": "rt.bank.a", "role": "CanCreateEntitlementAtOneBank" })
     );
 
     // The snapshot block the UI copies for other agents.
@@ -855,7 +788,7 @@ async fn request_entitlement_files_a_request_and_treats_duplicates_as_ok() {
 }
 
 #[tokio::test]
-async fn apply_posts_the_configured_bodies_and_grants_roles() {
+async fn apply_posts_the_configured_bodies() {
     let captured = Arc::new(Mutex::new(Captured::default()));
     let base = spawn_obp_stub(captured.clone()).await;
     let app = app_with_setup(&base);
@@ -882,28 +815,7 @@ async fn apply_posts_the_configured_bodies_and_grants_roles() {
         assert_eq!(c.scheme_posts[0]["country"], "INT");
     }
 
-    // Role grant: resolved to the existing user's id, never a creation.
-    let resp = app
-        .clone()
-        .oneshot(post_json_with_cookie(
-            "/api/setup/apply",
-            &cookie,
-            json!({ "id": "grant:rt.node.a@rt.bank.a:CanSettleOpenCorridor" }),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let v = body_json(resp).await;
-    assert_eq!(v["entitlement_id"], "e1");
-    {
-        let c = captured.lock().unwrap();
-        let (user_id, body) = &c.entitlement_posts[0];
-        assert_eq!(user_id, "node-a-user-id");
-        assert_eq!(body["bank_id"], "rt.bank.a");
-        assert_eq!(body["role_name"], "CanSettleOpenCorridor");
-    }
-
-    // Account apply: owner resolved from owner_username.
+    // Account apply: the account is owned by the logged-in administrator.
     let resp = app
         .clone()
         .oneshot(post_json_with_cookie(
@@ -920,7 +832,7 @@ async fn apply_posts_the_configured_bodies_and_grants_roles() {
         let c = captured.lock().unwrap();
         let (path, body) = &c.account_puts[0];
         assert_eq!(path, "rt.bank.a/settlement-a");
-        assert_eq!(body["user_id"], "node-a-user-id");
+        assert_eq!(body["user_id"], "admin-user-id");
         assert_eq!(body["balance"]["currency"], "KES");
         assert_eq!(body["product_code"], "OPEN_CORRIDOR");
         assert_eq!(
@@ -928,129 +840,6 @@ async fn apply_posts_the_configured_bodies_and_grants_roles() {
             json!([{ "scheme": "CARDANO", "address": "addr_test1aaa" }])
         );
     }
-
-    // Grant for a non-existent user is refused — no registration path.
-    let resp = app
-        .oneshot(post_json_with_cookie(
-            "/api/setup/apply",
-            &cookie,
-            json!({ "id": "grant:ghost@rt.bank.a:CanSettleOpenCorridor" }),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
-    let v = body_json(resp).await;
-    assert!(v["message"]
-        .as_str()
-        .unwrap()
-        .contains("provisioned outside this app"));
-}
-
-#[tokio::test]
-async fn a_username_at_several_identity_providers_is_refused_not_guessed() {
-    // Tests the user lookup (GET /obp/v7.0.0/users?username=): `rt.twin` exists at two identity providers, so
-    // the status check reports an error for its grant, and Apply grants nothing.
-    let captured = Arc::new(Mutex::new(Captured::default()));
-    let base = spawn_obp_stub(captured.clone()).await;
-    let mut setup = setup_config();
-    setup.bank.as_mut().unwrap().role_grants.push(SetupRoleGrant {
-        username: "rt.twin".into(),
-        role: "CanSettleOpenCorridor".into(),
-    });
-    let app = app_with_config(&base, setup);
-    let cookie = log_in(&app, &captured).await;
-
-    let resp = app
-        .clone()
-        .oneshot(get_with_cookie("/api/setup/status", &cookie))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let v = body_json(resp).await;
-    let twin = v["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|i| i["id"] == "grant:rt.twin@rt.bank.a:CanSettleOpenCorridor")
-        .expect("the grant is listed");
-    assert_eq!(twin["status"], "error");
-    assert!(twin["detail"].as_str().unwrap().contains("2 users are named rt.twin"));
-
-    let resp = app
-        .oneshot(post_json_with_cookie(
-            "/api/setup/apply",
-            &cookie,
-            json!({ "id": "grant:rt.twin@rt.bank.a:CanSettleOpenCorridor" }),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
-    assert!(body_json(resp).await["message"].as_str().unwrap().contains("2 users are named rt.twin"));
-    assert!(captured.lock().unwrap().entitlement_posts.is_empty());
-}
-
-#[tokio::test]
-async fn a_username_with_reserved_characters_reaches_obp_api_unchanged() {
-    // Tests the encoding of GET /obp/v7.0.0/users?username=: `a+b@c.com x` holds a plus, an at sign and a space,
-    // and the stub knows the user only when the decoded query value is exactly that, so the status check
-    // finds the user and reports the grant as missing instead of the user as absent.
-    let captured = Arc::new(Mutex::new(Captured::default()));
-    let base = spawn_obp_stub(captured.clone()).await;
-    let mut setup = setup_config();
-    setup.bank.as_mut().unwrap().role_grants.push(SetupRoleGrant {
-        username: "a+b@c.com x".into(),
-        role: "CanSettleOpenCorridor".into(),
-    });
-    let app = app_with_config(&base, setup);
-    let cookie = log_in(&app, &captured).await;
-    let id = "grant:a+b@c.com x@rt.bank.a:CanSettleOpenCorridor";
-
-    let resp = app
-        .oneshot(get_with_cookie("/api/setup/status", &cookie))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let v = body_json(resp).await;
-    let item = v["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|i| i["id"] == id)
-        .expect("the grant is listed");
-    assert_eq!(item["status"], "missing", "the user was not found: {item}");
-}
-
-#[tokio::test]
-async fn test_grant_apply_accepts_a_username_with_an_at_sign() {
-    // The grant id is `grant:<user>@<bank>:<role>`; a username such as an email address holds an `@`
-    // itself, so the id has to be read from the right: the role after the last `:`, the bank after the
-    // last `@` before that.
-    let captured = Arc::new(Mutex::new(Captured::default()));
-    let base = spawn_obp_stub(captured.clone()).await;
-    let mut setup = setup_config();
-    setup.bank.as_mut().unwrap().role_grants.push(SetupRoleGrant {
-        username: "a+b@c.com x".into(),
-        role: "CanSettleOpenCorridor".into(),
-    });
-    let app = app_with_config(&base, setup);
-    let cookie = log_in(&app, &captured).await;
-
-    let resp = app
-        .oneshot(post_json_with_cookie(
-            "/api/setup/apply",
-            &cookie,
-            json!({ "id": "grant:a+b@c.com x@rt.bank.a:CanSettleOpenCorridor" }),
-        ))
-        .await
-        .unwrap();
-    let status = resp.status();
-    let v = body_json(resp).await;
-    assert_eq!(status, StatusCode::CREATED, "the grant was refused: {v}");
-    let c = captured.lock().unwrap();
-    let (user_id, body) = &c.entitlement_posts[0];
-    assert_eq!(user_id, "odd-user-id");
-    assert_eq!(body["bank_id"], "rt.bank.a");
-    assert_eq!(body["role_name"], "CanSettleOpenCorridor");
 }
 
 #[tokio::test]
@@ -1228,4 +1017,132 @@ async fn apply_marks_the_platform_app_adds_scopes_and_grants_the_node_view() {
         &json!({ "consumer_id": "node-a-consumer-id", "view_id": "_open-corridor-node" })
     );
     assert_eq!(posts.len(), 5);
+}
+
+#[tokio::test]
+async fn a_config_that_still_names_owners_and_grants_is_read_and_those_keys_are_ignored() {
+    // Older config files carried `owner_username` on accounts and a `role_grants` list. The setup page
+    // no longer looks users up, so the keys are ignored (no error): no grant item appears and an
+    // account is created for the logged-in administrator.
+    use figment::providers::{Format, Yaml};
+    use figment::Figment;
+
+    let captured = Arc::new(Mutex::new(Captured::default()));
+    let base = spawn_obp_stub(captured.clone()).await;
+    let yaml = format!(
+        r#"
+server:
+  bind: "127.0.0.1:0"
+nodes:
+  - name: node-a
+    base_url: "http://127.0.0.1:1"
+obp_api:
+  base_url: "{base}"
+  oauth_client_id: app-client
+  oauth_client_secret: app-secret
+  callback_url: "http://localhost:8091/setup/callback"
+setup:
+  bank:
+    id: rt.bank.a
+    accounts:
+      - id: settlement-a
+        currency: KES
+        owner_username: rt.node.a
+    role_grants:
+      - username: rt.node.a
+        role: CanSettleOpenCorridor
+"#
+    );
+    let config: crate::Config = Figment::from(Yaml::string(&yaml))
+        .extract()
+        .expect("a config with the old keys still loads");
+    let app = build_router(
+        AppState::new(config.nodes.clone(), Default::default()).unwrap(),
+        Some(SetupState::new(config.obp_api.clone().unwrap(), config.setup.clone()).unwrap()),
+    );
+    let cookie = log_in(&app, &captured).await;
+
+    let resp = app
+        .clone()
+        .oneshot(get_with_cookie("/api/setup/status", &cookie))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let by_id = items_by_id(&body_json(resp).await);
+    assert!(
+        !by_id.keys().any(|k| k.starts_with("grant:")),
+        "no grant items: {:?}",
+        by_id.keys().collect::<Vec<_>>()
+    );
+    assert!(by_id.contains_key("account:rt.bank.a/settlement-a"));
+
+    let resp = app
+        .oneshot(post_json_with_cookie(
+            "/api/setup/apply",
+            &cookie,
+            json!({ "id": "account:rt.bank.a/settlement-a" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let c = captured.lock().unwrap();
+    assert_eq!(c.account_puts[0].1["user_id"], "admin-user-id");
+}
+
+#[tokio::test]
+async fn test_account_endpoint_ignores_an_owner_username_and_keeps_the_admin_as_owner() {
+    // A stale client that still sends `owner_username` gets an account owned by the administrator.
+    let captured = Arc::new(Mutex::new(Captured::default()));
+    let base = spawn_obp_stub(captured.clone()).await;
+    let app = app_with_setup(&base);
+    let cookie = log_in(&app, &captured).await;
+
+    let resp = app
+        .oneshot(post_json_with_cookie(
+            "/api/setup/test-account",
+            &cookie,
+            json!({ "bank_id": "rt.bank.a", "currency": "KES", "owner_username": "rt.node.a" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let c = captured.lock().unwrap();
+    assert_eq!(c.account_posts[0].1["user_id"], "admin-user-id");
+}
+
+#[tokio::test]
+async fn apply_grants_the_administrator_a_role_the_setup_needs_and_no_other() {
+    let captured = Arc::new(Mutex::new(Captured::default()));
+    let base = spawn_obp_stub(captured.clone()).await;
+    let app = app_with_setup(&base);
+    let cookie = log_in(&app, &captured).await;
+
+    let resp = app
+        .clone()
+        .oneshot(post_json_with_cookie(
+            "/api/setup/apply",
+            &cookie,
+            json!({ "id": "myrole:rt.bank.a:CanCreateAccount" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    {
+        let c = captured.lock().unwrap();
+        let (user_id, body) = &c.entitlement_posts[0];
+        assert_eq!(user_id, "admin-user-id");
+        assert_eq!(body, &json!({ "bank_id": "rt.bank.a", "role_name": "CanCreateAccount" }));
+    }
+
+    // A role the setup block does not need is refused, nothing is posted.
+    let resp = app
+        .oneshot(post_json_with_cookie(
+            "/api/setup/apply",
+            &cookie,
+            json!({ "id": "myrole:rt.bank.a:CanDeleteBank" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(captured.lock().unwrap().entitlement_posts.len(), 1);
 }

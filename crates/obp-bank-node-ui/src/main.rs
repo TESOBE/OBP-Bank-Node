@@ -16,7 +16,7 @@
 //! through its OIDC provider (the same authorization-code flow the OBP Portal
 //! and API Manager use) and reconcile the instance against the declarative
 //! `setup` block — banks, routing schemes, accounts, FX rates, Open Corridor
-//! brokers, role grants. Tokens live in a server-side session; the browser
+//! brokers, the node's Platform App. Tokens live in a server-side session; the browser
 //! never sees a credential. The page never registers users and never touches
 //! email validation — service users are provisioned outside the app.
 
@@ -95,7 +95,7 @@ fn default_oauth_provider() -> String {
 ///
 /// Single-bank by construction (decided 2026-08-09): the app acts on behalf
 /// of ONE node = one bank, so its setup block describes only that bank's
-/// world — never another bank's accounts, broker credentials, or grants.
+/// world — never another bank's accounts or broker credentials.
 /// The exception is `routing_schemes`, which are system-level catalogue
 /// entries (API-operator scope in production; carried here for dev).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -122,10 +122,6 @@ pub struct SetupBank {
     /// Body for `PUT /obp/v7.0.0/banks/{id}/amqp-broker`, verbatim.
     #[serde(default)]
     pub broker: Option<serde_json::Value>,
-    /// Entitlements at THIS bank for users that already exist (the bank's
-    /// node service user). The page grants but never creates users.
-    #[serde(default)]
-    pub role_grants: Vec<SetupRoleGrant>,
     /// The bank's Bank Node, as a Platform App: what its Consumer needs at
     /// this bank. The Consumer itself is created outside this page (its
     /// secret belongs in the node's config), and found here by name.
@@ -160,10 +156,6 @@ pub struct SetupAccount {
     #[serde(default)]
     pub label: String,
     pub currency: String,
-    /// Existing OBP username to own the account; defaults to the logged-in
-    /// admin. Looked up, never created.
-    #[serde(default)]
-    pub owner_username: Option<String>,
     /// Account routings (scheme + address). The CARDANO routing on
     /// OBP-INCOMING-SETTLEMENT-ACCOUNT is the bank's on-chain settlement
     /// address — the broker block carries transport coordinates only.
@@ -183,14 +175,6 @@ pub struct SetupFxRate {
     pub to_currency: String,
     pub rate: f64,
     pub inverse_rate: f64,
-}
-
-/// A role at the configured bank (the bank id is implied — grants outside
-/// the own bank are not expressible).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SetupRoleGrant {
-    pub username: String,
-    pub role: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

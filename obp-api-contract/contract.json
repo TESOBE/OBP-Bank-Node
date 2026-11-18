@@ -95,22 +95,6 @@
    "note": "Also compares every key of the configured broker body except password with the answer."
   },
   {
-   "verb": "GET",
-   "path": "/obp/v7.0.0/users",
-   "source": "crates/obp-bank-node-ui/src/setup.rs",
-   "needles": [
-    "\"/obp/v7.0.0/users?{query}\""
-   ],
-   "reads": [
-    "users[].username",
-    "users[].is_deleted",
-    "users[].user_id",
-    "users[].entitlements.list[].bank_id",
-    "users[].entitlements.list[].role_name"
-   ],
-   "note": "Called with ?username=, which OBP-API matches exactly. One live user with that username is the user; none or several is an error."
-  },
-  {
    "verb": "PUT",
    "path": "/obp/v7.0.0/banks/BANK_ID/accounts/ACCOUNT_ID",
    "source": "crates/obp-bank-node-ui/src/setup.rs",
