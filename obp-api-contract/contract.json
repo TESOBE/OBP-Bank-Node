@@ -1,5 +1,6 @@
 {
  "about": "Every OBP-API call the Bank-Node and its UI make: verb, path (OBP placeholders in capitals), the source file and the text that makes the call (needles), and the response fields the code reads. crates/obp-bank-node-ui/tests/obp_contract.rs checks this list against the source and against snapshot.json, which obp-api-contract/snapshot.py writes from an OBP-API's resource docs.",
+ "version_policy": "Each call writes the OBP-API version it needs in its own path. One configured version cannot serve them all, because an endpoint exists only in the versions OBP-API documents it for. The contract test checks every call against the endpoint documented for the version it names and fails on any version below v5.1.0. To move a call to a newer version, change its path and run snapshot.py again.",
  "calls": [
   {
    "verb": "GET",
