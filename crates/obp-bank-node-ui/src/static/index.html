@@ -66,8 +66,12 @@
             <span class="fnote">free text</span>
             <input name="beneficiary_name" value="Beneficiary at rt.bank.b" required>
           </label>
+          <label>Beneficiary bank
+            <span class="fnote">banks on the OBP-API instance (getBanks)</span>
+            <select id="send-other-bank"></select>
+          </label>
           <label class="pair">Beneficiary bank routing (scheme · address)
-            <span class="fnote">registered scheme · bank must be registered</span>
+            <span class="fnote">set from the bank picked above · editable</span>
             <span class="pair-inputs">
               <input name="other_bank_scheme" value="OBP" class="scheme" required>
               <input name="other_bank" value="rt.bank.b" required>
@@ -126,8 +130,9 @@
           <label>Triggering node
             <select name="node" id="settle-node"></select>
           </label>
-          <label>Other bank id
-            <input name="other_bank_id" value="rt.bank.b" required>
+          <label>Other bank
+            <span class="fnote">banks on the OBP-API instance (getBanks)</span>
+            <select name="other_bank_id" id="settle-other-bank" required></select>
           </label>
           <label>Currency
             <input name="currency" value="KES" required>

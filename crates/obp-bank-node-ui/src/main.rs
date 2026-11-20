@@ -44,7 +44,7 @@ pub struct Config {
     /// proxy URL (`/api/nodes/{name}/...`).
     pub nodes: Vec<NodeConfig>,
     /// Per-instance form prefill, keyed by form-field name (e.g.
-    /// `other_bank: rt.bank.b`, `other_bank_id: rt.bank.b`). Served verbatim
+    /// `other_account: settlement-b`). Served verbatim
     /// at `GET /api/ui-defaults`; the UI applies each entry to the matching
     /// Send/Settle input at load. Purely cosmetic — validation still happens
     /// at the node.

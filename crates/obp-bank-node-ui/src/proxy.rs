@@ -129,6 +129,8 @@ fn allowed(method: &Method, path: &str) -> bool {
             | (&Method::GET, ["incoming-settlements"])
             | (&Method::GET, ["evidence"])
             | (&Method::GET, ["evidence", _])
+            // The banks on the OBP-API instance (getBanks, relayed by the node).
+            | (&Method::GET, ["banks"])
             | (&Method::POST, ["transaction-requests"])
             | (&Method::POST, ["settlements"])
     )

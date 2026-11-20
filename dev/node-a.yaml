@@ -16,6 +16,11 @@ bank:
     NGN: "settlement-a-ngn"
     USD: "settlement-a-usd"
     EUR: "settlement-a-eur"
+    XCD: "settlement-a-xcd"
+    TTD: "settlement-a-ttd"
+    JMD: "settlement-a-jmd"
+    BBD: "settlement-a-bbd"
+    BSD: "settlement-a-bsd"
   # The view the node creates Transaction Requests through on each corridor account: a custom
   # view with only can_add_transaction_request_to_any_account, given to the node's Consumer
   # (Consumer Account Access). dev/setup_obp.sh creates it and the grant.

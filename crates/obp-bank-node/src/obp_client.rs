@@ -493,6 +493,29 @@ impl ObpClient {
             }
         }
     }
+
+    /// List the banks on this OBP-API instance (`GET /obp/v5.1.0/banks`),
+    /// each with its `bank_routings`. The body is returned as OBP-API sent it,
+    /// so the south-side `/banks` endpoint answers exactly as OBP-API does.
+    pub async fn get_banks(&self) -> Result<serde_json::Value, ObpClientError> {
+        // getBanks is in v5.1.0 (STABLE), so call it there rather than at OBP_API_VERSION.
+        let url = format!("{}/obp/v5.1.0/banks", self.base_url);
+        // Log the call at debug level, like the other OBP-API reads.
+        debug!(%url, "listing the banks on this OBP-API instance");
+        // Build the GET request; credentials are added by send_authorized.
+        let req = self.http.get(&url);
+        // Send it, retrying once with a fresh token if a cached one is refused.
+        let (status, text) = self.send_authorized(req).await?;
+        // Anything other than success becomes a rejection or a transport error.
+        if !status.is_success() {
+            // Same classification as the other reads: OBP business errors pass through.
+            return Err(classify_failure(status, &text));
+        }
+        // Parse the body as JSON, reporting an unreadable body as a transport error.
+        serde_json::from_str(&text)
+            // Say which call gave the unreadable body.
+            .map_err(|e| ObpClientError::Transport(format!("unparseable banks response: {e}")))
+    }
 }
 
 /// One registry row, as listed by OBP-API. Only the fields the node validates

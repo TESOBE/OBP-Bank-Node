@@ -66,7 +66,8 @@ set_local() {
   local tmp; tmp="$(mktemp "$LOCAL_ENV.XXXXXX")"
   KEY="$key" VALUE="$value" awk 'BEGIN{k=ENVIRON["KEY"]; v=ENVIRON["VALUE"]; d=0}
     index($0,k "=")==1{ if(!d) print k "=" v; d=1; next } {print} END{ if(!d) print k "=" v }' "$LOCAL_ENV" > "$tmp"
-  chmod 600 "$tmp"; mv "$tmp" "$LOCAL_ENV"
+  # Keep local.env's own permissions (e.g. group-readable on a shared machine), not mktemp's 600.
+  chmod --reference="$LOCAL_ENV" "$tmp"; mv "$tmp" "$LOCAL_ENV"
   echo "   set $key in dev/local.env"
 }
 

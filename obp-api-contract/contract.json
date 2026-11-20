@@ -58,6 +58,20 @@
   },
   {
    "verb": "GET",
+   "path": "/obp/v5.1.0/banks",
+   "source": "crates/obp-bank-node/src/obp_client.rs",
+   "needles": [
+    "\"{}/obp/v5.1.0/banks\""
+   ],
+   "reads": [
+    "banks[].id",
+    "banks[].full_name",
+    "banks[].bank_routings[].scheme",
+    "banks[].bank_routings[].address"
+   ]
+  },
+  {
+   "verb": "GET",
    "path": "/obp/v6.0.0/banks/BANK_ID/account-directory",
    "source": "crates/obp-bank-node-ui/src/setup.rs",
    "needles": [

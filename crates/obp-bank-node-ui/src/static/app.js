@@ -66,8 +66,8 @@ function moreLink(total, shown, href, what) {
 
 // ---- header: node health -------------------------------------------------
 
-// Per-node identity from /health (bank_id, account_id) — drives the
-// beneficiary-default swap when the sending node changes.
+// Per-node identity from /health (bank_id, account_id) — the fallback for
+// renderSendNodeAccount and otherBanks when /status has not answered yet.
 const NODE_INFO = {};
 
 async function renderHealth() {
@@ -124,21 +124,87 @@ async function renderSendNodeAccount() {
   el.textContent = info ? `corridor account: ${info.bank_id} / ${info.account_id}` : "";
 }
 
-// A corridor is inter-bank: when the sender changes, point the beneficiary
-// fields at the first OTHER node's bank/account so the defaults never target
-// the sending bank itself.
-function swapBeneficiaryDefaults(senderName) {
-  const sender = NODE_INFO[senderName];
-  const other = NODES.map((n) => n.name)
-    .filter((name) => name !== senderName && NODE_INFO[name])
-    .map((name) => NODE_INFO[name])
-    .find((info) => !sender || info.bank_id !== sender.bank_id);
-  if (!other) return;
+// ---- the other bank: picked from getBanks ---------------------------------
+
+// Node name -> the banks on the OBP-API instance, as the node relays getBanks
+// (GET /obp-bank-node/v5.1.0/banks); null when the node could not list them.
+const BANKS = {};
+
+async function fetchBanks(node) {
+  if (!(node in BANKS)) {
+    const r = await getJson(nodeUrl(node, "banks"));
+    BANKS[node] = r.ok && Array.isArray(r.body?.banks) ? r.body.banks : null;
+  }
+  return BANKS[node];
+}
+
+// The banks a node can pay: every bank on the instance except its own.
+// null when the list could not be fetched.
+async function otherBanks(node) {
+  const ownBankId = (await fetchStatus(node))?.bank_id || NODE_INFO[node]?.bank_id;
+  const banks = await fetchBanks(node);
+  return banks ? banks.filter((bank) => bank.id !== ownBankId) : null;
+}
+
+function bankOption(bank) {
+  const routings = (bank.bank_routings || [])
+    .map((routing) => `${routing.scheme} ${routing.address}`).join(", ");
+  const name = bank.full_name && bank.full_name !== bank.id ? `${bank.full_name} (${bank.id})` : bank.id;
+  return `<option value="${esc(bank.id)}">${esc(routings ? `${name} · ${routings}` : name)}</option>`;
+}
+
+// Fill a bank picker with the node's other banks. Keeps `wantedBankId` selected
+// when it is in the list, else selects the first. Returns the selected bank id,
+// or "" when there is nothing to pick.
+async function fillBankSelect(select, node, wantedBankId) {
+  if (!select || !node) return "";
+  const banks = await otherBanks(node);
+  if (!banks || banks.length === 0) {
+    const why = banks ? "no other banks on this OBP-API instance" : "the node could not list the banks";
+    select.innerHTML = `<option value="">${why}</option>`;
+    select.disabled = true;
+    return "";
+  }
+  select.disabled = false;
+  select.innerHTML = banks.map(bankOption).join("");
+  if (banks.some((bank) => bank.id === wantedBankId)) select.value = wantedBankId;
+  return select.value;
+}
+
+// The account the beneficiary fields default to: the corridor account of a
+// configured node that serves the picked bank (the localhost demo runs both).
+// A real deployment fronts one node, so the account stays as typed.
+async function accountAtBank(bankId) {
+  for (const n of NODES) {
+    const status = await fetchStatus(n.name);
+    if (status?.bank_id === bankId && status.account_id) return status.account_id;
+  }
+  return null;
+}
+
+// Point the Send form's beneficiary bank routing at the picked bank.
+async function applySendBank(bankId) {
+  if (!bankId) return;
   const send = $("#send-form").elements;
-  send.namedItem("other_bank").value = other.bank_id;
-  send.namedItem("other_account").value = other.account_id;
-  send.namedItem("beneficiary_name").value = `Beneficiary at ${other.bank_id}`;
-  $("#settle-form").elements.namedItem("other_bank_id").value = other.bank_id;
+  send.namedItem("other_bank_scheme").value = "OBP";
+  send.namedItem("other_bank").value = bankId;
+  send.namedItem("beneficiary_name").value = `Beneficiary at ${bankId}`;
+  const accountId = await accountAtBank(bankId);
+  if (accountId) send.namedItem("other_account").value = accountId;
+}
+
+async function fillSendBanks() {
+  const select = $("#send-other-bank");
+  if (!select) return;
+  const current = $("#send-form").elements.namedItem("other_bank").value.trim();
+  const picked = await fillBankSelect(select, $("#send-node").value, current);
+  if (picked && picked !== current) await applySendBank(picked);
+}
+
+async function fillSettleBanks() {
+  const select = $("#settle-other-bank");
+  if (!select) return;
+  await fillBankSelect(select, $("#settle-node").value, select.value || $("#send-other-bank")?.value);
 }
 
 // ---- step 2: promises (outbox tables) ------------------------------------
@@ -637,13 +703,16 @@ async function boot() {
   initFieldHistory($("#settle-form"));
   $("#send-form")?.addEventListener("submit", onSend);
   $("#settle-form")?.addEventListener("submit", onSettle);
-  $("#send-node")?.addEventListener("change", (e) => {
-    swapBeneficiaryDefaults(e.target.value);
+  $("#send-node")?.addEventListener("change", () => {
+    fillSendBanks();
     renderSendNodeAccount();
   });
+  $("#send-other-bank")?.addEventListener("change", (e) => applySendBank(e.target.value));
   $("#send-form")?.elements.namedItem("currency")
     ?.addEventListener("input", renderSendNodeAccount);
-  $("#settle-node")?.addEventListener("change", (e) => swapBeneficiaryDefaults(e.target.value));
+  $("#settle-node")?.addEventListener("change", fillSettleBanks);
+  await fillSendBanks();
+  await fillSettleBanks();
   document.addEventListener("click", (e) => {
     const btn = e.target.closest(".corridor-btn");
     if (btn) showCorridor(btn.dataset.node, btn.dataset.key);

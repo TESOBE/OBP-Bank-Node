@@ -699,6 +699,20 @@ pub async fn get_corridor_settlement(
     Json(result.raw).into_response()
 }
 
+/// The banks on this OBP-API instance, as OBP-API's getBanks lists them
+/// (`GET /obp/v5.1.0/banks`), with each bank's `bank_routings`. This is how
+/// the bank, or the Bank Node UI, learns which other banks it can pay and
+/// which routing pairs address them. The body is OBP-API's, unchanged.
+pub async fn list_banks(State(state): State<BankNodeState>) -> Response {
+    // Ask OBP-API for the list; a failure maps onto the usual Interface B errors.
+    match state.obp.get_banks().await {
+        // Relay OBP-API's body as it is.
+        Ok(body) => Json(body).into_response(),
+        // A rejection keeps OBP-API's status and code; no answer is this node's 502.
+        Err(e) => obp_error(e),
+    }
+}
+
 /// Settlements this bank receives as creditor, and whether each payment has
 /// been seen arriving (see `incoming.rs`).
 pub async fn list_incoming_settlements(State(state): State<BankNodeState>) -> Response {

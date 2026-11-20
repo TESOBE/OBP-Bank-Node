@@ -12,13 +12,11 @@ nodes:
     base_url: "http://localhost:8088"
 
 # Form prefill for this instance, keyed by form-field name (Send + Settle).
-# Out-of-band knowledge of the demo topology — the app never enumerates the
-# other bank's accounts.
+# The other bank is picked from getBanks; the account is out-of-band
+# knowledge of the demo topology — the app never enumerates the other bank's
+# accounts.
 ui_defaults:
-  beneficiary_name: "Beneficiary at rt.bank.b4"
-  other_bank: "rt.bank.b4"
   other_account: "settlement-b"
-  other_bank_id: "rt.bank.b4"
 
 # --- /setup operator page -------------------------------------------------
 # OBP-API + OIDC client for the setup page (the Portal's login scheme: the
@@ -107,6 +105,21 @@ setup:
       - id: "settlement-a-eur"
         label: "Node A corridor account (EUR)"
         currency: "EUR"
+      - id: "settlement-a-xcd"
+        label: "Node A corridor account (XCD)"
+        currency: "XCD"
+      - id: "settlement-a-ttd"
+        label: "Node A corridor account (TTD)"
+        currency: "TTD"
+      - id: "settlement-a-jmd"
+        label: "Node A corridor account (JMD)"
+        currency: "JMD"
+      - id: "settlement-a-bbd"
+        label: "Node A corridor account (BBD)"
+        currency: "BBD"
+      - id: "settlement-a-bsd"
+        label: "Node A corridor account (BSD)"
+        currency: "BSD"
       - id: "OBP-OUTGOING-SETTLEMENT-ACCOUNT"
         label: "OC outgoing settlement"
         currency: "KES"
@@ -133,4 +146,4 @@ setup:
       label: "OBP Bank Node A (rt.bank.a4)"
       scopes: ["CanAttachOpenCorridorPromise", "CanSettleOpenCorridor"]
       view_id: "_open-corridor-node"
-      corridor_accounts: ["settlement-a", "settlement-a-ngn", "settlement-a-usd", "settlement-a-eur"]
+      corridor_accounts: ["settlement-a", "settlement-a-ngn", "settlement-a-usd", "settlement-a-eur", "settlement-a-xcd", "settlement-a-ttd", "settlement-a-jmd", "settlement-a-bbd", "settlement-a-bsd"]

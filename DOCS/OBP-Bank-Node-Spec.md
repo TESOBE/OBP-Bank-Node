@@ -161,9 +161,11 @@ The OBP Bank Node accepts the following routing scheme combinations. It resolves
 
 The OBP Bank Node resolves all schemes to OBP API identifiers before submitting to the OBP API. If a routing address cannot be resolved, the OBP Bank Node returns `OBP-BANK-NODE-ROUTING-001` (see error codes below).
 
-The OBP Bank Node maintains an internal routing registry, populated from the OBP API at startup and refreshed periodically. When it first encounters a new routing address successfully resolved by the OBP API, it caches the mapping locally — so subsequent payments to the same beneficiary resolve instantly from the local cache.
+The OBP Bank Node does not look up the beneficiary bank itself. It caches the ACTIVE rows of the OBP API's routing-scheme catalogue (`GET /obp/v7.0.0/routing-schemes`), refreshes them periodically, and checks that each scheme exists and that each address matches the scheme's pattern. It then sends the routing details inline in the OPEN_CORRIDOR Transaction Request, and the OBP API finds the beneficiary bank by matching them against each bank's `bank_routings`.
 
-The registry is structurally a lookup table from routing scheme/address to (bank, home instance). In the current single-instance release every entry resolves to the local OBP API instance, and an unresolvable address is a routing error (`OBP-BANK-NODE-ROUTING-001`). The table shape is deliberate: a future multi-instance network adds entries whose home instance is a peer platform, without changing how resolution works (see `ARCHITECTURE.md`, "Multi-instance posture"). Note that `bank_id` is an opaque, instance-local identifier — network-meaningful addresses such as a BIC belong in the bank's `bank_routings` entries, never encoded into the `bank_id` itself.
+To learn which other banks are on the instance, and how to address them, a node or its UI can call `GET /obp/v5.1.0/banks`. It lists every bank on the instance with its `bank_routings`, which are the same scheme/address pairs a payment uses. This works while every bank on an Open Corridor instance takes part in the corridor. If an instance also hosts banks that do not, we may need a way to tell participants apart: either a bank attribute that marks a bank as an Open Corridor participant, which getBanks callers can filter on, or a separate endpoint that lists only participants.
+
+Resolution is structurally a lookup table from routing scheme/address to (bank, home instance). In the current single-instance release every address resolves to the local OBP API instance, and an unresolvable address is a routing error (`OBP-BANK-NODE-ROUTING-001`). The table shape is deliberate: a future multi-instance network adds entries whose home instance is a peer platform, without changing how resolution works (see `ARCHITECTURE.md`, "Multi-instance posture"). Note that `bank_id` is an opaque, instance-local identifier — network-meaningful addresses such as a BIC belong in the bank's `bank_routings` entries, never encoded into the `bank_id` itself.
 
 #### Why OPEN_CORRIDOR rather than COUNTERPARTY
 
@@ -476,6 +478,7 @@ The OBP Bank Node implements a subset of the OBP API. Banks call these endpoints
 | `POST` | `/obp-bank-node/v5.1.0/transaction-requests` | Core payment initiation — see Section 3.2. Submits to OBP API via OBP REST. Writes Cardano Promise record. |
 | `GET` | `/obp-bank-node/v5.1.0/transaction-requests/{TRANSACTION_REQUEST_ID}` | Returns current status of a Transaction Request including OBP Bank Node-specific fields (`promise_id`, `promise_blockchain`, `netting_snapshot_id`, `netting_blockchain`, `settlement_id`, `settlement_system`). |
 | `GET` | `/obp-bank-node/v5.1.0/transaction-requests` | Returns list of Transaction Requests submitted via this OBP Bank Node instance. |
+| `GET` | `/obp-bank-node/v5.1.0/banks` | Returns OBP API's getBanks (`GET /obp/v5.1.0/banks`) unchanged: every bank on the instance with its `bank_routings`, so the bank can see which other banks it can pay and how to address them. |
 | `GET` | `/obp-bank-node/v5.1.0/health` | OBP Bank Node health and connection status (see Section 9). |
 
 ### Version Support

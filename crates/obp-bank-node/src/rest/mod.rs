@@ -4,7 +4,7 @@
 
 //! South-side REST API (Interface A).
 //!
-//! Mounts four endpoints under `/obp-bank-node/v5.1.0/` plus root `/alive`,
+//! Mounts the south-side endpoints under `/obp-bank-node/v5.1.0/` plus root `/alive`,
 //! `/health` and `/status` (in OBP-API's format, see [`status_page`]).
 //! URLs are intentionally short: one Bank Node serves exactly one bank, so
 //! `bank_id`, `account_id`, and `view_id` are not on the URL — the Bank Node
@@ -108,6 +108,8 @@ pub fn build_router(state: BankNodeState) -> Router {
             "/obp-bank-node/v5.1.0/settlements/:key/corridor",
             get(get_corridor_settlement),
         )
+        // The banks on the OBP-API instance, relayed from getBanks.
+        .route("/obp-bank-node/v5.1.0/banks", get(list_banks))
         .route("/obp-bank-node/v5.1.0/incoming-settlements", get(list_incoming_settlements))
         .route("/obp-bank-node/v5.1.0/evidence", get(list_evidence))
         .route(
