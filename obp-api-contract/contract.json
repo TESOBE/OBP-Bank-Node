@@ -1,5 +1,6 @@
 {
  "about": "Every OBP-API call the Bank-Node and its UI make: verb, path (OBP placeholders in capitals), the source file and the text that makes the call (needles), and the response fields the code reads. crates/obp-bank-node-ui/tests/obp_contract.rs checks this list against the source and against snapshot.json, which obp-api-contract/snapshot.py writes from an OBP-API's resource docs.",
+ "version_policy": "Each call writes the OBP-API version it needs in its own path. One configured version cannot serve them all, because an endpoint exists only in the versions OBP-API documents it for. The contract test checks every call against the endpoint documented for the version it names and fails on any version below v5.1.0. To move a call to a newer version, change its path and run snapshot.py again.",
  "calls": [
   {
    "verb": "GET",
@@ -93,22 +94,6 @@
     "virtual_host"
    ],
    "note": "Also compares every key of the configured broker body except password with the answer."
-  },
-  {
-   "verb": "GET",
-   "path": "/obp/v7.0.0/users",
-   "source": "crates/obp-bank-node-ui/src/setup.rs",
-   "needles": [
-    "\"/obp/v7.0.0/users?{query}\""
-   ],
-   "reads": [
-    "users[].username",
-    "users[].is_deleted",
-    "users[].user_id",
-    "users[].entitlements.list[].bank_id",
-    "users[].entitlements.list[].role_name"
-   ],
-   "note": "Called with ?username=, which OBP-API matches exactly. One live user with that username is the user; none or several is an error."
   },
   {
    "verb": "PUT",
@@ -333,7 +318,8 @@
    "source": "crates/obp-bank-node/src/obp_client.rs",
    "needles": [
     "const OBP_API_VERSION: &str = \"v7.0.0\";",
-    "\"{base}/obp/{ver}/banks/{bank}/accounts/{acct}/{view}\\"
+    "\"{base}/obp/{ver}/banks/{bank}/accounts/{acct}/{view}\\",
+    "             /transaction-request-types/OPEN_CORRIDOR_PROMISE/transaction-requests\""
    ],
    "reads": [
     "transaction_request_id|id"
@@ -359,7 +345,8 @@
    "source": "crates/obp-bank-node/src/obp_client.rs",
    "needles": [
     "const OBP_API_VERSION: &str = \"v7.0.0\";",
-    "\"{base}/obp/{ver}/banks/{bank}/open-corridor/settlements\""
+    "\"{base}/obp/{ver}/banks/{bank}/open-corridor/settlements\"",
+    "\"{}/{}\", self.settlements_url(bank_id), settlement_id"
    ],
    "reads": [
     "settlement_id",
@@ -372,7 +359,8 @@
    "source": "crates/obp-bank-node/src/obp_client.rs",
    "needles": [
     "const OBP_API_VERSION: &str = \"v7.0.0\";",
-    "\"{base}/obp/{ver}/banks/{bank}/accounts/{acct}\\"
+    "\"{base}/obp/{ver}/banks/{bank}/accounts/{acct}\\",
+    "             /transaction-requests/{tr}/open-corridor/promise\""
    ],
    "reads": []
   },
@@ -401,6 +389,53 @@
     "routing_schemes[].example_address",
     "pagination.total"
    ]
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v5.1.0/users/current",
+   "source": "dev/setup_obp.sh",
+   "needles": [
+    "api GET /obp/v5.1.0/users/current"
+   ],
+   "reads": [
+    "user_id"
+   ],
+   "note": "Dev script: the super admin's user id, which owns the accounts it creates."
+  },
+  {
+   "verb": "PUT",
+   "path": "/obp/v5.1.0/banks/BANK_ID/accounts/ACCOUNT_ID",
+   "source": "dev/setup_obp.sh",
+   "needles": [
+    "api PUT \"/obp/v5.1.0/banks/$1/accounts/$2\""
+   ],
+   "reads": [],
+   "note": "Dev script: creates a settlement account with the create-account operation that OBP-API serves under v5.1.0."
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v6.0.0/my/logins/direct",
+   "source": "dev/create_consumers.sh",
+   "needles": [
+    "\"$OBP/obp/v6.0.0/my/logins/direct\""
+   ],
+   "reads": [
+    "token"
+   ],
+   "note": "Dev script: DirectLogin as the operator user, to create the dev Consumers."
+  },
+  {
+   "verb": "POST",
+   "path": "/obp/v5.1.0/management/consumers",
+   "source": "dev/create_consumers.sh",
+   "needles": [
+    "\"$OBP/obp/v5.1.0/management/consumers\""
+   ],
+   "reads": [
+    "consumer_key",
+    "consumer_secret"
+   ],
+   "note": "Dev script: creates the node and UI Consumers."
   }
  ]
 }

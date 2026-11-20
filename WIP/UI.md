@@ -156,8 +156,8 @@ page, so an admin can verify an OBP-API instance is ready for Open Corridor
   cut carried the whole corridor — both banks — which broke the one-node
   boundary and put bank B's broker credentials in bank A's config file):
   the `setup` block describes ONE bank — `setup.bank` with its accounts,
-  FX rates, broker registration, and role grants (bank id implied, so
-  cross-bank grants are not expressible). Each instance reconciles only
+  FX rates, broker registration, and the node's Platform App (bank id
+  implied). Each instance reconciles only
   its own side; the corridor works when both banks' operators have run
   theirs. The exception is `routing_schemes` — system-level catalogue
   entries, API-operator scope in production, carried in both dev configs
@@ -165,7 +165,8 @@ page, so an admin can verify an OBP-API instance is ready for Open Corridor
   own bank.
 - **Declarative desired state** in the `setup` config block (see
   `dev/ui-a/b.yaml`): routing schemes (wire-shaped, posted verbatim), the
-  own bank's accounts / FX rates / broker registration, role grants. The page
+  own bank's accounts / FX rates / broker registration, the node's
+  Platform App. The page
   renders every item as a read-only check (`ok` / `missing` / `differs` /
   `unverified` / `error`) with per-item **Apply** + **Apply all missing**;
   applies re-derive the action server-side from config (the browser only
@@ -184,12 +185,13 @@ page, so an admin can verify an OBP-API instance is ready for Open Corridor
   instance's node list with `/health` results through the proxy. Intended
   to be handed verbatim to an agent working on the Bank Node or this app.
 - **No user registration, no email validation** (Simon, 2026-08-08, hard
-  scope line): accounts/grants naming an `owner_username`/`username` require
-  the user to already exist — a missing user is an error, never a
-  provisioning action. The node service users (and the psql
-  `authuser.validated` flip + `env.sh` token writing) stay with
-  `setup_obp.sh`, which remains the one-shot bootstrap; the page covers
-  everything after that.
+  scope line): the page never creates users, and it no longer looks them up
+  either (removed 2026-11-18, since the nodes are Platform Apps and no
+  config names a user): accounts it creates are owned by the logged-in
+  administrator, and an old `owner_username` or `role_grants` key in a
+  config file is ignored. The psql `authuser.validated` flip and `env.sh`
+  token writing stay with `setup_obp.sh`, which remains the one-shot
+  bootstrap; the page covers everything after that.
 - The admin acts with their own entitlements — the page holds no service
   credential and adds no OBP-API changes; every call is an existing
   endpoint (`banks`, `routing-schemes`, `accounts`, `fx`, entitlements,
