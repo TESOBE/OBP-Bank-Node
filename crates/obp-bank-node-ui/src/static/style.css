@@ -182,7 +182,7 @@ td.details { font-size: .78rem; color: var(--dim); min-width: 16rem; overflow-wr
 }
 
 /* header node health */
-.node-health { display: flex; gap: .5rem; align-items: center; }
+.node-health { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
 .node-chip {
   padding: .1rem .6rem;
   border-radius: 999px;
@@ -192,6 +192,8 @@ td.details { font-size: .78rem; color: var(--dim); min-width: 16rem; overflow-wr
 .node-chip.up { border-color: #cfe8d6; background: #eef7f0; color: var(--ok); }
 .node-chip.down { border-color: #f1d0cd; background: #fdf0ef; color: var(--err); }
 .node-chip.warn { border-color: #f0e0c0; background: #fff4e0; color: var(--warn); }
+.instance-group { display: inline-flex; gap: .35rem; align-items: center; padding: .1rem .35rem; border: 1px dashed var(--line); border-radius: 999px; }
+.instance-name { font-size: .72rem; color: var(--dim); padding: 0 .25rem; }
 
 footer {
   max-width: 1280px;

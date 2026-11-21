@@ -264,7 +264,28 @@ pub struct StatusBody {
     pub corridor_accounts: std::collections::BTreeMap<String, String>,
     pub blockchain: &'static str,
     pub finality_depth: u32,
+    /// The OBP-API instances this node is connected to, with this bank's
+    /// identity on each. One entry today; a hub node will list several.
+    pub instances: Vec<InstanceView>,
     pub timestamp: DateTime<Utc>,
+}
+
+/// One OBP-API instance as `/status` reports it. `bank_id` is local to the
+/// instance, so a bank on several instances has a different one on each.
+#[derive(Debug, Serialize)]
+pub struct InstanceView {
+    /// The name the operator gave this instance (`obp_api.name`).
+    pub name: String,
+    /// OBP-API's base URL for this instance.
+    pub obp_api_url: String,
+    /// This bank's `bank_id` on this instance.
+    pub bank_id: String,
+    /// The single-currency shorthand account on this instance.
+    pub account_id: String,
+    /// Currency → corridor account id on this instance.
+    pub corridor_accounts: std::collections::BTreeMap<String, String>,
+    /// Interface C (RabbitMQ) state for this instance.
+    pub interface_c: &'static str,
 }
 
 #[derive(Debug, Serialize)]

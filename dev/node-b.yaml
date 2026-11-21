@@ -29,6 +29,8 @@ bank:
   view_id: "_open-corridor-node"
 
 obp_api:
+  # The instance name the Bank Node UI groups nodes by. Both demo nodes share one instance.
+  name: "localhost"
   base_url: "http://localhost:8080"
   # The node is a Platform App: it calls OBP-API as itself, with OAuth2 client credentials from
   # OBP-OIDC. client_id / client_secret come from dev/local.env (start_node_b.sh passes them).

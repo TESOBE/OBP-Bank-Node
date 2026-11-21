@@ -51,6 +51,7 @@ async fn router_with_obp(obp_base_url: &str) -> (axum::Router, BankNodeState) {
         finality_depth: TEST_FINALITY_DEPTH,
         interface_c: crate::interface_c::consumer::ConsumerStatus::new(),
         obp_api_url: obp_base_url.into(),
+        obp_api_name: "test-instance-a".into(),
         chain_health_url: None,
         instance_id: "test-instance".into(),
         started_at: std::time::Instant::now(),
@@ -404,6 +405,14 @@ async fn versioned_status_reports_identity_and_corridor_accounts() {
     assert_eq!(v["corridor_accounts"]["KES"], "settlement-kes");
     assert_eq!(v["corridor_accounts"]["NGN"], "settlement-ngn");
     assert_eq!(v["finality_depth"], TEST_FINALITY_DEPTH);
+    // The node lists the one instance it is connected to.
+    assert_eq!(v["instances"].as_array().unwrap().len(), 1);
+    // With its configured name.
+    assert_eq!(v["instances"][0]["name"], "test-instance-a");
+    // And this bank's identity and corridor accounts there.
+    assert_eq!(v["instances"][0]["bank_id"], "test.bank.id");
+    // The per-currency accounts are repeated on the instance.
+    assert_eq!(v["instances"][0]["corridor_accounts"]["KES"], "settlement-kes");
 }
 
 /// A router whose bank sends per-currency: KES and NGN map to their corridor

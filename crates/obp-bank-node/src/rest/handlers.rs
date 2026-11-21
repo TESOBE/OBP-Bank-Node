@@ -773,19 +773,42 @@ pub async fn get_evidence(
 /// stays minimal and whose shape must basically never change. The root
 /// `/alive`, `/health` and `/status` follow OBP-API's format (`status_page`).
 pub async fn root_status(State(state): State<BankNodeState>) -> Response {
+    // Corridor accounts in sorted order, used twice below.
+    let corridor_accounts: std::collections::BTreeMap<String, String> = state
+        // Start from the configured currency -> account map.
+        .corridor_accounts
+        // Walk each entry.
+        .iter()
+        // Copy the currency and the account id.
+        .map(|(c, a)| (c.clone(), a.clone()))
+        // Collect into a sorted map.
+        .collect();
+    // Interface C state, reported per instance.
+    let (interface_c, _detail) = state.interface_c.snapshot();
     Json(StatusBody {
         service: "OBP-Bank-Node",
         version: env!("CARGO_PKG_VERSION"),
         bank_id: state.bank_id.clone(),
         account_id: state.account_id.clone(),
         // BTreeMap: deterministic (sorted) key order in the JSON.
-        corridor_accounts: state
-            .corridor_accounts
-            .iter()
-            .map(|(c, a)| (c.clone(), a.clone()))
-            .collect(),
+        corridor_accounts: corridor_accounts.clone(),
         blockchain: state.blockchain_label,
         finality_depth: state.finality_depth,
+        // The one instance this node is connected to today.
+        instances: vec![InstanceView {
+            // The instance's name.
+            name: state.obp_api_name.clone(),
+            // Its OBP-API base URL.
+            obp_api_url: state.obp_api_url.clone(),
+            // This bank's id there.
+            bank_id: state.bank_id.clone(),
+            // Its shorthand account there.
+            account_id: state.account_id.clone(),
+            // Its corridor accounts there.
+            corridor_accounts,
+            // Its Interface C state.
+            interface_c,
+        }],
         timestamp: Utc::now(),
     })
     .into_response()

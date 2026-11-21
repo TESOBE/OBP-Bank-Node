@@ -575,6 +575,8 @@ bank:
   view_id: "owner"
 
 obp_api:
+  # Name of this OBP-API instance, as the Bank Node apps show it. Empty means the host of base_url.
+  # name: "open-corridor-a"
   base_url: "http://localhost:8080"
   # OAuth2 client-credentials (machine-to-machine).
   token_url: "http://localhost:8080/oauth2/token"

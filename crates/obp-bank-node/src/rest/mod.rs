@@ -62,6 +62,9 @@ pub struct BankNodeState {
     /// Checked by the root `/status` page: OBP-API's base URL, and the chain's
     /// health URL (Ogmios's `/health` for Cardano; `None` for the mock).
     pub obp_api_url: String,
+    /// The name of the OBP-API instance this node is connected to
+    /// (`obp_api.name`, or the host of its base URL).
+    pub obp_api_name: String,
     pub chain_health_url: Option<String>,
     /// Identifies this run of the node on `/status`; new on every start.
     pub instance_id: String,

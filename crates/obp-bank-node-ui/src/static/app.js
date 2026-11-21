@@ -85,7 +85,19 @@ async function renderHealth() {
     }
     return `<span class="node-chip ${up ? "up" : "down"}">${esc(n.name)} · ${up ? "up" : "down"}${chain}</span>`;
   }));
-  $("#node-health").innerHTML = parts.join("");
+  // Group the node chips by the OBP-API instance each node is connected to.
+  // A hub node is on several instances, so it appears in each group.
+  const groups = new Map();
+  NODES.forEach((n, i) => {
+    const names = instanceNames(n.name);
+    for (const name of names.length ? names : ["?"]) {
+      if (!groups.has(name)) groups.set(name, []);
+      groups.get(name).push(parts[i]);
+    }
+  });
+  $("#node-health").innerHTML = [...groups].map(([name, chips]) =>
+    `<span class="instance-group"><span class="instance-name" title="OBP-API instance">${esc(name)}</span>${chips.join("")}</span>`,
+  ).join("");
   renderSendNodeAccount();
 }
 
@@ -99,6 +111,24 @@ async function fetchStatus(name) {
     if (r.ok && r.body) NODE_STATUS[name] = r.body;
   }
   return NODE_STATUS[name];
+}
+
+// The OBP-API instances a node is connected to, from its /status. One today;
+// a hub node lists several.
+function nodeInstances(name) {
+  return NODE_STATUS[name]?.instances || [];
+}
+
+function instanceNames(name) {
+  return nodeInstances(name).map((instance) => instance.name);
+}
+
+// A node's heading in the tables: its name and the instance(s) it is on.
+function nodeTitle(name) {
+  const names = instanceNames(name);
+  return names.length
+    ? `${esc(name)} <span class="dim">· on ${esc(names.join(", "))}</span>`
+    : esc(name);
 }
 
 // Read-only line under the Sending node select: the corridor account the
@@ -116,12 +146,15 @@ async function renderSendNodeAccount() {
   const map = status?.corridor_accounts || {};
   if (Object.keys(map).length && currency) {
     el.textContent = map[currency]
-      ? `corridor account: ${status.bank_id} / ${map[currency]}`
+      ? `corridor account: ${status.bank_id} / ${map[currency]}${
+        instanceNames(node).length ? ` · on ${instanceNames(node).join(", ")}` : ""}`
       : `no corridor account for ${currency} — the node will refuse this send`;
     return;
   }
   const info = status || NODE_INFO[node];
   el.textContent = info ? `corridor account: ${info.bank_id} / ${info.account_id}` : "";
+  const names = instanceNames(node);
+  if (names.length && el.textContent) el.textContent += ` · on ${names.join(", ")}`;
 }
 
 // ---- the other bank: picked from getBanks ---------------------------------
@@ -167,6 +200,9 @@ async function fillBankSelect(select, node, wantedBankId) {
   }
   select.disabled = false;
   select.innerHTML = banks.map(bankOption).join("");
+  const note = select.parentElement?.querySelector(".fnote");
+  const names = instanceNames(node);
+  if (note && names.length) note.textContent = `banks on ${names.join(", ")} (getBanks)`;
   if (banks.some((bank) => bank.id === wantedBankId)) select.value = wantedBankId;
   return select.value;
 }
@@ -243,7 +279,7 @@ function renderTrTables() {
   const html = NODES.map((n) => {
     const rows = TRS[n.name] || [];
     if (rows.length === 0) {
-      return `<h3>${esc(n.name)}</h3><p class="empty">no outbound transaction requests</p>`;
+      return `<h3>${nodeTitle(n.name)}</h3><p class="empty">no outbound transaction requests</p>`;
     }
     const shown = rows.slice(0, rowLimit(el));
     const body = shown.map((tr) => `
@@ -257,7 +293,7 @@ function renderTrTables() {
         <td>${esc(tr.settled_at ? tr.settled_at.slice(0, 19) : "")}</td>
         <td class="details">${esc(trDetails(tr))}</td>
       </tr>`).join("");
-    return `<h3>${esc(n.name)}</h3>
+    return `<h3>${nodeTitle(n.name)}</h3>
       <table>
         <thead><tr><th>transaction request id</th><th>status</th><th>value</th><th>to bank</th>
           <th>promise tx</th><th>settlement</th><th>settled at</th><th>details</th></tr></thead>
@@ -297,7 +333,7 @@ function renderPosition() {
   const html = NODES.map((n) => {
     const corridors = outboundExposure(TRS[n.name] || []);
     if (corridors.length === 0) {
-      return `<h3>${esc(n.name)}</h3><p class="empty">no unsettled outbound corridor legs</p>`;
+      return `<h3>${nodeTitle(n.name)}</h3><p class="empty">no unsettled outbound corridor legs</p>`;
     }
     const rows = corridors.map((c) => `<tr>
       <td>${esc(c.other)}</td>
@@ -305,7 +341,7 @@ function renderPosition() {
       <td class="num net">${c.total.toFixed(2)}</td>
       <td class="num">${c.count}</td>
     </tr>`).join("");
-    return `<h3>${esc(n.name)}</h3>
+    return `<h3>${nodeTitle(n.name)}</h3>
       <table>
         <thead><tr><th>other bank</th><th>currency</th>
           <th>unsettled outbound</th><th>promises</th></tr></thead>
@@ -370,7 +406,7 @@ function incomingTable(n, rows) {
         <td>${txLink(s.tx_id)}</td>
         <td class="details">${esc(s.detail || "")}</td>
       </tr>`).join("");
-  return `<h4>${esc(n.name)} — incoming (as creditor)</h4>
+  return `<h4>${nodeTitle(n.name)} — incoming (as creditor)</h4>
       <table>
         <thead><tr><th>settlement id</th><th>status</th><th>from bank</th><th>net</th>
           <th>rail amount</th><th>tx</th><th>details</th></tr></thead>
@@ -449,7 +485,7 @@ async function renderSettlements() {
     const rows = data.out;
     const incoming = incomingTable(n, data.in.slice(0, rowLimit(el)));
     if (rows.length === 0) {
-      return `<h3>${esc(n.name)}</h3><p class="empty">no outgoing settlements</p>${incoming}`;
+      return `<h3>${nodeTitle(n.name)}</h3><p class="empty">no outgoing settlements</p>${incoming}`;
     }
     const shown = rows.slice(0, rowLimit(el));
     const body = shown.map((s) => `
@@ -467,7 +503,7 @@ async function renderSettlements() {
               data-key="${esc(s.settlement_id || s.idempotency_key)}"
               title="OBP-API's authoritative settlement view — covered promises from both banks; also reconciles this node's linkage">corridor view</button></td>
       </tr>`).join("");
-    return `<h3>${esc(n.name)}</h3>
+    return `<h3>${nodeTitle(n.name)}</h3>
       <table>
         <thead><tr><th>settlement id</th><th>status</th><th>net</th><th>rail amount</th>
           <th>rate</th><th>depth</th><th>tx</th><th>error</th><th></th></tr></thead>
@@ -495,7 +531,7 @@ async function renderEvidence() {
     const r = await getJson(nodeUrl(n.name, "evidence"));
     const rows = r.ok && Array.isArray(r.body) ? r.body : [];
     if (rows.length === 0) {
-      return `<h3>${esc(n.name)}</h3><p class="empty">no received credits</p>`;
+      return `<h3>${nodeTitle(n.name)}</h3><p class="empty">no received credits</p>`;
     }
     const shown = rows.slice(0, rowLimit(el));
     const body = shown.map((ev) => `
@@ -522,7 +558,7 @@ async function renderEvidence() {
           ? `<span class="chip chip-verified">settled</span>`
           : `<span class="chip chip-initiated">unsettled</span>`}</td>
       </tr>`).join("");
-    return `<h3>${esc(n.name)}</h3>
+    return `<h3>${nodeTitle(n.name)}</h3>
       <table>
         <thead><tr><th>transaction request id</th><th>commitment check</th><th>amount</th>
           <th>originator</th><th>CBS delivery</th><th>commitment</th><th>received</th><th>settlement</th></tr></thead>
@@ -671,6 +707,8 @@ async function applyUiDefaults() {
 // One app.js serves every page: each renderer no-ops when its container is
 // absent, so refresh() only fetches what the current page shows.
 async function refresh() {
+  // Node identity and instances, used by the headings below (cached per node).
+  await Promise.all(NODES.map((n) => fetchStatus(n.name)));
   if ($("#tr-tables") || $("#position-view")) {
     await fetchTrs();
     renderTrTables();
