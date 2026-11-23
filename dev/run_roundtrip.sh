@@ -14,6 +14,8 @@ source "$DIR/env.sh"
 
 OBP="http://localhost:8080"
 NODE_A="http://localhost:8088"
+# Node A's bank rt.bank.a4 on OBP host localhost:8080: the node's URLs name the OBP host and the bank, as OBP-API's do.
+NODE_A_BANK="$NODE_A/obp-bank-node/v5.1.0/hosts/localhost:8080/banks/rt.bank.a4"
 AMOUNT="${1:-500.00}"
 
 sq() { # sq <db-file> <sql>  (sqlite3 CLI not installed; use python's module)
@@ -26,7 +28,7 @@ for row in con.execute(sys.argv[2]):
 }
 
 echo "=== 1. POST payment to Node A (KES $AMOUNT, rt.bank.a4 -> rt.bank.b4)"
-RESP=$(curl -s -X POST "$NODE_A/obp-bank-node/v5.1.0/transaction-requests" \
+RESP=$(curl -s -X POST "$NODE_A_BANK/transaction-requests" \
   -H 'Content-Type: application/json' -d @- <<EOF
 {
   "value": {"currency": "KES", "amount": "$AMOUNT"},
@@ -58,7 +60,7 @@ echo "node TR id: $TR_ID"
 
 echo "=== 2. Waiting for outbox: INITIATED -> SUBMITTED -> PROMISE_WRITTEN -> REPORTED"
 for i in $(seq 1 60); do
-  ST=$(curl -s "$NODE_A/obp-bank-node/v5.1.0/transaction-requests/$TR_ID" \
+  ST=$(curl -s "$NODE_A_BANK/transaction-requests/$TR_ID" \
     | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("status","?"), d.get("promise_id") or "")')
   echo "  [$i] $ST"
   case "$ST" in REPORTED*) break;; EXCEPTION*) echo "FAILED — outbox row hit EXCEPTION"; exit 1;; esac

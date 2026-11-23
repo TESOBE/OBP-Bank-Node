@@ -38,6 +38,8 @@ pub struct IncomingWatcher {
     pub store: SettlementStore,
     pub obp: Arc<ObpClient>,
     pub backend: Arc<dyn SettlementBackend>,
+    /// The OBP host this watcher serves: each OBP host the node is on has its own watcher.
+    pub obp_host: String,
     pub bank_id: String,
     pub finality_depth: u32,
     pub poll_interval: Duration,
@@ -59,7 +61,8 @@ fn paid_timed_out(paid_at: Option<&str>, now: DateTime<Utc>, timeout: Duration) 
 impl IncomingWatcher {
     pub async fn run(self) {
         loop {
-            match self.store.list_open_incoming().await {
+            // Only the settlements on this watcher's OBP host.
+            match self.store.list_open_incoming(&self.obp_host).await {
                 Ok(rows) => {
                     for row in rows {
                         self.check(&row).await;
@@ -259,7 +262,8 @@ mod tests {
     ) -> IncomingWatcher {
         let store = SettlementStore::connect_in_memory().await.unwrap();
         store
-            .record_incoming("set-1", Some("rt.bank.a"), Some("KES"), Some("100.00"), &["tr-1".into()])
+            // An advice that arrived on OBP host A, naming bank rt.bank.b there as creditor.
+            .record_incoming("test-host-a:8080", "rt.bank.b", "set-1", Some("rt.bank.a"), Some("KES"), Some("100.00"), &["tr-1".into()])
             .await
             .unwrap();
         let base = spawn_settlement_view().await;
@@ -267,6 +271,8 @@ mod tests {
             store,
             obp: Arc::new(ObpClient::new(base, ObpAuth::None).unwrap()),
             backend: Arc::new(ScriptedChain { answers: Mutex::new(answers.into()) }),
+            // The watcher serves OBP host A.
+            obp_host: "test-host-a:8080".into(),
             bank_id: "rt.bank.b".into(),
             finality_depth: 2,
             poll_interval: Duration::from_secs(1),
@@ -275,9 +281,11 @@ mod tests {
     }
 
     async fn tick(w: &IncomingWatcher) -> IncomingSettlement {
-        let row = w.store.list_open_incoming().await.unwrap().remove(0);
+        // The open settlement on the watcher's OBP host.
+        let row = w.store.list_open_incoming(&w.obp_host).await.unwrap().remove(0);
         w.check(&row).await;
-        w.store.list_incoming(10).await.unwrap().remove(0)
+        // The same settlement, listed under its OBP host and bank.
+        w.store.list_incoming(&w.obp_host, &w.bank_id, 10).await.unwrap().remove(0)
     }
 
     #[tokio::test]

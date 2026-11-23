@@ -1,6 +1,6 @@
 ## What it is
 
-A small Rust service a bank runs inside its own network. It connects the bank's Core Banking System (CBS) to the cross-border payment network (an OBP API instance hosted by TESOBE) — without the bank needing to run any OBP infrastructure itself.
+A small Rust service a bank runs inside its own network. It connects the bank's Core Banking System (CBS) to the cross-border payment network (an OBP host run by TESOBE) — without the bank needing to run any OBP infrastructure itself.
 
 The bank only deals with one thing locally: a REST endpoint on `localhost`. Everything else — talking to the OBP API, writing to the Cardano blockchain, listening for instructions over RabbitMQ — happens behind that.
 
@@ -33,7 +33,7 @@ It's a bank-side **node / gateway**: an OBP-API client plus a CBS-facing gateway
 
 ## The two flows
 
-**Outbound payment.** Customer initiates a cross-border payment. The bank's CBS POSTs to `localhost:8088/obp-bank-node/v5.1.0/transaction-requests` with amount, currency, description, and inline beneficiary routing (BIC+IBAN, MOBILE_PHONE, OBP, etc.). The node:
+**Outbound payment.** Customer initiates a cross-border payment. The bank's CBS POSTs to `localhost:8088/obp-bank-node/v5.1.0/hosts/{OBP_HOST}/banks/{BANK_ID}/transaction-requests` with amount, currency, description, and inline beneficiary routing (BIC+IBAN, MOBILE_PHONE, OBP, etc.). The node:
 1. Persists the request to a local SQLite outbox (durability before any external call).
 2. Resolves the routing to an OBP API counterparty.
 3. Submits the Transaction Request to the OBP API.

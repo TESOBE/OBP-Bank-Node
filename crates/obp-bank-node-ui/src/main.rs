@@ -14,7 +14,7 @@
 //! The one deliberate exception is the `/setup` operator page: with an
 //! `obp_api` config block present, an administrator can log in to OBP-API
 //! through its OIDC provider (the same authorization-code flow the OBP Portal
-//! and API Manager use) and reconcile the instance against the declarative
+//! and API Manager use) and reconcile the OBP host against the declarative
 //! `setup` block — banks, routing schemes, accounts, FX rates, Open Corridor
 //! brokers, role grants. Tokens live in a server-side session; the browser
 //! never sees a credential. The page never registers users and never touches
@@ -43,7 +43,7 @@ pub struct Config {
     /// The Bank Nodes this app fronts. Names appear in the UI and on the
     /// proxy URL (`/api/nodes/{name}/...`).
     pub nodes: Vec<NodeConfig>,
-    /// Per-instance form prefill, keyed by form-field name (e.g.
+    /// This app's form prefill, keyed by form-field name (e.g.
     /// `other_account: settlement-b`). Served verbatim
     /// at `GET /api/ui-defaults`; the UI applies each entry to the matching
     /// Send/Settle input at load. Purely cosmetic — validation still happens
@@ -104,7 +104,7 @@ pub struct SetupConfig {
     /// `GET /routing-schemes/{scheme}`.
     #[serde(default)]
     pub routing_schemes: Vec<serde_json::Value>,
-    /// This instance's own bank.
+    /// This app's own bank.
     #[serde(default)]
     pub bank: Option<SetupBank>,
 }
@@ -237,7 +237,7 @@ impl Default for Config {
 
 fn load_config() -> anyhow::Result<Config> {
     // `OBP_BANK_NODE_UI_CONFIG` overrides the config file path, mirroring the
-    // node's `OBP_BANK_NODE_CONFIG` — it's how several app instances (one per
+    // node's `OBP_BANK_NODE_CONFIG` — it's how several apps (one per
     // node, as in the roundtrip dev environment) run from the same directory.
     let path =
         std::env::var("OBP_BANK_NODE_UI_CONFIG").unwrap_or_else(|_| CONFIG_FILE.to_string());

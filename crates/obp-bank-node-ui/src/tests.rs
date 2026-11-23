@@ -43,7 +43,7 @@ fn stub_node() -> Router {
             }),
         )
         .route(
-            "/obp-bank-node/v5.1.0/transaction-requests",
+            "/obp-bank-node/v5.1.0/hosts/:obp_host/banks/:bank_id/transaction-requests",
             post(|req: AxumRequest| async move {
                 let bytes = to_bytes(req.into_body(), 1024 * 1024).await.unwrap();
                 let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -51,7 +51,7 @@ fn stub_node() -> Router {
             }),
         )
         .route(
-            "/obp-bank-node/v5.1.0/settlements/:key",
+            "/obp-bank-node/v5.1.0/hosts/:obp_host/banks/:bank_id/settlements/:key",
             get(|| async {
                 (
                     StatusCode::NOT_FOUND,
@@ -95,8 +95,41 @@ async fn index_and_assets_are_served() {
 
     let resp = app.clone().oneshot(get_req("/app.js")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let resp = app.oneshot(get_req("/style.css")).await.unwrap();
+    let resp = app.clone().oneshot(get_req("/style.css")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// The rationale page is served, with what Open Corridor changes.
+#[tokio::test]
+async fn rationale_page_is_served() {
+    // A UI with one node, which is never called here.
+    let app = app_with(vec![node("a", "http://127.0.0.1:1")]);
+    // Ask for the page.
+    let resp = app.oneshot(get_req("/rationale")).await.unwrap();
+    // It is there.
+    assert_eq!(resp.status(), StatusCode::OK);
+    // Read the page as text.
+    let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let page = String::from_utf8(bytes.to_vec()).unwrap();
+    // It holds the list.
+    assert!(page.contains("What Open Corridor actually changes"));
+}
+
+// The Network page is served, and holds the container app.js draws into.
+#[tokio::test]
+async fn network_page_is_served() {
+    // A UI with one node, which is never called here.
+    let app = app_with(vec![node("a", "http://127.0.0.1:1")]);
+    // Ask for the page.
+    let resp = app.oneshot(get_req("/network")).await.unwrap();
+    // It is there.
+    assert_eq!(resp.status(), StatusCode::OK);
+    // Read the page.
+    let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    // As text.
+    let page = String::from_utf8(bytes.to_vec()).unwrap();
+    // app.js draws the network into this element.
+    assert!(page.contains(r#"id="network-view""#));
 }
 
 #[tokio::test]
@@ -188,7 +221,7 @@ async fn proxy_forwards_post_body_and_relays_status() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/api/nodes/node-a/transaction-requests")
+                .uri("/api/nodes/node-a/hosts/localhost:8080/banks/rt.bank.a4/transaction-requests")
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&payload).unwrap()))
                 .unwrap(),
@@ -205,7 +238,7 @@ async fn proxy_relays_upstream_error_status_and_body() {
     let base = spawn_stub(stub_node()).await;
     let app = app_with(vec![node("node-a", &base)]);
     let resp = app
-        .oneshot(get_req("/api/nodes/node-a/settlements/nope"))
+        .oneshot(get_req("/api/nodes/node-a/hosts/localhost:8080/banks/rt.bank.a4/settlements/nope"))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -232,8 +265,12 @@ async fn proxy_refuses_paths_outside_the_whitelist() {
     let app = app_with(vec![node("node-a", &base)]);
     for uri in [
         "/api/nodes/node-a/outbox",
-        "/api/nodes/node-a/transaction-requests/x/y",
-        "/api/nodes/node-a/settlements/k/corridor/deeper",
+        // The old URLs, without the OBP host and bank, are not proxied.
+        "/api/nodes/node-a/transaction-requests",
+        "/api/nodes/node-a/hosts/localhost:8080/banks/rt.bank.a4/transaction-requests/x/y",
+        "/api/nodes/node-a/hosts/localhost:8080/banks/rt.bank.a4/settlements/k/corridor/deeper",
+        // A bank-scoped path needs both the OBP host and the bank.
+        "/api/nodes/node-a/hosts/localhost:8080/transaction-requests",
     ] {
         let resp = app.clone().oneshot(get_req(uri)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND, "GET {uri}");
@@ -248,7 +285,7 @@ async fn proxy_refuses_paths_outside_the_whitelist() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/api/nodes/node-a/evidence")
+                .uri("/api/nodes/node-a/hosts/localhost:8080/banks/rt.bank.a4/evidence")
                 .header("content-type", "application/json")
                 .body(Body::from("{}"))
                 .unwrap(),

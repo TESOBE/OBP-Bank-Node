@@ -23,21 +23,30 @@
 #
 # Secrets and consumer keys are never printed; Consumers are shown by consumer_id.
 #
+# Another OBP host (for example a second local OBP-API, on :8081) is set up with the same
+# script and these environment variables, all optional:
+#   RT_LOCAL_ENV    the env file to read and write, instead of dev/local.env
+#   RT_CONSUMERS    the Consumers to create, as space-separated rows in the format of the list below
+#   RT_OBP_DB_URL   that OBP-API's db.url, when RT_OBP_PROPS_FILE has none
+#
 # Usage: dev/create_consumers.sh [--dry-run]
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
-LOCAL_ENV="$DIR/local.env"
+LOCAL_ENV="${RT_LOCAL_ENV:-$DIR/local.env}"
+# The env file's name as messages show it, for example dev/local.env.
+LOCAL_ENV_NAME="$LOCAL_ENV"
+[ "$(dirname "$LOCAL_ENV")" = "$DIR" ] && LOCAL_ENV_NAME="dev/$(basename "$LOCAL_ENV")"
 DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
 
 if [ ! -f "$LOCAL_ENV" ]; then
   if $DRY_RUN; then
-    echo "dev/local.env does not exist yet (would be created from local.env.example)"
+    echo "$LOCAL_ENV_NAME does not exist yet (would be created from local.env.example)"
   else
     cp "$DIR/local.env.example" "$LOCAL_ENV"
     chmod 600 "$LOCAL_ENV"
-    echo "created dev/local.env from local.env.example"
+    echo "created $LOCAL_ENV_NAME from local.env.example"
   fi
 fi
 # shellcheck disable=SC1090
@@ -46,7 +55,7 @@ fi
 OBP="${RT_OBP_URL:-http://localhost:8080}"
 PROPS_FILE="${RT_OBP_PROPS_FILE:-}"
 [ -n "$PROPS_FILE" ] && [ -f "$PROPS_FILE" ] || {
-  echo "FATAL: set RT_OBP_PROPS_FILE in dev/local.env to OBP-API's props file (default.props)" >&2; exit 1; }
+  echo "FATAL: set RT_OBP_PROPS_FILE in $LOCAL_ENV_NAME to OBP-API's props file (default.props)" >&2; exit 1; }
 
 TMP="$(mktemp -d)"; chmod 700 "$TMP"; trap 'rm -rf "$TMP"' EXIT
 
@@ -56,25 +65,25 @@ get_value() {
   KEY="$2" awk 'BEGIN{k=ENVIRON["KEY"] "="} index($0,k)==1{v=substr($0,length(k)+1); gsub(/^["\047]|["\047]$/,"",v); print v; exit}' "$1"
 }
 
-# Replace KEY=... in dev/local.env, or append it. The file is backed up once per run.
+# Replace KEY=... in the env file, or append it. The file is backed up once per run.
 BACKED_UP=false
 set_local() {
   local key="$1" value="$2"
   [ "$(get_value "$LOCAL_ENV" "$key")" = "$value" ] && { echo "   $key already set"; return 0; }
-  if $DRY_RUN; then echo "   would set $key in dev/local.env"; return 0; fi
+  if $DRY_RUN; then echo "   would set $key in $LOCAL_ENV_NAME"; return 0; fi
   if ! $BACKED_UP; then cp -p "$LOCAL_ENV" "$LOCAL_ENV.bak.$(date +%Y%m%d-%H%M%S)"; BACKED_UP=true; fi
   local tmp; tmp="$(mktemp "$LOCAL_ENV.XXXXXX")"
   KEY="$key" VALUE="$value" awk 'BEGIN{k=ENVIRON["KEY"]; v=ENVIRON["VALUE"]; d=0}
     index($0,k "=")==1{ if(!d) print k "=" v; d=1; next } {print} END{ if(!d) print k "=" v }' "$LOCAL_ENV" > "$tmp"
   # Keep local.env's own permissions (e.g. group-readable on a shared machine), not mktemp's 600.
   chmod --reference="$LOCAL_ENV" "$tmp"; mv "$tmp" "$LOCAL_ENV"
-  echo "   set $key in dev/local.env"
+  echo "   set $key in $LOCAL_ENV_NAME"
 }
 
 # key_c or secret of an existing Consumer, from OBP-API's Postgres. Empty if unreadable.
 db_consumer_value() {
   local name="$1" column="$2" url host port db user pass
-  url="$(get_value "$PROPS_FILE" db.url)"
+  url="${RT_OBP_DB_URL:-$(get_value "$PROPS_FILE" db.url)}"
   [[ "$url" =~ ^jdbc:postgresql://([^:/]+)(:([0-9]+))?/([^?]+)\?(.*)$ ]] || return 0
   host="${BASH_REMATCH[1]}"; port="${BASH_REMATCH[3]:-5432}"; db="${BASH_REMATCH[4]}"
   user="$(tr '&' '\n' <<<"${BASH_REMATCH[5]}" | sed -n 's/^user=//p')"
@@ -91,7 +100,7 @@ OP_PASS="${RT_OPERATOR_PASS:-$(get_value "$PROPS_FILE" oidc_operator_initial_pas
 OP_CK="${RT_OPERATOR_CONSUMER_KEY:-$(get_value "$PROPS_FILE" oidc_operator_consumer_key)}"
 [ -n "$OP_USER" ] && [ -n "$OP_PASS" ] && [ -n "$OP_CK" ] || {
   echo "FATAL: no oidc_operator_username / _initial_password / _consumer_key in $PROPS_FILE" >&2
-  echo "       (set them as OBP-OIDC's README describes, or RT_OPERATOR_* in dev/local.env)" >&2; exit 1; }
+  echo "       (set them as OBP-OIDC's README describes, or RT_OPERATOR_* in $LOCAL_ENV_NAME)" >&2; exit 1; }
 curl -sf -o /dev/null "$OBP/obp/v6.0.0/root" || { echo "FATAL: OBP-API is not answering at $OBP" >&2; exit 1; }
 
 printf 'DirectLogin: username="%s",password="%s",consumer_key="%s"\n' "$OP_USER" "$OP_PASS" "$OP_CK" > "$TMP/login"
@@ -107,12 +116,16 @@ OP_EMAIL="$(get_value "$PROPS_FILE" oidc_operator_email)"
 
 problems=0
 # name | redirect | key variable | secret variable (empty: key only) | consumer_id variable (optional)
-for row in \
-  "obp-bank-node-a||NODE_A_CLIENT_ID|NODE_A_CLIENT_SECRET|NODE_A_CONSUMER_ID" \
-  "obp-bank-node-b||NODE_B_CLIENT_ID|NODE_B_CLIENT_SECRET|NODE_B_CONSUMER_ID" \
-  "obp-bank-node-roundtrip||RT_CONSUMER_KEY|" \
-  "obp-bank-node-app-a|http://localhost:8091/setup/callback|UI_A_OAUTH_CLIENT_ID|UI_A_OAUTH_CLIENT_SECRET" \
-  "obp-bank-node-app-b|http://localhost:8092/setup/callback|UI_B_OAUTH_CLIENT_ID|UI_B_OAUTH_CLIENT_SECRET"; do
+DEFAULT_CONSUMERS=(
+  "obp-bank-node-a||NODE_A_CLIENT_ID|NODE_A_CLIENT_SECRET|NODE_A_CONSUMER_ID"
+  "obp-bank-node-b||NODE_B_CLIENT_ID|NODE_B_CLIENT_SECRET|NODE_B_CONSUMER_ID"
+  "obp-bank-node-roundtrip||RT_CONSUMER_KEY|"
+  "obp-bank-node-app-a|http://localhost:8091/setup/callback|UI_A_OAUTH_CLIENT_ID|UI_A_OAUTH_CLIENT_SECRET"
+  "obp-bank-node-app-b|http://localhost:8092/setup/callback|UI_B_OAUTH_CLIENT_ID|UI_B_OAUTH_CLIENT_SECRET"
+)
+# RT_CONSUMERS replaces the list above, for another OBP host. A row has no spaces, so the rows are split on spaces.
+if [ -n "${RT_CONSUMERS:-}" ]; then read -r -a CONSUMERS <<<"$RT_CONSUMERS"; else CONSUMERS=("${DEFAULT_CONSUMERS[@]}"); fi
+for row in "${CONSUMERS[@]}"; do
   IFS='|' read -r NAME REDIRECT KEY_VAR SECRET_VAR ID_VAR <<<"$row"
   echo ""
   echo "== $NAME"
@@ -124,7 +137,7 @@ print(c[0]["consumer_id"] if c else "")')"
     KEY="$(db_consumer_value "$NAME" key_c)"; SECRET="$(db_consumer_value "$NAME" secret)"
     if [ -z "$KEY" ] || { [ -n "$SECRET_VAR" ] && [ -z "$SECRET" ]; }; then
       if [ -n "$(get_value "$LOCAL_ENV" "$KEY_VAR")" ]; then
-        echo "   could not read it from Postgres; keeping the values already in dev/local.env"
+        echo "   could not read it from Postgres; keeping the values already in $LOCAL_ENV_NAME"
         [ -n "$ID_VAR" ] && set_local "$ID_VAR" "$ID"
       else
         echo "   could not read its key/secret from Postgres: delete this Consumer and run again"; problems=1

@@ -1,0 +1,114 @@
+# Bank Node UI for bank C on the second OBP host, B (localhost:8081): locked to its own node
+# (rt.bank.c4, :8093), as a bank client using Open Corridor would deploy it.
+# Start from the repo root: dev/start_ui_c.sh (it passes the setup page's OIDC client from dev/local-b.env).
+
+server:
+  bind: "0.0.0.0:8094"
+
+nodes:
+  - name: "node-c"
+    base_url: "http://localhost:8093"
+
+# Form prefill for this app, keyed by form-field name (Send + Settle). Bank C's other bank on
+# OBP host B is Bank B (rt.bank.b4), which the forms list from getBanks, so nothing is prefilled.
+ui_defaults: {}
+
+# --- /setup operator page -------------------------------------------------
+# OBP-API B + its own OBP-OIDC (:9001) for the setup page. The admin logs in interactively, and
+# this app exchanges the code server-side. The Consumer 'obp-bank-node-app-c' (redirect URL
+# http://localhost:8094/setup/callback) is created on B by
+# commands/_helpers/obp_b_bank_node_setup.sh; start_ui_c.sh passes its key and secret from
+# dev/local-b.env, so they are not stored here.
+obp_api:
+  base_url: "http://localhost:8081"
+  oauth_provider: "obp-oidc"
+  oauth_client_id: ""
+  oauth_client_secret: ""
+  callback_url: "http://localhost:8094/setup/callback"
+
+# Desired Open Corridor state the setup page reconciles OBP-API B against. This app acts for its
+# own bank only. dev/setup_obp.sh, run against B by obp_b_bank_node_setup.sh, already creates all
+# of this, so the page should show it green.
+setup:
+  routing_schemes:
+    - scheme: "OBP"
+      country: "INT"
+      category: "ACCOUNT"
+      address_pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+      example_address: "rt.bank.c4"
+      description: "OBP bank id or account id, as used in OBP account routings."
+      downstream_rails: []
+      status: "ACTIVE"
+    - scheme: "IBAN"
+      country: "INT"
+      category: "ACCOUNT"
+      address_pattern: "^[A-Z]{2}[0-9]{2}[A-Z0-9]{1,30}$"
+      example_address: "GB29NWBK60161331926819"
+      description: "International Bank Account Number (ISO 13616), no spaces."
+      downstream_rails: []
+      status: "ACTIVE"
+    - scheme: "BIC"
+      country: "INT"
+      category: "BANK"
+      address_pattern: "^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$"
+      example_address: "NWBKGB2LXXX"
+      description: "ISO 9362 Business Identifier Code, 8 or 11 characters."
+      downstream_rails: []
+      status: "ACTIVE"
+    - scheme: "CARDANO"
+      country: "INT"
+      category: "ACCOUNT"
+      address_pattern: "^addr(_test)?1[a-z0-9]{20,120}$"
+      example_address: "addr_test1vpx7em3j5rtuqmcwcg7pjdf4g0msgdprl4q3tcnuw5pk0sgd0l7ea"
+      description: "Cardano bech32 payment address. On OBP-INCOMING-SETTLEMENT-ACCOUNT it is the bank's Open Corridor settlement address."
+      downstream_rails: ["cardano"]
+      status: "ACTIVE"
+    - scheme: "ETHEREUM"
+      country: "INT"
+      category: "ACCOUNT"
+      address_pattern: "^0x[0-9a-fA-F]{40}$"
+      example_address: "0x71C7656EC7ab88b098defB751B7401B5f6d8976F"
+      description: "Ethereum EIP-55 address. Reserved for a future settlement rail."
+      downstream_rails: []
+      status: "RESERVED"
+
+  bank:
+    id: "rt.bank.c4"
+    full_name: "Round-trip rt.bank.c4"
+    accounts:
+      - id: "settlement-c"
+        label: "Node C corridor account (KES)"
+        currency: "KES"
+      - id: "settlement-c-usd"
+        label: "Node C corridor account (USD)"
+        currency: "USD"
+      - id: "settlement-c-jmd"
+        label: "Node C corridor account (JMD)"
+        currency: "JMD"
+      - id: "OBP-OUTGOING-SETTLEMENT-ACCOUNT"
+        label: "OC outgoing settlement"
+        currency: "KES"
+      - id: "OBP-INCOMING-SETTLEMENT-ACCOUNT"
+        label: "OC incoming settlement"
+        currency: "KES"
+        routings:
+          - { scheme: "CARDANO", address: "addr_test1vpx7em3j5rtuqmcwcg7pjdf4g0msgdprl4q3tcnuw5pk0sgd0l7ea" }
+    fx:
+      - { from_currency: "EUR", to_currency: "KES", rate: 150.0, inverse_rate: 0.006667 }
+      - { from_currency: "KES", to_currency: "EUR", rate: 0.006667, inverse_rate: 150.0 }
+    broker:
+      host: "localhost"
+      port: 5672
+      virtual_host: "/bank.rt.bank.c4"
+      username: "bank_c_node"
+      password: "rtpass-c"
+      use_ssl: false
+    # The Bank Node as a Platform App: its Consumer (created on B by dev/create_consumers.sh, found
+    # here by name), marked as a Platform App, its Scopes at this bank, and its access to the
+    # node's view (bank.view_id in node-c.yaml) on each corridor account.
+    node:
+      consumer_name: "obp-bank-node-c"
+      label: "OBP Bank Node C (rt.bank.c4)"
+      scopes: ["CanAttachOpenCorridorPromise", "CanSettleOpenCorridor"]
+      view_id: "_open-corridor-node"
+      corridor_accounts: ["settlement-c", "settlement-c-usd", "settlement-c-jmd"]

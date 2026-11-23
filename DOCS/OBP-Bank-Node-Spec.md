@@ -9,7 +9,7 @@
 
 ## 1. Overview
 
-The **OBP Bank Node** is a software component that runs inside a bank's network and connects the bank's Core Banking System (CBS) to an interbank payment network powered by an OBP (Open Bank Project) API instance hosted by TESOBE.
+The **OBP Bank Node** is a software component that runs inside a bank's network and connects the bank's Core Banking System (CBS) to an interbank payment network powered by an OBP (Open Bank Project) host run by TESOBE.
 
 The OBP Bank Node is not a passive adapter. It has three distinct communication directions:
 
@@ -90,7 +90,7 @@ The "client exposes an endpoint" pattern is intentional — the OBP Bank Node ac
 #### Endpoint
 
 ```
-POST http://localhost:{OBP_BANK_NODE_PORT}/obp-bank-node/v5.1.0/transaction-requests
+POST http://localhost:{OBP_BANK_NODE_PORT}/obp-bank-node/v5.1.0/hosts/{OBP_HOST}/banks/{BANK_ID}/transaction-requests
 ```
 
 The path is mounted under `/obp-bank-node/v5.X.X/` rather than `/obp/v5.X.X/` to make it explicit that the bank's CBS is calling the local node, not the upstream OBP API. The URL deliberately omits `bank_id`, `account_id`, and `view_id` — one Bank Node serves exactly one bank, so those values are config on the Bank Node, not parameters in the URL. The **request body** is byte-for-byte an OBP OPEN_CORRIDOR Transaction Request, so banks already familiar with OBP can reuse the same payload shapes and validators unchanged.
@@ -163,9 +163,9 @@ The OBP Bank Node resolves all schemes to OBP API identifiers before submitting 
 
 The OBP Bank Node does not look up the beneficiary bank itself. It caches the ACTIVE rows of the OBP API's routing-scheme catalogue (`GET /obp/v7.0.0/routing-schemes`), refreshes them periodically, and checks that each scheme exists and that each address matches the scheme's pattern. It then sends the routing details inline in the OPEN_CORRIDOR Transaction Request, and the OBP API finds the beneficiary bank by matching them against each bank's `bank_routings`.
 
-To learn which other banks are on the instance, and how to address them, a node or its UI can call `GET /obp/v5.1.0/banks`. It lists every bank on the instance with its `bank_routings`, which are the same scheme/address pairs a payment uses. This works while every bank on an Open Corridor instance takes part in the corridor. If an instance also hosts banks that do not, we may need a way to tell participants apart: either a bank attribute that marks a bank as an Open Corridor participant, which getBanks callers can filter on, or a separate endpoint that lists only participants.
+To learn which other banks are on the OBP host, and how to address them, a node or its UI can call `GET /obp/v5.1.0/banks`. It lists every bank on the OBP host with its `bank_routings`, which are the same scheme/address pairs a payment uses. An OBP host can also hold banks that are not in the corridor, so each Open Corridor bank carries the bank attribute `OPEN_CORRIDOR_PARTICIPANT` with the value `true`, and getBanks returns each bank's active attributes. The Bank Node UI's setup page sets the attribute on the bank it sets up, and its bank pickers list only banks that carry it. A bank's own systems can filter the list the same way.
 
-Resolution is structurally a lookup table from routing scheme/address to (bank, home instance). In the current single-instance release every address resolves to the local OBP API instance, and an unresolvable address is a routing error (`OBP-BANK-NODE-ROUTING-001`). The table shape is deliberate: a future multi-instance network adds entries whose home instance is a peer platform, without changing how resolution works (see `ARCHITECTURE.md`, "Multi-instance posture"). Note that `bank_id` is an opaque, instance-local identifier — network-meaningful addresses such as a BIC belong in the bank's `bank_routings` entries, never encoded into the `bank_id` itself.
+Resolution is structurally a lookup table from routing scheme/address to (bank, home OBP host). In the current release every address resolves to the node's own OBP host, and an unresolvable address is a routing error (`OBP-BANK-NODE-ROUTING-001`). The table shape is deliberate: a future network of OBP hosts adds entries whose home OBP host is a peer, without changing how resolution works (see `ARCHITECTURE.md`, "Multi-host posture"). Note that `bank_id` is an opaque identifier, local to its OBP host — network-meaningful addresses such as a BIC belong in the bank's `bank_routings` entries, never encoded into the `bank_id` itself.
 
 #### Why OPEN_CORRIDOR rather than COUNTERPARTY
 
@@ -471,14 +471,20 @@ After 24 hours without acknowledgement, the OBP Bank Node raises a Record 4 (Exc
 
 ## 3.4 OBP Bank Node Partial OBP API Proxy — Implemented Endpoints
 
-The OBP Bank Node implements a subset of the OBP API. Banks call these endpoints on `localhost:{OBP_BANK_NODE_PORT}` exactly as they would call them on an OBP instance. The OBP Bank Node proxies, enriches, or handles each call as appropriate.
+The OBP Bank Node implements a subset of the OBP API. Banks call these endpoints on `localhost:{OBP_BANK_NODE_PORT}` exactly as they would call them on an OBP host. The OBP Bank Node proxies, enriches, or handles each call as appropriate.
+
+The URLs name the OBP host and your bank there, as OBP-API's own URLs name a bank: `{OBP_HOST}` is the host (and port, if it has one) of the OBP-API the payment is made on, for example `obp-api.example.com`, and `{BANK_ID}` is your bank's id on that OBP host. A bank on several OBP hosts has a different `{BANK_ID}` on each. `GET /obp-bank-node/v5.1.0/hosts` lists the OBP hosts the node is on, with your bank on each. A URL naming an OBP host the node is not on, or another bank, is answered with 404 `OBP-BANK-NODE-NOT-FOUND-001`.
 
 | Method | OBP Endpoint | OBP Bank Node Behaviour |
 |---|---|---|
-| `POST` | `/obp-bank-node/v5.1.0/transaction-requests` | Core payment initiation — see Section 3.2. Submits to OBP API via OBP REST. Writes Cardano Promise record. |
-| `GET` | `/obp-bank-node/v5.1.0/transaction-requests/{TRANSACTION_REQUEST_ID}` | Returns current status of a Transaction Request including OBP Bank Node-specific fields (`promise_id`, `promise_blockchain`, `netting_snapshot_id`, `netting_blockchain`, `settlement_id`, `settlement_system`). |
-| `GET` | `/obp-bank-node/v5.1.0/transaction-requests` | Returns list of Transaction Requests submitted via this OBP Bank Node instance. |
-| `GET` | `/obp-bank-node/v5.1.0/banks` | Returns OBP API's getBanks (`GET /obp/v5.1.0/banks`) unchanged: every bank on the instance with its `bank_routings`, so the bank can see which other banks it can pay and how to address them. |
+| `POST` | `/obp-bank-node/v5.1.0/hosts/{OBP_HOST}/banks/{BANK_ID}/transaction-requests` | Core payment initiation — see Section 3.2. Submits to OBP API via OBP REST. Writes Cardano Promise record. |
+| `GET` | `/obp-bank-node/v5.1.0/hosts/{OBP_HOST}/banks/{BANK_ID}/transaction-requests/{TRANSACTION_REQUEST_ID}` | Returns current status of a Transaction Request including OBP Bank Node-specific fields (`promise_id`, `promise_blockchain`, `netting_snapshot_id`, `netting_blockchain`, `settlement_id`, `settlement_system`). |
+| `GET` | `/obp-bank-node/v5.1.0/hosts/{OBP_HOST}/banks/{BANK_ID}/transaction-requests` | Returns list of Transaction Requests submitted via this OBP Bank Node. |
+| `GET` | `/obp-bank-node/v5.1.0/hosts/{OBP_HOST}/banks/{BANK_ID}/settlements` (`POST` to settle), `.../settlements/{KEY}`, `.../settlements/{KEY}/corridor` | This bank's settlements on the OBP host, and the settle trigger. |
+| `GET` | `/obp-bank-node/v5.1.0/hosts/{OBP_HOST}/banks/{BANK_ID}/incoming-settlements` | Settlements this bank receives as creditor on the OBP host. |
+| `GET` | `/obp-bank-node/v5.1.0/hosts/{OBP_HOST}/banks/{BANK_ID}/evidence`, `.../evidence/{TRANSACTION_REQUEST_ID}` | Credits this bank received on the OBP host. |
+| `GET` | `/obp-bank-node/v5.1.0/hosts` | The OBP hosts the node is on, with the bank's `bank_id`, accounts and Interface C state on each. |
+| `GET` | `/obp-bank-node/v5.1.0/hosts/{OBP_HOST}/banks` | Returns that OBP host's getBanks (`GET /obp/v5.1.0/banks`) unchanged: every bank on the OBP host with its `bank_routings`, so the bank can see which other banks it can pay and how to address them. Mirrors OBP-API's own `GET /banks`. |
 | `GET` | `/obp-bank-node/v5.1.0/health` | OBP Bank Node health and connection status (see Section 9). |
 
 ### Version Support
@@ -554,9 +560,9 @@ The OBP Bank Node uses the bank's configured Cardano wallet address and signing 
 
 ### Commitment Preimage Rule
 
-The Record 1 Promise commitment is `SHA-256(salt ‖ canonical_instruction)`; only the hash reaches the chain. The v1 preimage binds `transaction_request_id`, `originating_bank_id`, `originating_account_id`, and the original instruction payload. Because `originating_bank_id` is an instance-local OBP identifier, a v1 commitment can only be verified by a party that knows this instance's identifier space.
+The Record 1 Promise commitment is `SHA-256(salt ‖ canonical_instruction)`; only the hash reaches the chain. The v1 preimage binds `transaction_request_id`, `originating_bank_id`, `originating_account_id`, and the original instruction payload. Because `originating_bank_id` is local to its OBP host, a v1 commitment can only be verified by a party that knows that OBP host's identifiers.
 
-Committed rule: any preimage revision (v2) MUST additionally bind network-scoped routing identifiers — a `bank_routing` scheme/address pair (e.g. `BIC` + address) for both the originating and beneficiary banks, and the originating platform's `api_instance_id` — so that any party in a multi-instance network can verify a revealed commitment without knowledge of any instance's local identifiers. A preimage change never invalidates prior commitments (each record carries its schema version), but v2 is a prerequisite for any multi-instance deployment.
+Committed rule: any preimage revision (v2) MUST additionally bind network-scoped routing identifiers — a `bank_routing` scheme/address pair (e.g. `BIC` + address) for both the originating and beneficiary banks, and the originating OBP host — so that any party in a network of OBP hosts can verify a revealed commitment without knowledge of any OBP host's local identifiers. A preimage change never invalidates prior commitments (each record carries its schema version), but v2 is a prerequisite for payments across OBP hosts.
 
 ---
 
@@ -569,33 +575,33 @@ obp_bank_node:
   port: 8088
   local_secret: "change-me-on-first-run"
 
-bank:
-  bank_id: "ke.01.kcs"
-  account_id: "7bc9a8e4-5d02-40e3-b129-1c3bf89de9f1"
-  view_id: "owner"
-
-obp_api:
-  # Name of this OBP-API instance, as the Bank Node apps show it. Empty means the host of base_url.
-  # name: "open-corridor-a"
-  base_url: "http://localhost:8080"
-  # OAuth2 client-credentials (machine-to-machine).
-  token_url: "http://localhost:8080/oauth2/token"
-  client_id: "provided-at-registration"
-  client_secret: "provided-at-registration"
-  # scope: "..."          # optional
-  # Alternative: a pre-obtained DirectLogin token.
-  # direct_login_token: ""
-
-rabbitmq:
-  # Defaults match the rabbitmq:3-management Docker image:
-  #   AMQP        amqp://guest:guest@localhost:5672/
-  #   Management  http://localhost:15672  (guest / guest)
-  host: "localhost"
-  port: 5672
-  username: "guest"
-  password: "guest"
-  virtual_host: "/"
-  request_queue: "obp_rpc_queue"
+# The OBP hosts the node is on, each with the bank there. One entry for a bank on one OBP host.
+hosts:
+  - obp_api:
+      # The OBP host is the host (and port) of base_url, here localhost:8080.
+      base_url: "http://localhost:8080"
+      # OAuth2 client credentials (machine-to-machine), read from the environment variables
+      # named here. Secrets are never written in this file.
+      token_url: "http://localhost:8080/oauth2/token"
+      client_id_env: "OBP_BANK_NODE_CLIENT_ID"
+      client_secret_env: "OBP_BANK_NODE_CLIENT_SECRET"
+      # scope: "..."          # optional
+      # Alternative: a pre-obtained DirectLogin token, from an environment variable.
+      # direct_login_token_env: "OBP_BANK_NODE_DIRECT_LOGIN_TOKEN"
+    rabbitmq:
+      # Defaults match the rabbitmq:3-management Docker image:
+      #   AMQP        amqp://guest:guest@localhost:5672/
+      #   Management  http://localhost:15672  (guest / guest)
+      host: "localhost"
+      port: 5672
+      username: "guest"
+      password: "guest"
+      virtual_host: "/"
+      request_queue: "obp_rpc_queue"
+    bank:
+      bank_id: "ke.01.kcs"
+      account_id: "7bc9a8e4-5d02-40e3-b129-1c3bf89de9f1"
+      view_id: "owner"
 
 cardano:
   wallet_address: "addr1q..."
@@ -641,7 +647,7 @@ telemetry:
 The OBP Bank Node exposes a status endpoint for the bank to query the state of a payment instruction:
 
 ```
-GET http://localhost:{OBP_BANK_NODE_PORT}/obp-bank-node/v5.1.0/transaction-requests/{TRANSACTION_REQUEST_ID}
+GET http://localhost:{OBP_BANK_NODE_PORT}/obp-bank-node/v5.1.0/hosts/{OBP_HOST}/banks/{BANK_ID}/transaction-requests/{TRANSACTION_REQUEST_ID}
 ```
 
 **Response:**
@@ -708,7 +714,7 @@ GET http://localhost:{OBP_BANK_NODE_PORT}/ready
 4. All outbound connections to the OBP API use TLS 1.3 minimum.
 5. RabbitMQ credentials are provisioned per-bank by the OBP API and should be stored in the bank's secrets management system, not in plaintext config files.
 6. The OBP Bank Node logs all Interface A1 requests and Interface A2 webhook calls with full request/response bodies (excluding the `OBP_BANK_NODE_LOCAL_SECRET`) for audit purposes.
-7. The bank's Cardano signing key doubles as the bank's network identity (see `ARCHITECTURE.md`, "Multi-instance posture"). Key rotation MUST preserve identity: a rotation is recorded as a succession record signed by the outgoing key, naming the incoming key. A rotated key's prior signatures and commitments remain valid for their period of use.
+7. The bank's Cardano signing key doubles as the bank's network identity (see `ARCHITECTURE.md`, "Multi-host posture"). Key rotation MUST preserve identity: a rotation is recorded as a succession record signed by the outgoing key, naming the incoming key. A rotated key's prior signatures and commitments remain valid for their period of use.
 
 ---
 
@@ -756,7 +762,7 @@ docker run -d \
 
 Your CBS team implements two things:
 
-1. **Call Interface A1** when a customer initiates an outbound interbank payment — `POST localhost:8088/obp-bank-node/v5.1.0/transaction-requests`
+1. **Call Interface A1** when a customer initiates an outbound interbank payment — `POST localhost:8088/obp-bank-node/v5.1.0/hosts/{OBP_HOST}/banks/{BANK_ID}/transaction-requests`
 
 2. **Receive Interface A2** — expose a webhook endpoint at your configured `CBS_CREDIT_WEBHOOK_URL` that accepts the credit notification body and posts the credit to the beneficiary account.
 
@@ -802,7 +808,7 @@ You need to implement exactly two things:
 When one of your customers initiates a cross-border interbank payment, your CBS calls a local REST endpoint on the OBP Bank Node. This is the same format as an OBP Transaction Request — if your team already knows OBP, there is nothing new to learn.
 
 ```
-POST http://localhost:8088/obp-bank-node/v5.1.0/transaction-requests
+POST http://localhost:8088/obp-bank-node/v5.1.0/hosts/{OBP_HOST}/banks/{BANK_ID}/transaction-requests
 Authorization: Bearer {your-local-secret}
 Content-Type: application/json
 

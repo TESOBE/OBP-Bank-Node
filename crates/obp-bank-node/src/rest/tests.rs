@@ -13,7 +13,7 @@ use axum::body::{to_bytes, Body};
 use axum::http::{Method, Request, StatusCode};
 use tower::ServiceExt;
 
-use super::{build_router, BankNodeState};
+use super::{build_router, BankNodeState, HostState};
 use crate::evidence::{EvidenceStore, NewEvidence};
 use crate::obp_client::{ObpAuth, ObpClient};
 use crate::outbox::OutboxStore;
@@ -21,6 +21,12 @@ use crate::settlement_store::{NewClaim, SettlementStore};
 
 /// Finality depth used across REST tests.
 const TEST_FINALITY_DEPTH: u32 = 7;
+
+/// The OBP host the test node is on.
+const TEST_HOST: &str = "test-host-a:8080";
+
+/// The URL prefix for the test node's bank on its OBP host: everything bank-scoped is under it.
+const BANK: &str = "/obp-bank-node/v5.1.0/hosts/test-host-a:8080/banks/test.bank.id";
 
 /// A router backed by fresh in-memory stores. Each call gets its own stores,
 /// so tests are isolated; use [`router_with_state`] when a test needs the same
@@ -38,20 +44,32 @@ async fn router_with_state() -> (axum::Router, BankNodeState) {
 
 async fn router_with_obp(obp_base_url: &str) -> (axum::Router, BankNodeState) {
     let state = BankNodeState {
+        // The test node's name.
+        name: "test-node".into(),
         outbox: OutboxStore::connect_in_memory().await.unwrap(),
         settlements: SettlementStore::connect_in_memory().await.unwrap(),
         evidence: EvidenceStore::connect_in_memory().await.unwrap(),
-        obp: Arc::new(ObpClient::new(obp_base_url, ObpAuth::None).unwrap()),
-        // Unloaded — routing validation is fail-open unless a test loads it.
-        routing: crate::routing::RoutingRegistry::default(),
         blockchain_label: "mock",
-        bank_id: "test.bank.id".into(),
-        account_id: "test-account-id".into(),
-        corridor_accounts: Default::default(),
+        // The one OBP host the test node is on.
+        hosts: Arc::new(vec![HostState {
+            // The OBP host.
+            host: TEST_HOST.into(),
+            // Its OBP-API.
+            obp_api_url: obp_base_url.into(),
+            // A client for it.
+            obp: Arc::new(ObpClient::new(obp_base_url, ObpAuth::None).unwrap()),
+            // Unloaded — routing validation is fail-open unless a test loads it.
+            routing: crate::routing::RoutingRegistry::default(),
+            // The node's bank there.
+            bank_id: "test.bank.id".into(),
+            // Its shorthand account.
+            account_id: "test-account-id".into(),
+            // No per-currency accounts unless a test sets them.
+            corridor_accounts: Default::default(),
+            // A consumer that never connects in tests.
+            interface_c: crate::interface_c::consumer::ConsumerStatus::new(),
+        }]),
         finality_depth: TEST_FINALITY_DEPTH,
-        interface_c: crate::interface_c::consumer::ConsumerStatus::new(),
-        obp_api_url: obp_base_url.into(),
-        obp_api_name: "test-instance-a".into(),
         chain_health_url: None,
         instance_id: "test-instance".into(),
         started_at: std::time::Instant::now(),
@@ -154,7 +172,7 @@ async fn root_status_incoming_check_is_ok_when_nothing_open() {
     let (app, _state) = router_with_state().await;
     let v = status_json_of(app).await;
     assert_eq!(v["incoming_settlements"]["status"], "ok");
-    assert_eq!(v["incoming_settlements"]["detail"], "no incoming settlements");
+    assert_eq!(v["incoming_settlements"]["detail"], "none need attention");
 }
 
 #[tokio::test]
@@ -163,7 +181,7 @@ async fn root_status_warns_on_mismatched_incoming_settlement() {
     let (app, state) = router_with_state().await;
     state
         .settlements
-        .record_incoming("set-bad", Some("rt.bank.a"), Some("KES"), Some("50.00"), &["tr-1".into()])
+        .record_incoming(TEST_HOST, "test.bank.id", "set-bad", Some("rt.bank.a"), Some("KES"), Some("50.00"), &["tr-1".into()])
         .await
         .unwrap();
     state
@@ -242,7 +260,7 @@ async fn initiate_payment_returns_202_with_uuid_and_state_identity() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/obp-bank-node/v5.1.0/transaction-requests")
+                .uri(format!("{BANK}/transaction-requests"))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&payload).unwrap()))
                 .unwrap(),
@@ -292,7 +310,7 @@ async fn post_initiate(payload: serde_json::Value) -> axum::response::Response {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/obp-bank-node/v5.1.0/transaction-requests")
+                .uri(format!("{BANK}/transaction-requests"))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&payload).unwrap()))
                 .unwrap(),
@@ -305,7 +323,8 @@ async fn post_initiate(payload: serde_json::Value) -> axum::response::Response {
 /// validation is live (unlike the default fail-open unloaded registry).
 async fn router_with_routing() -> axum::Router {
     let (app, state) = router_with_state().await;
-    state.routing.load(vec![
+    // The test OBP host's registry.
+    state.hosts[0].routing.load(vec![
         crate::obp_client::ObpRoutingScheme {
             scheme: "OBP".into(),
             status: "ACTIVE".into(),
@@ -335,7 +354,7 @@ async fn post_initiate_to(
     app.oneshot(
         Request::builder()
             .method(Method::POST)
-            .uri("/obp-bank-node/v5.1.0/transaction-requests")
+            .uri(format!("{BANK}/transaction-requests"))
             .header("content-type", "application/json")
             .body(Body::from(serde_json::to_vec(&payload).unwrap()))
             .unwrap(),
@@ -400,26 +419,27 @@ async fn versioned_status_reports_identity_and_corridor_accounts() {
     assert_eq!(resp.status(), StatusCode::OK);
     let v: serde_json::Value = serde_json::from_slice(&body_bytes(resp).await).unwrap();
     assert_eq!(v["service"], "OBP-Bank-Node");
-    assert_eq!(v["bank_id"], "test.bank.id");
-    assert_eq!(v["account_id"], "test-account-id");
-    assert_eq!(v["corridor_accounts"]["KES"], "settlement-kes");
-    assert_eq!(v["corridor_accounts"]["NGN"], "settlement-ngn");
+    // The bank's identity is per OBP host now.
+    assert_eq!(v["hosts"][0]["account_id"], "test-account-id");
+    // Both per-currency accounts.
+    assert_eq!(v["hosts"][0]["corridor_accounts"]["NGN"], "settlement-ngn");
     assert_eq!(v["finality_depth"], TEST_FINALITY_DEPTH);
-    // The node lists the one instance it is connected to.
-    assert_eq!(v["instances"].as_array().unwrap().len(), 1);
-    // With its configured name.
-    assert_eq!(v["instances"][0]["name"], "test-instance-a");
+    // The node lists the one OBP host it is on.
+    assert_eq!(v["hosts"].as_array().unwrap().len(), 1);
+    // Named by its host and port.
+    assert_eq!(v["hosts"][0]["host"], "test-host-a:8080");
     // And this bank's identity and corridor accounts there.
-    assert_eq!(v["instances"][0]["bank_id"], "test.bank.id");
-    // The per-currency accounts are repeated on the instance.
-    assert_eq!(v["instances"][0]["corridor_accounts"]["KES"], "settlement-kes");
+    assert_eq!(v["hosts"][0]["bank_id"], "test.bank.id");
+    // The per-currency accounts are repeated on the OBP host.
+    assert_eq!(v["hosts"][0]["corridor_accounts"]["KES"], "settlement-kes");
 }
 
 /// A router whose bank sends per-currency: KES and NGN map to their corridor
 /// accounts; any other currency must be refused with ROUTING-001.
 async fn router_with_corridor_accounts() -> axum::Router {
     let (_, mut state) = router_with_state().await;
-    state.corridor_accounts = [
+    // The test OBP host's accounts.
+    std::sync::Arc::make_mut(&mut state.hosts)[0].corridor_accounts = [
         ("KES".to_string(), "settlement-kes".to_string()),
         ("NGN".to_string(), "settlement-ngn".to_string()),
     ]
@@ -525,7 +545,7 @@ async fn initiate_payment_rejects_malformed_json() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/obp-bank-node/v5.1.0/transaction-requests")
+                .uri(format!("{BANK}/transaction-requests"))
                 .header("content-type", "application/json")
                 .body(Body::from("{not json"))
                 .unwrap(),
@@ -544,7 +564,7 @@ async fn get_unknown_transaction_request_returns_404() {
         .oneshot(
             Request::builder()
                 .method(Method::GET)
-                .uri("/obp-bank-node/v5.1.0/transaction-requests/does-not-exist")
+                .uri(format!("{BANK}/transaction-requests/does-not-exist"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -565,7 +585,7 @@ async fn initiate_then_get_returns_persisted_initiated_row() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/obp-bank-node/v5.1.0/transaction-requests")
+                .uri(format!("{BANK}/transaction-requests"))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&valid_payload()).unwrap()))
                 .unwrap(),
@@ -580,7 +600,7 @@ async fn initiate_then_get_returns_persisted_initiated_row() {
         .oneshot(
             Request::builder()
                 .method(Method::GET)
-                .uri(format!("/obp-bank-node/v5.1.0/transaction-requests/{id}"))
+                .uri(format!("{BANK}/transaction-requests/{id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -607,7 +627,7 @@ async fn list_transaction_requests_returns_empty_array() {
         .oneshot(
             Request::builder()
                 .method(Method::GET)
-                .uri("/obp-bank-node/v5.1.0/transaction-requests")
+                .uri(format!("{BANK}/transaction-requests"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -640,11 +660,11 @@ async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, serde_json::Valu
 #[tokio::test]
 async fn settlements_list_empty_and_unknown_key_404() {
     let (app, _state) = router_with_state().await;
-    let (status, v) = get_json(app.clone(), "/obp-bank-node/v5.1.0/settlements").await;
+    let (status, v) = get_json(app.clone(), &format!("{BANK}/settlements")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v.as_array().unwrap().len(), 0);
 
-    let (status, v) = get_json(app, "/obp-bank-node/v5.1.0/settlements/nope").await;
+    let (status, v) = get_json(app, &format!("{BANK}/settlements/nope")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(v["error_code"], "OBP-BANK-NODE-NOT-FOUND-001");
 }
@@ -656,6 +676,10 @@ async fn settlement_row_is_readable_by_key_or_settlement_id() {
         .settlements
         .claim(NewClaim {
             idempotency_key: "idem-9",
+            // The test OBP host.
+            obp_host: TEST_HOST,
+            // The test node's bank there.
+            bank_id: "test.bank.id",
             settlement_id: Some("settle-9"),
             snapshot_id: None,
             currency: "KES",
@@ -685,7 +709,7 @@ async fn settlement_row_is_readable_by_key_or_settlement_id() {
         .unwrap();
     state.settlements.record_depth("idem-9", 2).await.unwrap();
 
-    let (status, v) = get_json(app.clone(), "/obp-bank-node/v5.1.0/settlements/idem-9").await;
+    let (status, v) = get_json(app.clone(), &format!("{BANK}/settlements/idem-9")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["status"], "SUBMITTED");
     assert_eq!(v["tx_id"], "tx-9");
@@ -701,10 +725,10 @@ async fn settlement_row_is_readable_by_key_or_settlement_id() {
 
     // Same row via settlement_id, and present in the list.
     let (status, by_sid) =
-        get_json(app.clone(), "/obp-bank-node/v5.1.0/settlements/settle-9").await;
+        get_json(app.clone(), &format!("{BANK}/settlements/settle-9")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(by_sid["idempotency_key"], "idem-9");
-    let (_, list) = get_json(app, "/obp-bank-node/v5.1.0/settlements").await;
+    let (_, list) = get_json(app, &format!("{BANK}/settlements")).await;
     assert_eq!(list.as_array().unwrap().len(), 1);
 }
 
@@ -717,6 +741,10 @@ async fn evidence_endpoints_serve_triplet_and_cbs_result() {
         .evidence
         .upsert(NewEvidence {
             transaction_request_id: "obp-tr-1",
+            // The test OBP host.
+            obp_host: TEST_HOST,
+            // The test node's bank there.
+            bank_id: "test.bank.id",
             promise_commitment: "c0ffee",
             promise_salt: "5a17",
             promise_preimage: r#"{"amount":"500.00"}"#,
@@ -740,7 +768,7 @@ async fn evidence_endpoints_serve_triplet_and_cbs_result() {
         .await
         .unwrap();
 
-    let (status, v) = get_json(app.clone(), "/obp-bank-node/v5.1.0/evidence/obp-tr-1").await;
+    let (status, v) = get_json(app.clone(), &format!("{BANK}/evidence/obp-tr-1")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["promise_commitment"], "c0ffee");
     assert_eq!(v["promise_salt"], "5a17");
@@ -751,10 +779,10 @@ async fn evidence_endpoints_serve_triplet_and_cbs_result() {
     assert_eq!(v["beneficiary_account_routing_scheme"], "OBP");
     assert_eq!(v["beneficiary_account_routing_address"], "acct-77");
 
-    let (_, list) = get_json(app.clone(), "/obp-bank-node/v5.1.0/evidence").await;
+    let (_, list) = get_json(app.clone(), &format!("{BANK}/evidence")).await;
     assert_eq!(list.as_array().unwrap().len(), 1);
 
-    let (status, v) = get_json(app, "/obp-bank-node/v5.1.0/evidence/unknown").await;
+    let (status, v) = get_json(app, &format!("{BANK}/evidence/unknown")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(v["error_code"], "OBP-BANK-NODE-NOT-FOUND-001");
 }
@@ -794,7 +822,7 @@ async fn post_settle(
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/obp-bank-node/v5.1.0/settlements")
+                .uri(format!("{BANK}/settlements"))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&body).unwrap()))
                 .unwrap(),
@@ -829,6 +857,8 @@ async fn request_settlement_calls_obp_and_stamps_covered_outbox_rows() {
             .outbox
             .insert(crate::outbox::NewEntry {
                 transaction_request_id: id,
+                // The test OBP host.
+                obp_host: TEST_HOST,
                 bank_id: "test.bank.id",
                 account_id: "test-account-id",
                 request_payload: "{}",
@@ -949,6 +979,8 @@ async fn corridor_settlement_proxies_obp_and_stamps_linkage() {
         .outbox
         .insert(crate::outbox::NewEntry {
             transaction_request_id: "tr-a",
+            // The test OBP host.
+            obp_host: TEST_HOST,
             bank_id: "test.bank.id",
             account_id: "test-account-id",
             request_payload: "{}",
@@ -962,7 +994,7 @@ async fn corridor_settlement_proxies_obp_and_stamps_linkage() {
         .await
         .unwrap();
 
-    let (status, v) = get_json(app, "/obp-bank-node/v5.1.0/settlements/settle-42/corridor").await;
+    let (status, v) = get_json(app, &format!("{BANK}/settlements/settle-42/corridor")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["settlement_status"], "FINAL");
 
@@ -989,7 +1021,7 @@ async fn corridor_settlement_passes_404_through() {
     let base = spawn_obp_stub(stub).await;
     let (app, _state) = router_with_obp(&base).await;
 
-    let (status, v) = get_json(app, "/obp-bank-node/v5.1.0/settlements/nope/corridor").await;
+    let (status, v) = get_json(app, &format!("{BANK}/settlements/nope/corridor")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(v["error_code"], "OBP-40058");
 }
@@ -1001,6 +1033,8 @@ async fn transaction_request_status_surfaces_settlement_linkage() {
         .outbox
         .insert(crate::outbox::NewEntry {
             transaction_request_id: "tr-linked",
+            // The test OBP host.
+            obp_host: TEST_HOST,
             bank_id: "test.bank.id",
             account_id: "test-account-id",
             request_payload: "{}",
@@ -1015,11 +1049,11 @@ async fn transaction_request_status_surfaces_settlement_linkage() {
         .unwrap();
     state
         .outbox
-        .mark_settled(&["obp-tr-x".into()], "settle-7")
+        .mark_settled(TEST_HOST, &["obp-tr-x".into()], "settle-7")
         .await
         .unwrap();
 
-    let (status, v) = get_json(app, "/obp-bank-node/v5.1.0/transaction-requests/tr-linked").await;
+    let (status, v) = get_json(app, &format!("{BANK}/transaction-requests/tr-linked")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["settlement_id"], "settle-7");
     assert!(!v["settled_at"].is_null());
@@ -1047,7 +1081,7 @@ fn idempotent_payment_body(amount: &str) -> Vec<u8> {
 async fn post_payment(app: axum::Router, key: Option<&str>, body: Vec<u8>) -> axum::response::Response {
     let mut req = Request::builder()
         .method(Method::POST)
-        .uri("/obp-bank-node/v5.1.0/transaction-requests")
+        .uri(format!("{BANK}/transaction-requests"))
         .header("content-type", "application/json");
     if let Some(k) = key {
         req = req.header("idempotency-key", k);
@@ -1106,16 +1140,16 @@ async fn banks_relays_obp_get_banks_unchanged() {
     use axum::routing::get as axum_get;
     // OBP-API stand-in answering getBanks with two banks and their routings.
     let stub = axum::Router::new().route(
-        // getBanks is called at v5.1.0.
-        "/obp/v5.1.0/banks",
+        // getBanks is called at v6.0.0, where each bank carries its attributes.
+        "/obp/v6.0.0/banks",
         // Answer with a fixed body, shaped like OBP-API's.
         axum_get(|| async {
             // The two banks the node should relay.
             axum::Json(serde_json::json!({
                 "banks": [
-                    { "id": "test.bank.id", "full_name": "Test Bank",
+                    { "bank_id": "test.bank.id", "full_name": "Test Bank",
                       "bank_routings": [{ "scheme": "OBP", "address": "test.bank.id" }] },
-                    { "id": "other.bank", "full_name": "Other Bank",
+                    { "bank_id": "other.bank", "full_name": "Other Bank",
                       "bank_routings": [{ "scheme": "BIC", "address": "OTHRKENX" }] }
                 ]
             }))
@@ -1127,7 +1161,7 @@ async fn banks_relays_obp_get_banks_unchanged() {
     let (app, _state) = router_with_obp(&base).await;
 
     // Call the node's south-side banks endpoint.
-    let (status, v) = get_json(app, "/obp-bank-node/v5.1.0/banks").await;
+    let (status, v) = get_json(app, "/obp-bank-node/v5.1.0/hosts/test-host-a:8080/banks").await;
     // The call succeeds.
     assert_eq!(status, StatusCode::OK);
     // Both banks come back, in OBP-API's order.
@@ -1141,9 +1175,115 @@ async fn banks_upstream_down_is_502() {
     // A node whose OBP-API base points at a refused port.
     let (app, _state) = router_with_state().await;
     // Call the node's south-side banks endpoint.
-    let (status, v) = get_json(app, "/obp-bank-node/v5.1.0/banks").await;
+    let (status, v) = get_json(app, "/obp-bank-node/v5.1.0/hosts/test-host-a:8080/banks").await;
     // No answer from OBP-API is the node's 502.
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     // With the usual Interface B error code.
     assert_eq!(v["error_code"], "OBP-BANK-NODE-INTERFACE-B-001");
+}
+
+// An OBP host the node is not on is a 404 that says so.
+#[tokio::test]
+async fn an_unknown_obp_host_is_not_found() {
+    // The test node, on test-host-a:8080 only.
+    let (app, _state) = router_with_state().await;
+    // Ask for payments on another OBP host.
+    let (status, v) = get_json(app, "/obp-bank-node/v5.1.0/hosts/elsewhere.example/banks/test.bank.id/transaction-requests").await;
+    // Not found.
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // With the usual code.
+    assert_eq!(v["error_code"], "OBP-BANK-NODE-NOT-FOUND-001");
+    // Naming the OBP host.
+    assert!(v["message"].as_str().unwrap().contains("elsewhere.example"), "{v}");
+}
+
+// A BANK_ID that is not the node's bank on that OBP host is a 404 that names the right one.
+#[tokio::test]
+async fn another_bank_on_a_known_obp_host_is_not_found() {
+    // The test node, whose bank on test-host-a:8080 is test.bank.id.
+    let (app, _state) = router_with_state().await;
+    // Ask for another bank's payments there.
+    let (status, v) = get_json(app, "/obp-bank-node/v5.1.0/hosts/test-host-a:8080/banks/other.bank/transaction-requests").await;
+    // Not found.
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // The message names the bank the node does serve there.
+    assert!(v["message"].as_str().unwrap().contains("test.bank.id"), "{v}");
+}
+
+// Posting a payment for another bank is refused the same way, and nothing is stored.
+#[tokio::test]
+async fn a_payment_for_another_bank_is_refused_and_not_stored() {
+    // The test node and its stores.
+    let (app, state) = router_with_state().await;
+    // Send a valid payment, but name another bank in the URL.
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/obp-bank-node/v5.1.0/hosts/test-host-a:8080/banks/other.bank/transaction-requests")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&valid_payload()).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // Not found.
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    // Nothing reached the outbox.
+    assert!(state.outbox.list(TEST_HOST, "test.bank.id", 10).await.unwrap().is_empty());
+    // Nor under the other bank's name.
+    assert!(state.outbox.list(TEST_HOST, "other.bank", 10).await.unwrap().is_empty());
+}
+
+// The node lists the OBP hosts it is on, with its bank on each.
+#[tokio::test]
+async fn hosts_lists_each_obp_host_with_the_nodes_bank() {
+    // The test node.
+    let (app, _state) = router_with_state().await;
+    // Its OBP hosts.
+    let (status, v) = get_json(app, "/obp-bank-node/v5.1.0/hosts").await;
+    // Found.
+    assert_eq!(status, StatusCode::OK);
+    // One OBP host.
+    assert_eq!(v["hosts"].as_array().unwrap().len(), 1);
+    // Named by host and port.
+    assert_eq!(v["hosts"][0]["host"], TEST_HOST);
+    // With the node's bank there.
+    assert_eq!(v["hosts"][0]["bank_id"], "test.bank.id");
+}
+
+// A list only shows rows made on its own OBP host, and a row made elsewhere is not found by id.
+#[tokio::test]
+async fn rows_made_on_another_obp_host_are_not_shown() {
+    // The test node and its stores.
+    let (app, state) = router_with_state().await;
+    // A row made on another OBP host, with the same bank id there.
+    state
+        .outbox
+        .insert(crate::outbox::NewEntry {
+            // Its id.
+            transaction_request_id: "tr-elsewhere",
+            // Another OBP host.
+            obp_host: "test-host-b:8081",
+            // The same bank id, to show the OBP host alone keeps them apart.
+            bank_id: "test.bank.id",
+            // Any account.
+            account_id: "acct-b",
+            // Any payload.
+            request_payload: "{}",
+            // Any salt.
+            commitment_salt: "s",
+        })
+        .await
+        .unwrap();
+    // The test OBP host's list.
+    let (status, list) = get_json(app.clone(), &format!("{BANK}/transaction-requests")).await;
+    // Found.
+    assert_eq!(status, StatusCode::OK);
+    // Without the other OBP host's row.
+    assert!(list.as_array().unwrap().is_empty(), "{list}");
+    // Asking for that row by id on the test OBP host.
+    let (status, _) = get_json(app, &format!("{BANK}/transaction-requests/tr-elsewhere")).await;
+    // Not found here.
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

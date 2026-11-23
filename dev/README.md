@@ -24,7 +24,7 @@ Before running it, read [`../DOCS/TLDR.md`](../DOCS/TLDR.md), then
 
 | What | Where | Notes |
 |---|---|---|
-| OBP-API | `http://localhost:8080` | one instance for both banks, `open_corridor_enabled=true`, on Postgres |
+| OBP-API | `http://localhost:8080` | one OBP host for both banks, `open_corridor_enabled=true`, on Postgres |
 | OBP-OIDC | `http://localhost:9000` | the nodes' client-credentials tokens, and the login to the UIs' `/setup` pages |
 | RabbitMQ | `:5672`, management `:15672` (guest/guest) | vhosts `/bank.<bank_id>`, users `bank_a_node` / `bank_b_node` |
 | cardano-node + Ogmios | `ws://localhost:1337` | preprod; `docker/cardano-bootstrap.sh` |

@@ -1,40 +1,92 @@
 # Round-trip test — Bank Node B (rt.bank.b4, Cardano preprod rail — symmetric
 # with node A so B can also write promises and settle as debtor; wallet is
 # secrets/creditor.skey, address in secrets/creditor.addr).
+# Bank B is on both local OBP hosts: on OBP host A (localhost:8080) with Bank A, and on OBP host B
+# (localhost:8081) with Bank C. So it is the hub between them: A pays B directly, and A pays C
+# through B (DOCS/MULTI_HOST_ROUTING.md). commands/_helpers/obp_b_add_bank_b.sh sets Bank B up on
+# OBP host B.
 # Start from the repo root: dev/start_node_b.sh (it passes the node's OAuth2 client
-# credentials from dev/local.env).
+# credentials for each OBP host, from dev/local.env and dev/local-b.env).
+
+# The node's name, shown on its status pages (the same name the Bank Node UI configs use).
+name: "node-b"
 
 server:
   bind: "0.0.0.0:8089"
 
-bank:
-  bank_id: "rt.bank.b4"
-  account_id: "settlement-b"
-  # One corridor account per sending currency (created via the app's setup
-  # page). Authoritative when non-empty: a currency not listed here is
-  # refused at initiation with 422 OBP-BANK-NODE-ROUTING-001.
-  corridor_accounts:
-    KES: "settlement-b"
-    NGN: "settlement-b-ngn"
-    USD: "settlement-b-usd"
-    EUR: "settlement-b-eur"
-    XCD: "settlement-b-xcd"
-    TTD: "settlement-b-ttd"
-    JMD: "settlement-b-jmd"
-    BBD: "settlement-b-bbd"
-    BSD: "settlement-b-bsd"
-  # The view the node creates Transaction Requests through on each corridor account: a custom
-  # view with only can_add_transaction_request_to_any_account, given to the node's Consumer
-  # (Consumer Account Access). dev/setup_obp.sh creates it and the grant.
-  view_id: "_open-corridor-node"
+# The OBP hosts the node is on, each with the node's bank there. A hub bank lists several.
+hosts:
+  - obp_api:
+      # The OBP host (here localhost:8080) is taken from base_url. Both demo nodes A and B are on it.
+      base_url: "http://localhost:8080"
+      # The node is a Platform App: it calls OBP-API as itself, with OAuth2 client credentials from
+      # OBP-OIDC. The client id and secret are read from the environment variables named below, which
+      # dev/start_node_b.sh sets from dev/local.env. They are never written in this file.
+      token_url: "http://localhost:9000/obp-oidc/token"
+      client_id_env: "NODE_B_CLIENT_ID"
+      client_secret_env: "NODE_B_CLIENT_SECRET"
+    rabbitmq:
+      enabled: true
+      host: "localhost"
+      port: 5672
+      username: "bank_b_node"
+      password: "rtpass-b"
+      virtual_host: "/bank.rt.bank.b4"
+      request_queue: "obp_rpc_queue"
+    bank:
+      bank_id: "rt.bank.b4"
+      account_id: "settlement-b"
+      # One corridor account per sending currency (created via the app's setup
+      # page). Authoritative when non-empty: a currency not listed here is
+      # refused at initiation with 422 OBP-BANK-NODE-ROUTING-001.
+      corridor_accounts:
+        KES: "settlement-b"
+        NGN: "settlement-b-ngn"
+        USD: "settlement-b-usd"
+        EUR: "settlement-b-eur"
+        XCD: "settlement-b-xcd"
+        TTD: "settlement-b-ttd"
+        JMD: "settlement-b-jmd"
+        BBD: "settlement-b-bbd"
+        BSD: "settlement-b-bsd"
+      # The view the node creates Transaction Requests through on each corridor account: a custom
+      # view with only can_add_transaction_request_to_any_account, given to the node's Consumer
+      # (Consumer Account Access). dev/setup_obp.sh creates it and the grant.
+      view_id: "_open-corridor-node"
 
-obp_api:
-  # The instance name the Bank Node UI groups nodes by. Both demo nodes share one instance.
-  name: "localhost"
-  base_url: "http://localhost:8080"
-  # The node is a Platform App: it calls OBP-API as itself, with OAuth2 client credentials from
-  # OBP-OIDC. client_id / client_secret come from dev/local.env (start_node_b.sh passes them).
-  token_url: "http://localhost:9000/obp-oidc/token"
+  # OBP host B, where Bank B meets Bank C. Bank B keeps its bank_id here: bank ids are per OBP host.
+  - obp_api:
+      # The OBP host (here localhost:8081) is taken from base_url.
+      base_url: "http://localhost:8081"
+      # Node B's Consumer on OBP host B, logging in at host B's own OBP-OIDC. dev/start_node_b.sh sets
+      # these variables from dev/local-b.env. They are never written in this file.
+      token_url: "http://localhost:9001/obp-oidc/token"
+      client_id_env: "NODE_B_HOST_B_CLIENT_ID"
+      client_secret_env: "NODE_B_HOST_B_CLIENT_SECRET"
+    rabbitmq:
+      enabled: true
+      host: "localhost"
+      port: 5672
+      username: "bank_b_host_b_node"
+      password: "rtpass-b-host-b"
+      # Not /bank.rt.bank.b4: that is Bank B's vhost for OBP host A, and both OBP hosts share this RabbitMQ.
+      virtual_host: "/host-b.bank.rt.bank.b4"
+      request_queue: "obp_rpc_queue"
+    bank:
+      bank_id: "rt.bank.b4"
+      account_id: "settlement-b"
+      # The same corridor accounts as on OBP host A.
+      corridor_accounts:
+        KES: "settlement-b"
+        NGN: "settlement-b-ngn"
+        USD: "settlement-b-usd"
+        EUR: "settlement-b-eur"
+        XCD: "settlement-b-xcd"
+        TTD: "settlement-b-ttd"
+        JMD: "settlement-b-jmd"
+        BBD: "settlement-b-bbd"
+        BSD: "settlement-b-bsd"
+      view_id: "_open-corridor-node"
 
 blockchain:
   type: "cardano"
@@ -50,15 +102,6 @@ outbox:
 
 evidence:
   path: "./dev/data/node-b4/evidence.db"
-
-rabbitmq:
-  enabled: true
-  host: "localhost"
-  port: 5672
-  username: "bank_b_node"
-  password: "rtpass-b"
-  virtual_host: "/bank.rt.bank.b4"
-  request_queue: "obp_rpc_queue"
 
 cbs_delivery:
   mode: "webhook_obp"

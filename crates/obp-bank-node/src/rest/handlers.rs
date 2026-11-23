@@ -27,7 +27,7 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use super::types::*;
-use super::BankNodeState;
+use super::{BankNodeState, HostState};
 use crate::evidence::EvidenceRecord;
 use crate::obp_client::ObpClientError;
 use crate::outbox::{NewEntry, OutboxRecord};
@@ -45,6 +45,43 @@ fn error(status: StatusCode, error_code: &str, message: impl Into<String>) -> Re
         }),
     )
         .into_response()
+}
+
+/// The OBP host named in a URL, if this node is on it; otherwise the 404 to answer with.
+// The error side is a ready-made response; handlers return it as it is, so its size does not matter.
+#[allow(clippy::result_large_err)]
+fn known_host<'a>(state: &'a BankNodeState, obp_host: &str) -> Result<&'a HostState, Response> {
+    // Look the OBP host up among the node's configured hosts.
+    state.host(obp_host).ok_or_else(|| {
+        // The node is not on that OBP host.
+        error(
+            StatusCode::NOT_FOUND,
+            "OBP-BANK-NODE-NOT-FOUND-001",
+            format!("this Bank Node is not on OBP host {obp_host}"),
+        )
+    })
+}
+
+/// The OBP host and bank named in a `/hosts/HOST/banks/BANK_ID/...` URL, when BANK_ID is this node's bank on that OBP host; otherwise the 404 to answer with.
+// The error side is a ready-made response; handlers return it as it is, so its size does not matter.
+#[allow(clippy::result_large_err)]
+fn bank_on_host<'a>(state: &'a BankNodeState, obp_host: &str, bank_id: &str) -> Result<&'a HostState, Response> {
+    // The OBP host first: an unknown one is its own 404.
+    let host_state = known_host(state, obp_host)?;
+    // The node serves one bank on each OBP host.
+    if host_state.bank_id != bank_id {
+        // Name the bank the node does serve there, so the caller can correct the URL.
+        return Err(error(
+            StatusCode::NOT_FOUND,
+            "OBP-BANK-NODE-NOT-FOUND-001",
+            format!(
+                "on OBP host {obp_host} this Bank Node serves bank {}, not {bank_id}",
+                host_state.bank_id
+            ),
+        ));
+    }
+    // This node's bank on this OBP host.
+    Ok(host_state)
 }
 
 /// Validate an A1.1 request body. Mirrors the error table in `DOCS/A1_A2.md`:
@@ -121,6 +158,26 @@ fn validate(req: &InitiateRequest) -> Result<(), (StatusCode, &'static str, Stri
         ));
     }
 
+    // A payment carried on by a hub names the final bank completely.
+    if let Some(final_bank_routing) = &req.final_bank_routing {
+        // Both the scheme and the address are needed to find the bank.
+        if final_bank_routing.scheme.trim().is_empty() || final_bank_routing.address.trim().is_empty() {
+            return Err((
+                BAD_REQUEST,
+                "OBP-10001",
+                "final_bank_routing.scheme and final_bank_routing.address are required when final_bank_routing is given".into(),
+            ));
+        }
+        // A return goes back the way it came, never on through a hub.
+        if req.return_of.is_some() {
+            return Err((
+                BAD_REQUEST,
+                "OBP-10001",
+                "a return (return_of) cannot have a final_bank_routing".into(),
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -133,9 +190,17 @@ const IDEMPOTENCY_KEY_MAX_LEN: usize = 255;
 
 pub async fn initiate_payment(
     State(state): State<BankNodeState>,
+    Path((obp_host, bank_id)): Path<(String, String)>,
     headers: HeaderMap,
     body: Result<Json<InitiateRequest>, JsonRejection>,
 ) -> Response {
+    // The OBP host to make the payment on, and this node's bank there.
+    let host_state = match bank_on_host(&state, &obp_host, &bank_id) {
+        // The node's bank on that OBP host.
+        Ok(host_state) => host_state,
+        // Not this node's bank, or not an OBP host it is on.
+        Err(response) => return response,
+    };
     let idempotency_key = match headers.get(IDEMPOTENCY_KEY_HEADER).map(|v| v.to_str()) {
         None => None,
         Some(Ok(k)) if !k.trim().is_empty() && k.len() <= IDEMPOTENCY_KEY_MAX_LEN => Some(k.trim().to_string()),
@@ -177,7 +242,8 @@ pub async fn initiate_payment(
             &req.to.other_account_routing_address,
         ),
     ] {
-        if let Err(v) = state.routing.check(field, scheme, address) {
+        // The routing schemes registered on this OBP host.
+        if let Err(v) = host_state.routing.check(field, scheme, address) {
             let (code, message) = routing_violation_message(v);
             warn!(%code, %message, "initiate_payment rejected beneficiary routing");
             return error(StatusCode::BAD_REQUEST, code, message);
@@ -187,7 +253,8 @@ pub async fn initiate_payment(
     // Which corridor account sends this currency. With per-currency accounts
     // configured, an unmapped currency is refused here, synchronously — not
     // later in the Promise step as OBP-API's OBP-40003 currency mismatch.
-    let Some(account_id) = state.corridor_account_for(&req.value.currency) else {
+    // The corridor accounts are this bank's on this OBP host.
+    let Some(account_id) = host_state.corridor_account_for(&req.value.currency) else {
         let message = format!(
             "no corridor account is configured for currency {}",
             req.value.currency.trim().to_uppercase()
@@ -220,7 +287,7 @@ pub async fn initiate_payment(
     // A repeated request: answer from the row the key already names.
     if let Some(key) = idempotency_key.as_deref() {
         match state.outbox.get_by_idempotency_key(key).await {
-            Ok(Some(existing)) => return replay_or_refuse(&state, existing, &request_payload),
+            Ok(Some(existing)) => return replay_or_refuse(host_state, existing, &request_payload),
             Ok(None) => {}
             Err(e) => {
                 error!(error = %e, "failed to look up the idempotency key");
@@ -239,7 +306,9 @@ pub async fn initiate_payment(
     let salt = Uuid::new_v4().simple().to_string();
     let entry = NewEntry {
         transaction_request_id: &id,
-        bank_id: &state.bank_id,
+        // The OBP host the payment is made on.
+        obp_host: &host_state.host,
+        bank_id: &host_state.bank_id,
         account_id: &account_id,
         request_payload: &request_payload,
         commitment_salt: &salt,
@@ -254,7 +323,7 @@ pub async fn initiate_payment(
         Err(crate::outbox::OutboxError::DuplicateIdempotencyKey) => {
             let key = idempotency_key.as_deref().unwrap_or_default();
             return match state.outbox.get_by_idempotency_key(key).await {
-                Ok(Some(existing)) => replay_or_refuse(&state, existing, &request_payload),
+                Ok(Some(existing)) => replay_or_refuse(host_state, existing, &request_payload),
                 _ => error(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "OBP-BANK-NODE-PLATFORM-001",
@@ -273,7 +342,8 @@ pub async fn initiate_payment(
     }
 
     info!(
-        bank_id = %state.bank_id,
+        obp_host = %host_state.host,
+        bank_id = %host_state.bank_id,
         account_id = %account_id,
         transaction_request_id = %id,
         currency = %req.value.currency,
@@ -285,12 +355,12 @@ pub async fn initiate_payment(
     // Echo the caller's inline routing and originator back in the 202. The
     // promise_id stays null here; it is filled asynchronously once the
     // dispatcher writes the Promise commitment (queryable via the status route).
-    (StatusCode::ACCEPTED, Json(initiated_response(&state, id, account_id, req, Utc::now()))).into_response()
+    (StatusCode::ACCEPTED, Json(initiated_response(&host_state.bank_id, id, account_id, req, Utc::now()))).into_response()
 }
 
 /// The 202 body for a freshly accepted (or replayed) request.
 fn initiated_response(
-    state: &BankNodeState,
+    bank_id: &str,
     id: String,
     account_id: String,
     req: InitiateRequest,
@@ -302,7 +372,8 @@ fn initiated_response(
         transaction_request_id: id,
         kind: "OPEN_CORRIDOR_PROMISE",
         from: FromAccount {
-            bank_id: state.bank_id.clone(),
+            // This node's bank on the OBP host the payment is made on.
+            bank_id: bank_id.to_string(),
             account_id,
         },
         to: req.to,
@@ -319,7 +390,18 @@ fn initiated_response(
 
 /// Answer a repeated `Idempotency-Key`: the same body gets the original
 /// request back (its id, with the current status), a different body is refused.
-fn replay_or_refuse(state: &BankNodeState, existing: OutboxRecord, request_payload: &str) -> Response {
+fn replay_or_refuse(host_state: &HostState, existing: OutboxRecord, request_payload: &str) -> Response {
+    // A key already used for a payment on another OBP host, or from another bank, is not a repeat of this request.
+    if existing.obp_host != host_state.host || existing.bank_id != host_state.bank_id {
+        // Say where the key was used.
+        warn!(transaction_request_id = %existing.transaction_request_id, "Idempotency-Key reused for another OBP host or bank");
+        // Refuse, as for a different body.
+        return error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "OBP-BANK-NODE-IDEMPOTENCY-001",
+            "this Idempotency-Key was already used for a payment from another bank or on another OBP host",
+        );
+    }
     if existing.request_payload != request_payload {
         warn!(transaction_request_id = %existing.transaction_request_id, "Idempotency-Key reused with a different body");
         return error(
@@ -333,7 +415,7 @@ fn replay_or_refuse(state: &BankNodeState, existing: OutboxRecord, request_paylo
         Err(_) => return Json(status_from_record(existing)).into_response(),
     };
     let mut body = initiated_response(
-        state,
+        &host_state.bank_id,
         existing.transaction_request_id.clone(),
         existing.account_id.clone(),
         req,
@@ -365,11 +447,23 @@ fn status_label(status: &str) -> &'static str {
 
 pub async fn get_transaction_request(
     State(state): State<BankNodeState>,
-    Path(transaction_request_id): Path<String>,
+    Path((obp_host, bank_id, transaction_request_id)): Path<(String, String, String)>,
 ) -> Response {
+    // This node's bank on the OBP host named in the URL.
+    let host_state = match bank_on_host(&state, &obp_host, &bank_id) {
+        // Found.
+        Ok(host_state) => host_state,
+        // Not this node's bank, or not an OBP host it is on.
+        Err(response) => return response,
+    };
     match state.outbox.get(&transaction_request_id).await {
-        Ok(Some(rec)) => Json(status_from_record(rec)).into_response(),
-        Ok(None) => error(
+        // Only a payment made by this bank on this OBP host is shown here.
+        Ok(Some(rec)) if rec.obp_host == host_state.host && rec.bank_id == host_state.bank_id => {
+            // The payment's status.
+            Json(status_from_record(rec)).into_response()
+        }
+        // No such payment, or one made elsewhere.
+        Ok(_) => error(
             StatusCode::NOT_FOUND,
             "OBP-BANK-NODE-NOT-FOUND-001",
             format!("no transaction request with id {transaction_request_id}"),
@@ -388,14 +482,25 @@ pub async fn get_transaction_request(
 /// Cap on the number of rows returned by the list endpoint.
 const LIST_LIMIT: i64 = 200;
 
-pub async fn list_transaction_requests(State(state): State<BankNodeState>) -> Response {
-    match state.outbox.list(LIST_LIMIT).await {
+pub async fn list_transaction_requests(
+    State(state): State<BankNodeState>,
+    Path((obp_host, bank_id)): Path<(String, String)>,
+) -> Response {
+    // This node's bank on the OBP host named in the URL.
+    let host_state = match bank_on_host(&state, &obp_host, &bank_id) {
+        // Found.
+        Ok(host_state) => host_state,
+        // Not this node's bank, or not an OBP host it is on.
+        Err(response) => return response,
+    };
+    // Only the payments this bank made on this OBP host.
+    match state.outbox.list(&host_state.host, &host_state.bank_id, LIST_LIMIT).await {
         Ok(recs) => {
             let body: Vec<_> = recs.into_iter().map(status_from_record).collect();
             Json(body).into_response()
         }
         Err(e) => {
-            error!(bank_id = %state.bank_id, error = %e, "outbox list failed");
+            error!(obp_host = %host_state.host, bank_id = %host_state.bank_id, error = %e, "outbox list failed");
             error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "OBP-BANK-NODE-PLATFORM-001",
@@ -544,6 +649,9 @@ fn evidence_view(rec: EvidenceRecord) -> EvidenceView {
         beneficiary_account_routing_address: rec.beneficiary_account_routing_address,
         return_of_transaction_request_id: rec.return_of_transaction_request_id,
         returned_by_transaction_request_id: rec.returned_by_transaction_request_id,
+        // The second leg, when this bank carried the credit on.
+        forwarded_as_transaction_request_id: rec.forwarded_as_transaction_request_id,
+        forwarded_on_obp_host: rec.forwarded_on_obp_host,
         cbs_status: rec.cbs_status,
         cbs_reference: rec.cbs_reference,
         cbs_recorded_at: rec.cbs_recorded_at,
@@ -553,8 +661,19 @@ fn evidence_view(rec: EvidenceRecord) -> EvidenceView {
     }
 }
 
-pub async fn list_settlements(State(state): State<BankNodeState>) -> Response {
-    match state.settlements.list(LIST_LIMIT).await {
+pub async fn list_settlements(
+    State(state): State<BankNodeState>,
+    Path((obp_host, bank_id)): Path<(String, String)>,
+) -> Response {
+    // This node's bank on the OBP host named in the URL.
+    let host_state = match bank_on_host(&state, &obp_host, &bank_id) {
+        // Found.
+        Ok(host_state) => host_state,
+        // Not this node's bank, or not an OBP host it is on.
+        Err(response) => return response,
+    };
+    // Only this bank's settlements on this OBP host.
+    match state.settlements.list(&host_state.host, &host_state.bank_id, LIST_LIMIT).await {
         Ok(rows) => {
             let body: Vec<_> = rows
                 .into_iter()
@@ -563,7 +682,7 @@ pub async fn list_settlements(State(state): State<BankNodeState>) -> Response {
             Json(body).into_response()
         }
         Err(e) => {
-            error!(bank_id = %state.bank_id, error = %e, "settlement store list failed");
+            error!(obp_host = %host_state.host, bank_id = %host_state.bank_id, error = %e, "settlement store list failed");
             error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "OBP-BANK-NODE-PLATFORM-001",
@@ -575,9 +694,17 @@ pub async fn list_settlements(State(state): State<BankNodeState>) -> Response {
 
 pub async fn get_settlement(
     State(state): State<BankNodeState>,
-    Path(key): Path<String>,
+    Path((obp_host, bank_id, key)): Path<(String, String, String)>,
 ) -> Response {
-    match state.settlements.find(&key).await {
+    // This node's bank on the OBP host named in the URL.
+    let host_state = match bank_on_host(&state, &obp_host, &bank_id) {
+        // Found.
+        Ok(host_state) => host_state,
+        // Not this node's bank, or not an OBP host it is on.
+        Err(response) => return response,
+    };
+    // Only this bank's settlements on this OBP host are found.
+    match state.settlements.find(&host_state.host, &host_state.bank_id, &key).await {
         Ok(Some(row)) => Json(settlement_view(row, state.finality_depth)).into_response(),
         Ok(None) => error(
             StatusCode::NOT_FOUND,
@@ -601,8 +728,16 @@ pub async fn get_settlement(
 /// rail) plus how many local outbox rows the covered-promise list stamped.
 pub async fn request_settlement(
     State(state): State<BankNodeState>,
+    Path((obp_host, bank_id)): Path<(String, String)>,
     body: Result<Json<SettleRequest>, JsonRejection>,
 ) -> Response {
+    // This node's bank on the OBP host named in the URL.
+    let host_state = match bank_on_host(&state, &obp_host, &bank_id) {
+        // Found.
+        Ok(host_state) => host_state,
+        // Not this node's bank, or not an OBP host it is on.
+        Err(response) => return response,
+    };
     let Json(req) = match body {
         Ok(json) => json,
         Err(rejection) => {
@@ -617,7 +752,7 @@ pub async fn request_settlement(
             "other_bank_id and currency are required",
         );
     }
-    if req.other_bank_id == state.bank_id {
+    if req.other_bank_id == host_state.bank_id {
         return error(
             StatusCode::BAD_REQUEST,
             "OBP-10001",
@@ -625,14 +760,15 @@ pub async fn request_settlement(
         );
     }
 
-    let result = match state
+    // Settle on this OBP host's OBP-API.
+    let result = match host_state
         .obp
-        .create_settlement(&state.bank_id, &req.other_bank_id, &req.currency)
+        .create_settlement(&host_state.bank_id, &req.other_bank_id, &req.currency)
         .await
     {
         Ok(r) => r,
         Err(e) => {
-            warn!(bank_id = %state.bank_id, other_bank_id = %req.other_bank_id, error = %e, "settle trigger failed at OBP-API");
+            warn!(obp_host = %host_state.host, bank_id = %host_state.bank_id, other_bank_id = %req.other_bank_id, error = %e, "settle trigger failed at OBP-API");
             return obp_error(e);
         }
     };
@@ -643,7 +779,8 @@ pub async fn request_settlement(
     let stamped = match result.settlement_id.as_deref() {
         Some(sid) => match state
             .outbox
-            .mark_settled(&result.covered_transaction_request_ids, sid)
+            // Only the payments made on this OBP host.
+            .mark_settled(&host_state.host, &result.covered_transaction_request_ids, sid)
             .await
         {
             Ok(n) => n,
@@ -656,7 +793,8 @@ pub async fn request_settlement(
     };
 
     info!(
-        bank_id = %state.bank_id,
+        obp_host = %host_state.host,
+        bank_id = %host_state.bank_id,
         other_bank_id = %req.other_bank_id,
         currency = %req.currency,
         settlement_id = ?result.settlement_id,
@@ -679,9 +817,17 @@ pub async fn request_settlement(
 /// settlement picks the linkage up.
 pub async fn get_corridor_settlement(
     State(state): State<BankNodeState>,
-    Path(key): Path<String>,
+    Path((obp_host, bank_id, key)): Path<(String, String, String)>,
 ) -> Response {
-    let result = match state.obp.get_settlement(&state.bank_id, &key).await {
+    // This node's bank on the OBP host named in the URL.
+    let host_state = match bank_on_host(&state, &obp_host, &bank_id) {
+        // Found.
+        Ok(host_state) => host_state,
+        // Not this node's bank, or not an OBP host it is on.
+        Err(response) => return response,
+    };
+    // Ask this OBP host's OBP-API.
+    let result = match host_state.obp.get_settlement(&host_state.bank_id, &key).await {
         Ok(r) => r,
         Err(e) => return obp_error(e),
     };
@@ -689,7 +835,8 @@ pub async fn get_corridor_settlement(
     if let Some(sid) = result.settlement_id.as_deref() {
         if let Err(e) = state
             .outbox
-            .mark_settled(&result.covered_transaction_request_ids, sid)
+            // Only the payments made on this OBP host.
+            .mark_settled(&host_state.host, &result.covered_transaction_request_ids, sid)
             .await
         {
             error!(settlement_id = %sid, error = %e, "failed to stamp settlement linkage onto outbox rows");
@@ -699,13 +846,23 @@ pub async fn get_corridor_settlement(
     Json(result.raw).into_response()
 }
 
-/// The banks on this OBP-API instance, as OBP-API's getBanks lists them
-/// (`GET /obp/v5.1.0/banks`), with each bank's `bank_routings`. This is how
+/// The banks on this OBP host, as OBP-API's getBanks lists them
+/// (`GET /obp/v6.0.0/banks`), with each bank's `bank_routings` and active `attributes`. This is how
 /// the bank, or the Bank Node UI, learns which other banks it can pay and
 /// which routing pairs address them. The body is OBP-API's, unchanged.
-pub async fn list_banks(State(state): State<BankNodeState>) -> Response {
-    // Ask OBP-API for the list; a failure maps onto the usual Interface B errors.
-    match state.obp.get_banks().await {
+pub async fn list_banks(
+    State(state): State<BankNodeState>,
+    Path(obp_host): Path<String>,
+) -> Response {
+    // The OBP host named in the URL.
+    let host_state = match known_host(&state, &obp_host) {
+        // The node is on it.
+        Ok(host_state) => host_state,
+        // The node is not on it.
+        Err(response) => return response,
+    };
+    // Ask that OBP host's OBP-API for the list; a failure maps onto the usual Interface B errors.
+    match host_state.obp.get_banks().await {
         // Relay OBP-API's body as it is.
         Ok(body) => Json(body).into_response(),
         // A rejection keeps OBP-API's status and code; no answer is this node's 502.
@@ -715,11 +872,22 @@ pub async fn list_banks(State(state): State<BankNodeState>) -> Response {
 
 /// Settlements this bank receives as creditor, and whether each payment has
 /// been seen arriving (see `incoming.rs`).
-pub async fn list_incoming_settlements(State(state): State<BankNodeState>) -> Response {
-    match state.settlements.list_incoming(LIST_LIMIT).await {
+pub async fn list_incoming_settlements(
+    State(state): State<BankNodeState>,
+    Path((obp_host, bank_id)): Path<(String, String)>,
+) -> Response {
+    // This node's bank on the OBP host named in the URL.
+    let host_state = match bank_on_host(&state, &obp_host, &bank_id) {
+        // Found.
+        Ok(host_state) => host_state,
+        // Not this node's bank, or not an OBP host it is on.
+        Err(response) => return response,
+    };
+    // Only the settlements this bank receives on this OBP host.
+    match state.settlements.list_incoming(&host_state.host, &host_state.bank_id, LIST_LIMIT).await {
         Ok(rows) => Json(rows).into_response(),
         Err(e) => {
-            error!(bank_id = %state.bank_id, error = %e, "incoming settlements list failed");
+            error!(obp_host = %host_state.host, bank_id = %host_state.bank_id, error = %e, "incoming settlements list failed");
             error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "OBP-BANK-NODE-PLATFORM-001",
@@ -729,14 +897,25 @@ pub async fn list_incoming_settlements(State(state): State<BankNodeState>) -> Re
     }
 }
 
-pub async fn list_evidence(State(state): State<BankNodeState>) -> Response {
-    match state.evidence.list(LIST_LIMIT).await {
+pub async fn list_evidence(
+    State(state): State<BankNodeState>,
+    Path((obp_host, bank_id)): Path<(String, String)>,
+) -> Response {
+    // This node's bank on the OBP host named in the URL.
+    let host_state = match bank_on_host(&state, &obp_host, &bank_id) {
+        // Found.
+        Ok(host_state) => host_state,
+        // Not this node's bank, or not an OBP host it is on.
+        Err(response) => return response,
+    };
+    // Only the credits this bank received on this OBP host.
+    match state.evidence.list(&host_state.host, &host_state.bank_id, LIST_LIMIT).await {
         Ok(recs) => {
             let body: Vec<_> = recs.into_iter().map(evidence_view).collect();
             Json(body).into_response()
         }
         Err(e) => {
-            error!(bank_id = %state.bank_id, error = %e, "evidence store list failed");
+            error!(obp_host = %host_state.host, bank_id = %host_state.bank_id, error = %e, "evidence store list failed");
             error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "OBP-BANK-NODE-PLATFORM-001",
@@ -748,11 +927,23 @@ pub async fn list_evidence(State(state): State<BankNodeState>) -> Response {
 
 pub async fn get_evidence(
     State(state): State<BankNodeState>,
-    Path(transaction_request_id): Path<String>,
+    Path((obp_host, bank_id, transaction_request_id)): Path<(String, String, String)>,
 ) -> Response {
+    // This node's bank on the OBP host named in the URL.
+    let host_state = match bank_on_host(&state, &obp_host, &bank_id) {
+        // Found.
+        Ok(host_state) => host_state,
+        // Not this node's bank, or not an OBP host it is on.
+        Err(response) => return response,
+    };
     match state.evidence.get(&transaction_request_id).await {
-        Ok(Some(rec)) => Json(evidence_view(rec)).into_response(),
-        Ok(None) => error(
+        // Only a credit this bank received on this OBP host is shown here.
+        Ok(Some(rec)) if rec.obp_host == host_state.host && rec.bank_id == host_state.bank_id => {
+            // The credit.
+            Json(evidence_view(rec)).into_response()
+        }
+        // No such credit, or one received elsewhere.
+        Ok(_) => error(
             StatusCode::NOT_FOUND,
             "OBP-BANK-NODE-NOT-FOUND-001",
             format!("no evidence for transaction request {transaction_request_id}"),
@@ -768,61 +959,107 @@ pub async fn get_evidence(
     }
 }
 
-/// `/obp-bank-node/v5.1.0/status` — configuration and identity detail, read by
-/// the Bank Node apps. Kept separate from `/obp-bank-node/v5.1.0/health`, which
-/// stays minimal and whose shape must basically never change. The root
-/// `/alive`, `/health` and `/status` follow OBP-API's format (`status_page`).
-pub async fn root_status(State(state): State<BankNodeState>) -> Response {
-    // Corridor accounts in sorted order, used twice below.
-    let corridor_accounts: std::collections::BTreeMap<String, String> = state
-        // Start from the configured currency -> account map.
-        .corridor_accounts
-        // Walk each entry.
+/// Each OBP host the node is on, with the node's bank there, as `/status` and `/obp-bank-node/v5.1.0/hosts` report it.
+fn host_views(state: &BankNodeState) -> Vec<HostView> {
+    // One view per configured OBP host, in config order.
+    state
+        .hosts
         .iter()
-        // Copy the currency and the account id.
-        .map(|(c, a)| (c.clone(), a.clone()))
-        // Collect into a sorted map.
-        .collect();
-    // Interface C state, reported per instance.
-    let (interface_c, _detail) = state.interface_c.snapshot();
+        .map(|host_state| {
+            // Interface C state on this OBP host.
+            let (interface_c, interface_c_detail) = host_state.interface_c.snapshot();
+            // The view.
+            HostView {
+                // The OBP host.
+                host: host_state.host.clone(),
+                // Its OBP-API base URL.
+                obp_api_url: host_state.obp_api_url.clone(),
+                // This bank's id there.
+                bank_id: host_state.bank_id.clone(),
+                // Its shorthand account there.
+                account_id: host_state.account_id.clone(),
+                // Its corridor accounts there, sorted so the JSON is stable.
+                corridor_accounts: host_state
+                    .corridor_accounts
+                    .iter()
+                    .map(|(currency, account)| (currency.clone(), account.clone()))
+                    .collect(),
+                // Its Interface C state.
+                interface_c,
+                // Why Interface C is not connected, when it is not.
+                interface_c_detail,
+            }
+        })
+        .collect()
+}
+
+/// `GET /obp-bank-node/v5.1.0/hosts` — the OBP hosts this node is on, with its bank on each. The URLs of everything else name one of these: `/obp-bank-node/v5.1.0/hosts/HOST/banks/BANK_ID/...`.
+pub async fn list_hosts(State(state): State<BankNodeState>) -> Response {
+    // The node's OBP hosts.
+    Json(HostsBody { hosts: host_views(&state) }).into_response()
+}
+
+/// `/obp-bank-node/v5.1.0/status` — configuration and identity detail, read by the Bank Node apps. Kept separate from `/obp-bank-node/v5.1.0/health`, which stays minimal. The root `/alive`, `/health` and `/status` follow OBP-API's format (`status_page`).
+pub async fn root_status(State(state): State<BankNodeState>) -> Response {
     Json(StatusBody {
         service: "OBP-Bank-Node",
+        // The node's name.
+        name: state.name.clone(),
         version: env!("CARGO_PKG_VERSION"),
-        bank_id: state.bank_id.clone(),
-        account_id: state.account_id.clone(),
-        // BTreeMap: deterministic (sorted) key order in the JSON.
-        corridor_accounts: corridor_accounts.clone(),
         blockchain: state.blockchain_label,
         finality_depth: state.finality_depth,
-        // The one instance this node is connected to today.
-        instances: vec![InstanceView {
-            // The instance's name.
-            name: state.obp_api_name.clone(),
-            // Its OBP-API base URL.
-            obp_api_url: state.obp_api_url.clone(),
-            // This bank's id there.
-            bank_id: state.bank_id.clone(),
-            // Its shorthand account there.
-            account_id: state.account_id.clone(),
-            // Its corridor accounts there.
-            corridor_accounts,
-            // Its Interface C state.
-            interface_c,
-        }],
+        // Each OBP host the node is on, with its bank there.
+        hosts: host_views(&state),
         timestamp: Utc::now(),
     })
     .into_response()
 }
 
+/// Interface C across the node's OBP hosts: `disabled` when it is off on every OBP host, `connected` when every OBP host that has it on is connected, and otherwise the first OBP host's state that is neither, with that OBP host named in the detail.
+fn overall_interface_c(state: &BankNodeState) -> (&'static str, Option<String>) {
+    // Each OBP host's state.
+    let snapshots: Vec<(&str, &'static str, Option<String>)> = state
+        .hosts
+        .iter()
+        .map(|host_state| {
+            // The OBP host's state and detail.
+            let (interface_c, detail) = host_state.interface_c.snapshot();
+            // Keep the OBP host's name with it.
+            (host_state.host.as_str(), interface_c, detail)
+        })
+        .collect();
+    // An OBP host whose consumer is neither connected nor deliberately off.
+    if let Some((obp_host, interface_c, detail)) = snapshots
+        .iter()
+        .find(|(_, interface_c, _)| !matches!(*interface_c, "connected" | "disabled"))
+    {
+        // Name the OBP host, and add its detail when there is one.
+        let detail = match detail {
+            // The detail the consumer gave.
+            Some(detail) => format!("OBP host {obp_host}: {detail}"),
+            // Just the OBP host.
+            None => format!("OBP host {obp_host}"),
+        };
+        // That OBP host's state stands for the node.
+        return (interface_c, Some(detail));
+    }
+    // Off everywhere.
+    if snapshots.iter().all(|(_, interface_c, _)| *interface_c == "disabled") {
+        // Nothing to say.
+        return ("disabled", None);
+    }
+    // Every OBP host with it on is connected.
+    ("connected", None)
+}
+
 pub async fn root_health(State(state): State<BankNodeState>) -> Response {
-    let (interface_c, interface_c_detail) = state.interface_c.snapshot();
+    // Interface C across the node's OBP hosts.
+    let (interface_c, interface_c_detail) = overall_interface_c(&state);
     Json(HealthBody {
         status: "healthy",
         service: "OBP-Bank-Node",
         version: env!("CARGO_PKG_VERSION"),
         blockchain: state.blockchain_label,
-        bank_id: state.bank_id.clone(),
-        account_id: state.account_id.clone(),
         interface_c,
         interface_c_detail,
         timestamp: Utc::now(),

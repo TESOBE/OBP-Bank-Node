@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
 
-//! The `/setup` operator page: reconcile a running OBP-API instance against
+//! The `/setup` operator page: reconcile a running OBP host against
 //! the app config's declarative `setup` block.
 //!
 //! Every desired item (routing scheme, bank, account, FX rate, broker
@@ -11,7 +11,7 @@
 //! effects — plus an explicit apply action that mirrors what
 //! `dev/setup_obp.sh` sends. Applies are idempotent: "already exists"
 //! responses (OBP-30515 schemes, OBP-30216 entitlements, existing accounts)
-//! count as success, so re-applying a converged instance is a no-op.
+//! count as success, so re-applying a converged OBP host is a no-op.
 //!
 //! The page acts as the logged-in administrator (see `oidc.rs`) with that
 //! user's entitlements — there is no service credential. It never creates
@@ -362,6 +362,11 @@ async fn me(State(state): State<SetupState>, headers: HeaderMap) -> Response {
 
 /// Admin roles the configured applies will need, derived from the setup
 /// block: `(bank_id, role)` with empty bank_id for system roles.
+/// The bank attribute that marks a bank as an Open Corridor participant.
+/// getBanks lists every bank on the OBP host; callers keep the ones that
+/// carry this attribute with the value `true`.
+pub const PARTICIPANT_ATTRIBUTE: &str = "OPEN_CORRIDOR_PARTICIPANT";
+
 fn required_admin_roles(setup: &SetupConfig) -> Vec<(String, String)> {
     let mut roles = Vec::new();
     if !setup.routing_schemes.is_empty() {
@@ -369,6 +374,8 @@ fn required_admin_roles(setup: &SetupConfig) -> Vec<(String, String)> {
     }
     if let Some(bank) = &setup.bank {
         roles.push((String::new(), "CanCreateBank".to_string()));
+        // Marking the bank as an Open Corridor participant.
+        roles.push((bank.id.clone(), "CanCreateBankAttribute".to_string()));
         if !bank.accounts.is_empty() {
             roles.push((bank.id.clone(), "CanCreateAccount".to_string()));
             // The account checks read the bank's account directory.
@@ -578,21 +585,22 @@ async fn status(State(state): State<SetupState>, headers: HeaderMap) -> Response
     // role grants at it.
     if let Some(bank) = &setup.bank {
         let b = &bank.id;
-        let (status_str, detail) = match state
+        // One read of the bank answers both the bank check and the participant check.
+        let bank_read = state
             .obp(
                 Method::GET,
                 &format!("/obp/v5.1.0/banks/{b}"),
                 Some(&token),
                 None,
             )
-            .await
-        {
+            .await;
+        let (status_str, detail) = match &bank_read {
             Ok((status, body)) => classify(
-                status,
-                &body,
+                *status,
+                body,
                 format!("{}", body["full_name"].as_str().unwrap_or("")),
             ),
-            Err(e) => ("error", e),
+            Err(e) => ("error", e.clone()),
         };
         items.push(item(
             format!("bank:{b}"),
@@ -601,6 +609,43 @@ async fn status(State(state): State<SetupState>, headers: HeaderMap) -> Response
             status_str,
             detail,
             ("", "CanCreateBank"),
+        ));
+
+        // The bank is marked as an Open Corridor participant, so that getBanks
+        // callers (the Bank Node UI's bank pickers) can tell it apart from
+        // banks on the OBP host that are not in the corridor.
+        let (status_str, detail) = match &bank_read {
+            // The bank exists: look for the attribute among its active attributes.
+            Ok((status, body)) if status.is_success() => {
+                // True when the bank carries OPEN_CORRIDOR_PARTICIPANT = true.
+                let marked = body["attributes"].as_array().is_some_and(|list| {
+                    // Any attribute with that name and the value true.
+                    list.iter().any(|attribute| {
+                        // Same name.
+                        attribute["name"].as_str() == Some(PARTICIPANT_ATTRIBUTE)
+                            // And the value true, in any letter case.
+                            && attribute["value"].as_str().is_some_and(|v| v.eq_ignore_ascii_case("true"))
+                    })
+                });
+                // Report what was found.
+                if marked {
+                    ("ok", format!("{PARTICIPANT_ATTRIBUTE} = true"))
+                } else {
+                    ("missing", format!("no {PARTICIPANT_ATTRIBUTE} attribute"))
+                }
+            }
+            // The bank itself is missing: create it first.
+            Ok(_) => ("missing", "create the bank first".to_string()),
+            // OBP-API did not answer.
+            Err(e) => ("error", e.clone()),
+        };
+        items.push(item(
+            format!("participant:{b}"),
+            "banks",
+            format!("Bank {b} is an Open Corridor participant"),
+            status_str,
+            detail,
+            (b.as_str(), "CanCreateBankAttribute"),
         ));
 
         // One directory listing answers every account check. The per-account
@@ -1025,7 +1070,7 @@ fn consumer_missing(node: &SetupNode) -> String {
 }
 
 /// The consumer_id of the Consumer named `name`, which differs on every
-/// OBP-API instance. `Ok(None)` when there is no such Consumer.
+/// OBP host. `Ok(None)` when there is no such Consumer.
 async fn find_consumer(state: &SetupState, token: &str, name: &str) -> Result<Option<String>, String> {
     let (status, body) = state
         .obp(
@@ -1396,7 +1441,30 @@ async fn apply(
                     )
                     .await
             }
-            None => Err(format!("{bank_id} is not this instance's bank")),
+            None => Err(format!("{bank_id} is not this app's bank")),
+        },
+        // Mark the own bank as an Open Corridor participant.
+        Some(("participant", bank_id)) => match setup.bank.as_ref().filter(|b| b.id == bank_id) {
+            // Only the bank this app sets up.
+            Some(bank) => {
+                state
+                    .obp(
+                        // Create Bank Attribute (defined in v4.0.0, called at v5.1.0).
+                        Method::POST,
+                        &format!("/obp/v5.1.0/banks/{}/attribute", bank.id),
+                        Some(&token),
+                        // An active BOOLEAN attribute set to true.
+                        Some(&json!({
+                            "name": PARTICIPANT_ATTRIBUTE,
+                            "type": "BOOLEAN",
+                            "value": "true",
+                            "is_active": true,
+                        })),
+                    )
+                    .await
+            }
+            // Any other bank is refused.
+            None => Err(format!("{bank_id} is not this app's bank")),
         },
         Some(("account", rest)) => match rest.split_once('/') {
             Some((bank_id, account_id)) => {

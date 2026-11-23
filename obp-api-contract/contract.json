@@ -53,21 +53,34 @@
     "\"/obp/v5.1.0/banks/{b}\""
    ],
    "reads": [
-    "full_name"
+    "full_name",
+    "attributes[].name",
+    "attributes[].value"
    ]
   },
   {
+   "verb": "POST",
+   "path": "/obp/v5.1.0/banks/BANK_ID/attribute",
+   "source": "crates/obp-bank-node-ui/src/setup.rs",
+   "needles": [
+    "&format!(\"/obp/v5.1.0/banks/{}/attribute\", bank.id)"
+   ],
+   "reads": []
+  },
+  {
    "verb": "GET",
-   "path": "/obp/v5.1.0/banks",
+   "path": "/obp/v6.0.0/banks",
    "source": "crates/obp-bank-node/src/obp_client.rs",
    "needles": [
-    "\"{}/obp/v5.1.0/banks\""
+    "\"{}/obp/v6.0.0/banks\""
    ],
    "reads": [
-    "banks[].id",
+    "banks[].bank_id",
     "banks[].full_name",
     "banks[].bank_routings[].scheme",
-    "banks[].bank_routings[].address"
+    "banks[].bank_routings[].address",
+    "banks[].attributes[].name",
+    "banks[].attributes[].value"
    ]
   },
   {

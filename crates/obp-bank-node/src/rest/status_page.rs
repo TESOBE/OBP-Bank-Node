@@ -75,7 +75,8 @@ pub struct ReadyReport {
 pub async fn ready(State(state): State<BankNodeState>) -> Response {
     let (database, obp_api, blockchain) = tokio::join!(
         check_database(&state),
-        check_obp_api(&state.obp_api_url),
+        // Every OBP host's OBP-API.
+        check_obp_apis(&state),
         check_blockchain(state.blockchain_label, state.chain_health_url.as_deref()),
     );
     let checks = ReadyChecks { database, obp_api, blockchain };
@@ -132,9 +133,12 @@ impl Checks {
 pub struct StatusReport {
     pub status: &'static str,
     pub service: &'static str,
+    /// The node's name, from its config.
+    pub name: String,
     pub version: &'static str,
     pub instance_id: String,
-    pub bank_id: String,
+    /// The OBP hosts the node is on, with its bank on each.
+    pub hosts: Vec<StatusHost>,
     pub git_commit: &'static str,
     pub git_branch: &'static str,
     pub git_dirty: bool,
@@ -148,6 +152,15 @@ pub struct StatusReport {
     /// paid but never seen arriving (MISMATCH), or netted long ago with the
     /// debtor yet to pay.
     pub incoming_settlements: Check,
+}
+
+/// One OBP host on the status page, and the node's bank there.
+#[derive(Debug, Serialize)]
+pub struct StatusHost {
+    /// The OBP host.
+    pub host: String,
+    /// This node's bank on it.
+    pub bank_id: String,
 }
 
 /// A NETTED incoming settlement older than this is worth a look: the debtor's
@@ -172,8 +185,10 @@ pub async fn status(State(state): State<BankNodeState>, headers: HeaderMap) -> R
 pub async fn run_checks(state: &BankNodeState) -> StatusReport {
     let (database, obp_api, open_corridor, blockchain, outbox, incoming_settlements) = tokio::join!(
         check_database(state),
-        check_obp_api(&state.obp_api_url),
-        check_open_corridor(&state.obp_api_url, &state.bank_id),
+        // Every OBP host's OBP-API.
+        check_obp_apis(state),
+        // Open Corridor switched on at every OBP host.
+        check_open_corridors(state),
         check_blockchain(state.blockchain_label, state.chain_health_url.as_deref()),
         check_outbox(state),
         check_incoming(state),
@@ -188,9 +203,21 @@ pub async fn run_checks(state: &BankNodeState) -> StatusReport {
     StatusReport {
         status: if checks.all_ok() { "ok" } else { "degraded" },
         service: "OBP-Bank-Node",
+        // The node's name.
+        name: state.name.clone(),
         version: env!("CARGO_PKG_VERSION"),
         instance_id: state.instance_id.clone(),
-        bank_id: state.bank_id.clone(),
+        // Each OBP host and the node's bank there.
+        hosts: state
+            .hosts
+            .iter()
+            .map(|host_state| StatusHost {
+                // The OBP host.
+                host: host_state.host.clone(),
+                // The node's bank there.
+                bank_id: host_state.bank_id.clone(),
+            })
+            .collect(),
         git_commit: env!("OBP_BANK_NODE_GIT_COMMIT"),
         git_branch: env!("OBP_BANK_NODE_GIT_BRANCH"),
         git_dirty: env!("OBP_BANK_NODE_GIT_DIRTY") == "true",
@@ -206,18 +233,13 @@ async fn check_incoming(state: &BankNodeState) -> Check {
     let cutoff = (chrono::Utc::now() - chrono::Duration::from_std(NETTED_STALE_AFTER).unwrap_or_default())
         .to_rfc3339();
     match state.settlements.incoming_attention(&cutoff).await {
-        Ok(a) if a.mismatch == 0 && a.stale_netted == 0 => {
-            match state.settlements.list_incoming(1).await {
-                Ok(rows) if rows.is_empty() => Check::ok("no incoming settlements"),
-                Ok(_) => Check::ok("none need attention"),
-                Err(e) => Check::fail(e.to_string()),
-            }
-        }
+        // Nothing to look at.
+        Ok(a) if a.mismatch == 0 && a.stale_netted == 0 => Check::ok("none need attention"),
         Ok(a) => {
             let hours = NETTED_STALE_AFTER.as_secs() / 3600;
             Check::warn(format!(
                 "MISMATCH {} (reported paid, nothing arrived), NETTED for more than {hours} h {} — \
-                 see /obp-bank-node/v5.1.0/incoming-settlements; ids: {}",
+                 see /obp-bank-node/v5.1.0/hosts/HOST/banks/BANK_ID/incoming-settlements; ids: {}",
                 a.mismatch,
                 a.stale_netted,
                 a.ids.join(", ")
@@ -242,6 +264,63 @@ async fn check_database(state: &BankNodeState) -> Check {
     } else {
         Check::fail(failed.join("; "))
     }
+}
+
+/// Combine one check per OBP host into one: the worst status (fail, then warn, then ok; `disabled` only when every OBP host is disabled), with each OBP host's detail.
+fn combine_per_host(per_host: Vec<(String, Check)>) -> Check {
+    // How bad a status is: the higher, the worse.
+    fn rank(status: &str) -> u8 {
+        // Order the statuses.
+        match status {
+            // A fault.
+            "fail" => 3,
+            // Worth a look.
+            "warn" => 2,
+            // Fine.
+            "ok" => 1,
+            // Switched off on purpose.
+            _ => 0,
+        }
+    }
+    // The worst status among the OBP hosts; `disabled` when there are none.
+    let status = per_host
+        .iter()
+        .map(|(_, check)| check.status)
+        .max_by_key(|status| rank(status))
+        .unwrap_or("disabled");
+    // Each OBP host's detail, named.
+    let detail = per_host
+        .iter()
+        .map(|(obp_host, check)| format!("{obp_host}: {}", check.detail))
+        .collect::<Vec<_>>()
+        .join("; ");
+    // One check for the node.
+    Check { status, detail }
+}
+
+/// OBP-API answering, at every OBP host the node is on.
+async fn check_obp_apis(state: &BankNodeState) -> Check {
+    // Check each OBP host's OBP-API, all at once.
+    let checks = futures_util::future::join_all(
+        state.hosts.iter().map(|host_state| check_obp_api(&host_state.obp_api_url)),
+    )
+    .await;
+    // Pair each check with its OBP host, and combine them.
+    combine_per_host(state.hosts.iter().map(|host_state| host_state.host.clone()).zip(checks).collect())
+}
+
+/// Open Corridor switched on, at every OBP host the node is on, for the node's bank there.
+async fn check_open_corridors(state: &BankNodeState) -> Check {
+    // Check each OBP host, all at once.
+    let checks = futures_util::future::join_all(
+        state
+            .hosts
+            .iter()
+            .map(|host_state| check_open_corridor(&host_state.obp_api_url, &host_state.bank_id)),
+    )
+    .await;
+    // Pair each check with its OBP host, and combine them.
+    combine_per_host(state.hosts.iter().map(|host_state| host_state.host.clone()).zip(checks).collect())
 }
 
 async fn check_obp_api(base_url: &str) -> Check {
@@ -322,8 +401,21 @@ async fn check_blockchain(label: &str, health_url: Option<&str>) -> Check {
     }
 }
 
+/// Interface C at every OBP host the node is on.
 fn check_interface_c(state: &BankNodeState) -> Check {
-    match state.interface_c.snapshot() {
+    // One check per OBP host, combined.
+    combine_per_host(
+        state
+            .hosts
+            .iter()
+            .map(|host_state| (host_state.host.clone(), check_one_interface_c(&host_state.interface_c)))
+            .collect(),
+    )
+}
+
+/// Interface C at one OBP host.
+fn check_one_interface_c(interface_c: &crate::interface_c::consumer::ConsumerStatus) -> Check {
+    match interface_c.snapshot() {
         ("connected", _) => Check::ok("consuming from RabbitMQ"),
         ("disabled", _) => Check {
             status: "disabled",
@@ -418,7 +510,7 @@ fn html(r: &StatusReport) -> String {
         r#"<!DOCTYPE html>
 <html>
 <head>
-  <title>OBP Bank Node - Status</title>
+  <title>{name} - OBP Bank Node Status</title>
   <style>
     body {{ font-family: sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; }}
     h1 {{ color: #333; }}
@@ -429,12 +521,13 @@ fn html(r: &StatusReport) -> String {
   </style>
 </head>
 <body>
-  <h1>OBP Bank Node Status: <span style="color: {overall_color};">{status}</span></h1>
+  <h1>{name} &middot; OBP Bank Node Status: <span style="color: {overall_color};">{status}</span></h1>
 
   <h2>Instance</h2>
   <table>
+    <tr><th>name</th><td>{name}</td></tr>
     <tr><th>instance_id</th><td>{instance_id}</td></tr>
-    <tr><th>bank_id</th><td>{bank_id}</td></tr>
+    <tr><th>OBP hosts</th><td>{hosts}</td></tr>
     <tr><th>version</th><td>{version}</td></tr>
     <tr><th>git_commit</th><td>{git_commit}{dirty}</td></tr>
     <tr><th>git_branch</th><td>{git_branch}</td></tr>
@@ -452,8 +545,16 @@ fn html(r: &StatusReport) -> String {
 </body>
 </html>"#,
         status = esc(r.status),
+        // The node's name, in the title, heading and table.
+        name = esc(&r.name),
         instance_id = esc(&r.instance_id),
-        bank_id = esc(&r.bank_id),
+        // Each OBP host with the node's bank there.
+        hosts = r
+            .hosts
+            .iter()
+            .map(|status_host| format!("{} (bank {})", esc(&status_host.host), esc(&status_host.bank_id)))
+            .collect::<Vec<_>>()
+            .join("<br>"),
         version = esc(r.version),
         git_commit = esc(r.git_commit),
         git_branch = esc(r.git_branch),

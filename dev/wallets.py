@@ -7,7 +7,7 @@
     python3 dev/wallets.py              # create missing keys, print addresses, request test ADA
     python3 dev/wallets.py --balance    # show each wallet's balance (Koios, works while Ogmios syncs)
 
-Reads `wallet_skey_path` from dev/node-a.yaml and dev/node-b.yaml. A key that already exists is
+Reads `wallet_skey_path` from dev/node-a.yaml, dev/node-b.yaml and dev/node-c.yaml. A key that already exists is
 never overwritten. A new key is what `cardano-cli address key-gen` writes (a 32-byte Ed25519 seed
 in a JSON envelope), and the address is the enterprise address the node derives from it
 (crates/obp-blockchain/src/cardano/wallet.rs).
@@ -29,7 +29,7 @@ from pathlib import Path
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 REPO = Path(__file__).resolve().parent.parent
-NODE_CONFIGS = ["dev/node-a.yaml", "dev/node-b.yaml"]
+NODE_CONFIGS = ["dev/node-a.yaml", "dev/node-b.yaml", "dev/node-c.yaml"]
 FAUCET_PAGE = "https://docs.cardano.org/cardano-testnets/tools/faucet"
 FAUCET_API = "https://faucet.preprod.world.dev.cardano.org/send-money/{address}?api_key={key}"
 KOIOS_ADDRESS_INFO = "https://preprod.koios.rest/api/v1/address_info"

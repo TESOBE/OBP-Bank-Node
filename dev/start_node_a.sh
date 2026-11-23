@@ -17,7 +17,6 @@ REPO="$(cd "$DIR/.." && pwd)"
 [ -n "${NODE_A_CLIENT_ID:-}" ] && [ -n "${NODE_A_CLIENT_SECRET:-}" ] \
   || { echo "FATAL: no NODE_A_CLIENT_ID / NODE_A_CLIENT_SECRET in dev/local.env: run dev/create_consumers.sh" >&2; exit 1; }
 cd "$REPO"
-exec env OBP_BANK_NODE_CONFIG=dev/node-a.yaml \
-    OBP_BN_OBP_API__CLIENT_ID="$NODE_A_CLIENT_ID" \
-    OBP_BN_OBP_API__CLIENT_SECRET="$NODE_A_CLIENT_SECRET" \
-    cargo run -p obp-bank-node
+# dev/node-a.yaml names these variables (client_id_env, client_secret_env); the node reads its login from them.
+export NODE_A_CLIENT_ID NODE_A_CLIENT_SECRET
+exec env OBP_BANK_NODE_CONFIG=dev/node-a.yaml cargo run -p obp-bank-node

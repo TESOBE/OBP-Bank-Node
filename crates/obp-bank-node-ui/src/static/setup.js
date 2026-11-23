@@ -89,7 +89,7 @@ function renderItems() {
 }
 
 // A copy-pasteable machine-readable snapshot for handing to an agent working
-// on the Bank Node or this app: the full status body plus the app instance's
+// on the Bank Node or this app: the full status body plus this app's
 // node topology and health, read through the existing proxy.
 async function renderStatusJson() {
   if (!LAST_STATUS) return;
@@ -108,6 +108,34 @@ async function renderStatusJson() {
   $("#status-json").textContent = JSON.stringify(snapshot, null, 2);
 }
 
+// The OBP host of an OBP-API base URL: its host and port, as the nodes name OBP hosts.
+function obpHostOf(baseUrl) {
+  try { return new URL(baseUrl).host; } catch { return baseUrl || ""; }
+}
+
+// Which OBP host this page sets up, and the OBP hosts each node of this UI is on (from the node's /status). A node on several OBP hosts (a hub) is set up on each one separately: this page only covers its own.
+async function renderSetupHosts(obpApiBaseUrl) {
+  const el = $("#setup-hosts");
+  if (!el) return;
+  const thisHost = obpHostOf(obpApiBaseUrl);
+  const nodesResp = await getJson("/api/nodes");
+  const nodes = nodesResp.ok && Array.isArray(nodesResp.body) ? nodesResp.body : [];
+  const nodeLines = await Promise.all(nodes.map(async (node) => {
+    const statusResp = await getJson(`/api/nodes/${encodeURIComponent(node.name)}/status`);
+    const hosts = statusResp.ok && Array.isArray(statusResp.body?.hosts) ? statusResp.body.hosts : null;
+    // The node's own name, from its /status, or this UI's name for it while it is not answering.
+    const displayName = statusResp.body?.name || node.name;
+    if (!hosts) return `${esc(displayName)}: not answering, so its OBP hosts are not known`;
+    const hostList = hosts.map((hostEntry) => {
+      const mark = hostEntry.host === thisHost ? " (this page)" : " (set up elsewhere)";
+      return `${esc(hostEntry.host)}, bank ${esc(hostEntry.bank_id)}${mark}`;
+    }).join("; ");
+    return `${esc(displayName)} is on ${hosts.length === 1 ? "OBP host" : "OBP hosts"} ${hostList}`;
+  }));
+  el.innerHTML = `This page sets up OBP host <strong>${esc(thisHost)}</strong> (OBP-API ${esc(obpApiBaseUrl)}).`
+    + (nodeLines.length ? `<br>${nodeLines.join("<br>")}` : "");
+}
+
 async function refresh() {
   const r = await getJson("/api/setup/status");
   if (r.status === 401) return showLoggedOut();
@@ -118,7 +146,7 @@ async function refresh() {
   }
   LAST_STATUS = r.body;
   ITEMS = Array.isArray(r.body.items) ? r.body.items : [];
-  // One app instance = one bank: test accounts go to the own bank.
+  // One app = one bank: test accounts go to the own bank.
   if (r.body.bank) {
     const bankField = $("#test-account-form").elements.namedItem("bank_id");
     bankField.value = r.body.bank;
@@ -129,6 +157,7 @@ async function refresh() {
     ? `logged in as ${r.body.me.username}`
     : `OBP-API unreachable: ${api.detail || ""}`;
   renderItems();
+  await renderSetupHosts(r.body.obp_api?.base_url || "");
   await renderStatusJson();
 }
 

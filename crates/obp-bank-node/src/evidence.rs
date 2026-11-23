@@ -27,6 +27,10 @@ use crate::outbox::OutboxError;
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct EvidenceRecord {
     pub transaction_request_id: String,
+    /// The OBP host the credit notification came from. Empty on rows written before the node could be on several OBP hosts.
+    pub obp_host: String,
+    /// This node's bank on that OBP host: the beneficiary bank. Empty on rows written before.
+    pub bank_id: String,
     /// Hex SHA-256 commitment Bank A wrote on-chain.
     pub promise_commitment: String,
     /// The salt — held off Bank A so Bank B can open the commitment unaided.
@@ -52,6 +56,10 @@ pub struct EvidenceRecord {
     /// Set when this credit was CBS-rejected and a return promise was
     /// initiated: the return's transaction_request_id.
     pub returned_by_transaction_request_id: Option<String>,
+    /// Set when this bank is a hub and carried this credit on to a bank on another OBP host, instead of crediting a customer: the second leg's transaction_request_id.
+    pub forwarded_as_transaction_request_id: Option<String>,
+    /// The OBP host the second leg was made on.
+    pub forwarded_on_obp_host: Option<String>,
     /// The full credit-notification JSON, kept verbatim for audit.
     pub raw_message: String,
     pub received_at: String,
@@ -70,6 +78,10 @@ pub struct EvidenceRecord {
 /// Fields to record a newly-received credit notification.
 pub struct NewEvidence<'a> {
     pub transaction_request_id: &'a str,
+    /// The OBP host the credit notification came from.
+    pub obp_host: &'a str,
+    /// This node's bank on that OBP host.
+    pub bank_id: &'a str,
     pub promise_commitment: &'a str,
     pub promise_salt: &'a str,
     pub promise_preimage: &'a str,
@@ -132,6 +144,8 @@ impl EvidenceStore {
             r#"
             CREATE TABLE IF NOT EXISTS evidence (
                 transaction_request_id TEXT PRIMARY KEY,
+                obp_host               TEXT NOT NULL DEFAULT '',
+                bank_id                TEXT NOT NULL DEFAULT '',
                 promise_commitment     TEXT NOT NULL,
                 promise_salt           TEXT NOT NULL,
                 promise_preimage       TEXT NOT NULL,
@@ -146,6 +160,8 @@ impl EvidenceStore {
                 beneficiary_account_routing_address TEXT,
                 return_of_transaction_request_id    TEXT,
                 returned_by_transaction_request_id  TEXT,
+                forwarded_as_transaction_request_id TEXT,
+                forwarded_on_obp_host               TEXT,
                 raw_message            TEXT NOT NULL,
                 received_at            TEXT NOT NULL,
                 cbs_status             TEXT,
@@ -173,6 +189,10 @@ impl EvidenceStore {
             "beneficiary_account_routing_address TEXT",
             "return_of_transaction_request_id TEXT",
             "returned_by_transaction_request_id TEXT",
+            "forwarded_as_transaction_request_id TEXT",
+            "forwarded_on_obp_host TEXT",
+            "obp_host TEXT NOT NULL DEFAULT ''",
+            "bank_id TEXT NOT NULL DEFAULT ''",
         ] {
             if let Err(e) = sqlx::query(&format!("ALTER TABLE evidence ADD COLUMN {col}"))
                 .execute(pool)
@@ -193,13 +213,15 @@ impl EvidenceStore {
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         sqlx::query(
             "INSERT INTO evidence \
-                (transaction_request_id, promise_commitment, promise_salt, promise_preimage, \
+                (transaction_request_id, obp_host, bank_id, promise_commitment, promise_salt, promise_preimage, \
                  promise_id, promise_blockchain, verified, currency, amount, originator_name, \
                  beneficiary_name, beneficiary_account_routing_scheme, \
                  beneficiary_account_routing_address, return_of_transaction_request_id, \
                  raw_message, received_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(transaction_request_id) DO UPDATE SET \
+                obp_host = excluded.obp_host, \
+                bank_id = excluded.bank_id, \
                 promise_commitment = excluded.promise_commitment, \
                 promise_salt = excluded.promise_salt, \
                 promise_preimage = excluded.promise_preimage, \
@@ -217,6 +239,10 @@ impl EvidenceStore {
                 received_at = excluded.received_at",
         )
         .bind(e.transaction_request_id)
+        // The OBP host the notification came from.
+        .bind(e.obp_host)
+        // This node's bank on it.
+        .bind(e.bank_id)
         .bind(e.promise_commitment)
         .bind(e.promise_salt)
         .bind(e.promise_preimage)
@@ -277,6 +303,29 @@ impl EvidenceStore {
         Ok(())
     }
 
+    /// Record that this credit was carried on to a bank on another OBP host, as the second leg `forwarded_as_transaction_request_id` made on `forwarded_on_obp_host`.
+    pub async fn record_forward(
+        &self,
+        transaction_request_id: &str,
+        forwarded_as_transaction_request_id: &str,
+        forwarded_on_obp_host: &str,
+    ) -> Result<(), OutboxError> {
+        // Stamp the credit's row.
+        sqlx::query(
+            "UPDATE evidence SET forwarded_as_transaction_request_id = ?, forwarded_on_obp_host = ? \
+             WHERE transaction_request_id = ?",
+        )
+        // The second leg.
+        .bind(forwarded_as_transaction_request_id)
+        // Where it was made.
+        .bind(forwarded_on_obp_host)
+        // The credit.
+        .bind(transaction_request_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Stamp the credits covered by a settlement advice. Only unstamped rows
     /// are touched — a redelivered advice preserves the original `settled_at`.
     /// Returns the number of rows stamped.
@@ -312,10 +361,15 @@ impl EvidenceStore {
         Ok(rec)
     }
 
-    pub async fn list(&self, limit: i64) -> Result<Vec<EvidenceRecord>, OutboxError> {
+    /// The credits received by one bank on one OBP host, most recent first.
+    pub async fn list(&self, obp_host: &str, bank_id: &str, limit: i64) -> Result<Vec<EvidenceRecord>, OutboxError> {
         let recs = sqlx::query_as::<_, EvidenceRecord>(
-            "SELECT * FROM evidence ORDER BY received_at DESC LIMIT ?",
+            "SELECT * FROM evidence WHERE obp_host = ? AND bank_id = ? ORDER BY received_at DESC LIMIT ?",
         )
+        // The OBP host to list.
+        .bind(obp_host)
+        // The bank to list.
+        .bind(bank_id)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
@@ -330,6 +384,10 @@ mod tests {
     fn sample(id: &str, verified: bool) -> NewEvidence<'_> {
         NewEvidence {
             transaction_request_id: id,
+            // The OBP host the notification came from.
+            obp_host: "test-host-a:8080",
+            // The node's bank there.
+            bank_id: "ke.01.kcs",
             promise_commitment: "abcd",
             promise_salt: "00112233",
             promise_preimage: "{\"amount\":\"10\"}",
@@ -367,7 +425,10 @@ mod tests {
         store.upsert(sample("tr-2", true)).await.unwrap();
         let rec = store.get("tr-2").await.unwrap().unwrap();
         assert!(rec.verified, "the later delivery's value wins");
-        assert_eq!(store.list(10).await.unwrap().len(), 1, "still one row");
+        // Listed under its OBP host and bank.
+        assert_eq!(store.list("test-host-a:8080", "ke.01.kcs", 10).await.unwrap().len(), 1, "still one row");
+        // Not listed under another OBP host.
+        assert!(store.list("test-host-b:8081", "ke.01.kcs", 10).await.unwrap().is_empty());
     }
 
     #[tokio::test]
