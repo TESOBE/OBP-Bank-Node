@@ -53,6 +53,10 @@ pub mod status {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct SettlementRow {
     pub idempotency_key: String,
+    /// The OBP host the settlement is on. Empty on rows written before the node could be on several OBP hosts.
+    pub obp_host: String,
+    /// This node's bank on that OBP host: the debtor, which pays. Empty on rows written before.
+    pub bank_id: String,
     pub settlement_id: Option<String>,
     pub snapshot_id: Option<String>,
     pub currency: String,
@@ -93,6 +97,10 @@ pub struct SettlementRow {
 /// Fields captured at claim time (from the inbound instruction).
 pub struct NewClaim<'a> {
     pub idempotency_key: &'a str,
+    /// The OBP host the settlement is on.
+    pub obp_host: &'a str,
+    /// This node's bank on that OBP host.
+    pub bank_id: &'a str,
     pub settlement_id: Option<&'a str>,
     pub snapshot_id: Option<&'a str>,
     pub currency: &'a str,
@@ -155,6 +163,8 @@ impl SettlementStore {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS settlements (
                 idempotency_key   TEXT PRIMARY KEY,
+                obp_host          TEXT NOT NULL DEFAULT '',
+                bank_id           TEXT NOT NULL DEFAULT '',
                 settlement_id     TEXT,
                 snapshot_id       TEXT,
                 currency          TEXT NOT NULL,
@@ -192,6 +202,8 @@ impl SettlementStore {
             "record_settled_at TEXT",
             "record_tx_id TEXT",
             "record_blockchain TEXT",
+            "obp_host TEXT NOT NULL DEFAULT ''",
+            "bank_id TEXT NOT NULL DEFAULT ''",
         ] {
             if let Err(e) = sqlx::query(&format!("ALTER TABLE settlements ADD COLUMN {col}"))
                 .execute(pool)
@@ -208,6 +220,8 @@ impl SettlementStore {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS incoming_settlements (
                 settlement_id     TEXT PRIMARY KEY,
+                obp_host          TEXT NOT NULL DEFAULT '',
+                bank_id           TEXT NOT NULL DEFAULT '',
                 debtor_bank_id    TEXT,
                 currency          TEXT,
                 net_amount        TEXT,
@@ -225,13 +239,27 @@ impl SettlementStore {
         )
         .execute(pool)
         .await?;
-        // Migration for rows created before the paid_at column (same guard as above).
-        if let Err(e) = sqlx::query("ALTER TABLE incoming_settlements ADD COLUMN paid_at TEXT")
-            .execute(pool)
-            .await
-        {
-            if !e.to_string().contains("duplicate column name") {
-                return Err(e.into());
+        // Migrations for rows created before the paid_at column, and before the node could be on several OBP hosts (same guard as above).
+        for col in [
+            // When the debtor's node was first seen reporting a payment.
+            "paid_at TEXT",
+            // The OBP host the settlement is on.
+            "obp_host TEXT NOT NULL DEFAULT ''",
+            // This node's bank on that OBP host: the creditor.
+            "bank_id TEXT NOT NULL DEFAULT ''",
+        ] {
+            // Add the column; it may already be there.
+            if let Err(e) = sqlx::query(&format!("ALTER TABLE incoming_settlements ADD COLUMN {col}"))
+                // Run it on the pool.
+                .execute(pool)
+                // Wait for the answer.
+                .await
+            {
+                // A duplicate column means an earlier start already added it.
+                if !e.to_string().contains("duplicate column name") {
+                    // Anything else is a real error.
+                    return Err(e.into());
+                }
             }
         }
 
@@ -269,11 +297,15 @@ impl SettlementStore {
         let now = now();
         let inserted = sqlx::query(
             "INSERT OR IGNORE INTO settlements \
-                (idempotency_key, settlement_id, snapshot_id, currency, net_amount_minor, \
+                (idempotency_key, obp_host, bank_id, settlement_id, snapshot_id, currency, net_amount_minor, \
                  creditor_address, purpose, status, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(c.idempotency_key)
+        // The OBP host the settlement is on.
+        .bind(c.obp_host)
+        // This node's bank on it.
+        .bind(c.bank_id)
         .bind(c.settlement_id)
         .bind(c.snapshot_id)
         .bind(c.currency)
@@ -406,11 +438,17 @@ impl SettlementStore {
     /// Look a settlement up by `idempotency_key` **or** `settlement_id` —
     /// the south-side read API accepts either (they are often the same value;
     /// when they differ, the key wins on a collision because it is the PK).
-    pub async fn find(&self, key: &str) -> Result<Option<SettlementRow>, OutboxError> {
+    /// Only settlements of `bank_id` on `obp_host` are found.
+    pub async fn find(&self, obp_host: &str, bank_id: &str, key: &str) -> Result<Option<SettlementRow>, OutboxError> {
         Ok(sqlx::query_as::<_, SettlementRow>(
-            "SELECT * FROM settlements WHERE idempotency_key = ? OR settlement_id = ? \
+            "SELECT * FROM settlements WHERE obp_host = ? AND bank_id = ? \
+             AND (idempotency_key = ? OR settlement_id = ?) \
              ORDER BY (idempotency_key = ?) DESC LIMIT 1",
         )
+        // The OBP host to look on.
+        .bind(obp_host)
+        // The bank to look for.
+        .bind(bank_id)
         .bind(key)
         .bind(key)
         .bind(key)
@@ -418,11 +456,15 @@ impl SettlementStore {
         .await?)
     }
 
-    /// Most-recent-first listing for the south-side read API.
-    pub async fn list(&self, limit: i64) -> Result<Vec<SettlementRow>, OutboxError> {
+    /// The settlements of one bank on one OBP host, most recent first, for the south-side read API.
+    pub async fn list(&self, obp_host: &str, bank_id: &str, limit: i64) -> Result<Vec<SettlementRow>, OutboxError> {
         Ok(sqlx::query_as::<_, SettlementRow>(
-            "SELECT * FROM settlements ORDER BY created_at DESC LIMIT ?",
+            "SELECT * FROM settlements WHERE obp_host = ? AND bank_id = ? ORDER BY created_at DESC LIMIT ?",
         )
+        // The OBP host to list.
+        .bind(obp_host)
+        // The bank to list.
+        .bind(bank_id)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?)
@@ -457,6 +499,10 @@ pub mod incoming_status {
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
 pub struct IncomingSettlement {
     pub settlement_id: String,
+    /// The OBP host the settlement is on. Empty on rows written before the node could be on several OBP hosts.
+    pub obp_host: String,
+    /// This node's bank on that OBP host: the creditor. Empty on rows written before.
+    pub bank_id: String,
     pub debtor_bank_id: Option<String>,
     pub currency: Option<String>,
     pub net_amount: Option<String>,
@@ -492,8 +538,12 @@ pub struct IncomingUpdate<'a> {
 impl SettlementStore {
     /// Record a settlement advice naming this bank as creditor. Idempotent:
     /// advices are redelivered, and a known settlement keeps its progress.
+    // One argument per column of the advice; a struct would only rename them.
+    #[allow(clippy::too_many_arguments)]
     pub async fn record_incoming(
         &self,
+        obp_host: &str,
+        bank_id: &str,
         settlement_id: &str,
         debtor_bank_id: Option<&str>,
         currency: Option<&str>,
@@ -503,10 +553,14 @@ impl SettlementStore {
         let now = now();
         sqlx::query(
             "INSERT OR IGNORE INTO incoming_settlements \
-                (settlement_id, debtor_bank_id, currency, net_amount, covered_ids, status, \
-                 received_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (settlement_id, obp_host, bank_id, debtor_bank_id, currency, net_amount, covered_ids, status, \
+                 received_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(settlement_id)
+        // The OBP host the advice came from.
+        .bind(obp_host)
+        // This node's bank on it.
+        .bind(bank_id)
         .bind(debtor_bank_id)
         .bind(currency)
         .bind(net_amount)
@@ -519,11 +573,15 @@ impl SettlementStore {
         Ok(())
     }
 
-    /// Most-recent-first listing for the south-side read API.
-    pub async fn list_incoming(&self, limit: i64) -> Result<Vec<IncomingSettlement>, OutboxError> {
+    /// The incoming settlements of one bank on one OBP host, most recent first, for the south-side read API.
+    pub async fn list_incoming(&self, obp_host: &str, bank_id: &str, limit: i64) -> Result<Vec<IncomingSettlement>, OutboxError> {
         Ok(sqlx::query_as::<_, IncomingSettlement>(
-            "SELECT * FROM incoming_settlements ORDER BY received_at DESC LIMIT ?",
+            "SELECT * FROM incoming_settlements WHERE obp_host = ? AND bank_id = ? ORDER BY received_at DESC LIMIT ?",
         )
+        // The OBP host to list.
+        .bind(obp_host)
+        // The bank to list.
+        .bind(bank_id)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?)
@@ -531,10 +589,13 @@ impl SettlementStore {
 
     /// The incoming watcher's worklist: not yet RECEIVED (MISMATCH is
     /// re-checked too: a payment can still deepen or be followed by more).
-    pub async fn list_open_incoming(&self) -> Result<Vec<IncomingSettlement>, OutboxError> {
+    /// Only the settlements on `obp_host`: each OBP host has its own watcher.
+    pub async fn list_open_incoming(&self, obp_host: &str) -> Result<Vec<IncomingSettlement>, OutboxError> {
         Ok(sqlx::query_as::<_, IncomingSettlement>(
-            "SELECT * FROM incoming_settlements WHERE status != ? ORDER BY received_at ASC LIMIT 100",
+            "SELECT * FROM incoming_settlements WHERE obp_host = ? AND status != ? ORDER BY received_at ASC LIMIT 100",
         )
+        // The OBP host this watcher serves.
+        .bind(obp_host)
         .bind(incoming_status::RECEIVED)
         .fetch_all(&self.pool)
         .await?)
@@ -657,10 +718,11 @@ mod incoming_tests {
     #[tokio::test]
     async fn incoming_settlement_moves_from_netted_to_received() {
         let s = SettlementStore::connect_in_memory().await.unwrap();
-        s.record_incoming("set-1", Some("rt.bank.a"), Some("KES"), Some("1530.00"), &["tr-1".into()])
+        // An advice on OBP host A naming bank rt.bank.b as creditor.
+        s.record_incoming("test-host-a:8080", "rt.bank.b", "set-1", Some("rt.bank.a"), Some("KES"), Some("1530.00"), &["tr-1".into()])
             .await
             .unwrap();
-        assert_eq!(s.list_open_incoming().await.unwrap().len(), 1);
+        assert_eq!(s.list_open_incoming("test-host-a:8080").await.unwrap().len(), 1);
 
         let base = IncomingUpdate {
             status: incoming_status::PAID,
@@ -683,12 +745,12 @@ mod incoming_tests {
         .await
         .unwrap();
 
-        let row = &s.list_incoming(10).await.unwrap()[0];
+        let row = &s.list_incoming("test-host-a:8080", "rt.bank.b", 10).await.unwrap()[0];
         assert_eq!(row.status, incoming_status::RECEIVED);
         assert_eq!(row.tx_id.as_deref(), Some("tx-9"), "a later update without tx id keeps it");
         assert_eq!(row.received_amount.as_deref(), Some("61943319"));
         assert_eq!(row.depth, 15);
-        assert!(s.list_open_incoming().await.unwrap().is_empty());
+        assert!(s.list_open_incoming("test-host-a:8080").await.unwrap().is_empty());
     }
 }
 
@@ -791,6 +853,10 @@ mod tests {
     fn claim_fields(key: &str) -> NewClaim<'_> {
         NewClaim {
             idempotency_key: key,
+            // The OBP host the settlement is on.
+            obp_host: "test-host-a:8080",
+            // The paying bank there.
+            bank_id: "rt.bank.a",
             settlement_id: Some("settle-1"),
             snapshot_id: None,
             currency: "KES",
@@ -881,14 +947,14 @@ mod tests {
         s.claim(claim_fields("key-1")).await.unwrap(); // settlement_id = "settle-1"
 
         assert_eq!(
-            s.find("key-1").await.unwrap().unwrap().idempotency_key,
+            s.find("test-host-a:8080", "rt.bank.a", "key-1").await.unwrap().unwrap().idempotency_key,
             "key-1"
         );
         assert_eq!(
-            s.find("settle-1").await.unwrap().unwrap().idempotency_key,
+            s.find("test-host-a:8080", "rt.bank.a", "settle-1").await.unwrap().unwrap().idempotency_key,
             "key-1"
         );
-        assert!(s.find("nope").await.unwrap().is_none());
+        assert!(s.find("test-host-a:8080", "rt.bank.a", "nope").await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -897,9 +963,9 @@ mod tests {
         for k in ["a", "b", "c"] {
             s.claim(claim_fields(k)).await.unwrap();
         }
-        let all = s.list(10).await.unwrap();
+        let all = s.list("test-host-a:8080", "rt.bank.a", 10).await.unwrap();
         assert_eq!(all.len(), 3);
-        assert_eq!(s.list(2).await.unwrap().len(), 2);
+        assert_eq!(s.list("test-host-a:8080", "rt.bank.a", 2).await.unwrap().len(), 2);
     }
 
     #[tokio::test]
@@ -926,6 +992,10 @@ mod tests {
         for key in ["f1", "f2", "sub"] {
             s.claim(NewClaim {
                 idempotency_key: key,
+                // The OBP host the settlement is on.
+                obp_host: "test-host-a:8080",
+                // The paying bank there.
+                bank_id: "rt.bank.a",
                 settlement_id: Some("set"),
                 snapshot_id: None,
                 currency: "KES",

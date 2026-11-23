@@ -34,7 +34,41 @@ pub struct SettlementService {
     pub finality_depth: u32,
 }
 
+/// Another OBP host the node is on, as a hub needs it to carry a payment on: where to look the final bank up, and the node's bank and corridor accounts there.
+pub struct ForwardTarget {
+    /// The OBP host.
+    pub obp_host: String,
+    /// The node's bank there, which makes the second leg.
+    pub bank_id: String,
+    /// The single-currency shorthand corridor account there.
+    pub account_id: String,
+    /// Currency (upper case) to corridor account there. Empty means every currency sends from `account_id`.
+    pub corridor_accounts: std::collections::HashMap<String, String>,
+    /// That OBP host's OBP-API client, to list its banks.
+    pub obp: Arc<crate::obp_client::ObpClient>,
+}
+
+impl ForwardTarget {
+    /// The corridor account that sends `currency` on this OBP host, if there is one.
+    fn corridor_account_for(&self, currency: &str) -> Option<&str> {
+        // No per-currency accounts: the shorthand account sends everything.
+        if self.corridor_accounts.is_empty() {
+            // The shorthand account.
+            Some(&self.account_id)
+        } else {
+            // The account for this currency, if any.
+            self.corridor_accounts.get(currency.trim().to_uppercase().as_str()).map(String::as_str)
+        }
+    }
+}
+
+/// Every OBP host the node is on, filled in once all of them are set up. Each router uses the ones other than its own.
+pub type ForwardTargets = Arc<std::sync::OnceLock<Vec<ForwardTarget>>>;
+
 pub struct Router {
+    /// The OBP host whose messages this router handles: the node has one router per OBP host it is on.
+    pub obp_host: String,
+    /// This node's bank on that OBP host.
     pub bank_id: String,
     /// This node's corridor account — the institutional originator of return
     /// promises.
@@ -48,10 +82,13 @@ pub struct Router {
     /// `None` when this node has no settlement rail configured (e.g. the mock
     /// blockchain backend).
     settlement: Option<SettlementService>,
+    /// The node's OBP hosts, for carrying a payment on to a bank on another of them. Empty unless set with `with_forward_targets`.
+    forward_targets: ForwardTargets,
 }
 
 impl Router {
     pub fn new(
+        obp_host: impl Into<String>,
         bank_id: impl Into<String>,
         account_id: impl Into<String>,
         evidence: EvidenceStore,
@@ -60,13 +97,24 @@ impl Router {
         settlement: Option<SettlementService>,
     ) -> Self {
         Self {
+            // The OBP host the messages come from.
+            obp_host: obp_host.into(),
             bank_id: bank_id.into(),
             account_id: account_id.into(),
             evidence,
             cbs,
             outbox,
             settlement,
+            // No other OBP hosts until main sets them.
+            forward_targets: Arc::new(std::sync::OnceLock::new()),
         }
+    }
+
+    /// Give the router the node's OBP hosts, so it can carry a payment on to a bank on another of them.
+    pub fn with_forward_targets(mut self, forward_targets: ForwardTargets) -> Self {
+        // Keep the shared list.
+        self.forward_targets = forward_targets;
+        self
     }
 
     /// Dispatch one message. Always returns a reply envelope (never panics on a
@@ -138,6 +186,10 @@ impl Router {
             .evidence
             .upsert(NewEvidence {
                 transaction_request_id: &cn.transaction_request_id,
+                // The OBP host the credit notification came from.
+                obp_host: &self.obp_host,
+                // This node's bank on it.
+                bank_id: &self.bank_id,
                 promise_commitment: cn.promise_commitment.as_deref().unwrap_or(""),
                 promise_salt: cn.promise_salt.as_deref().unwrap_or(""),
                 promise_preimage: cn.promise_preimage.as_deref().unwrap_or(""),
@@ -175,6 +227,15 @@ impl Router {
                 error_code::COMMITMENT_MISMATCH,
                 "promise commitment does not match the revealed salt and preimage",
             );
+        }
+
+        // A verified promise whose instruction names a final bank: this bank is the hub, so it carries the payment on instead of crediting a customer.
+        if verified {
+            // The final bank, if the instruction names one.
+            if let Some(final_bank_routing) = final_bank_routing_of(&cn) {
+                // Make the second leg (or return the first).
+                return self.forward(correlation_id, &cn, final_bank_routing).await;
+            }
         }
 
         info!(
@@ -289,6 +350,257 @@ impl Router {
         }
     }
 
+    /// Carry a credit on as the second leg of a payment through this bank, the hub: find the final bank on another of the node's OBP hosts, and put a payment to it in the outbox there. The dispatcher then makes it like any payment. Safe to repeat: a redelivered credit finds the second leg it already made.
+    /// When no other OBP host has the final bank, or the node has no corridor account there for the currency, the first leg is returned to the originator, as for a credit the CBS refuses.
+    /// This first version carries the payment on once the first leg's promise has arrived: the first leg does not wait for the second (no conditional promise yet), so the hub carries the risk between the two.
+    async fn forward(
+        &self,
+        correlation_id: &str,
+        cn: &CreditNotification,
+        final_bank_routing: (String, String),
+    ) -> ReplyEnvelope {
+        // The final bank's routing scheme and address, for example BIC and DEMCZZ22.
+        let (scheme, address) = final_bank_routing;
+        // The node's other OBP hosts.
+        let targets: Vec<&ForwardTarget> = self
+            .forward_targets
+            .get()
+            // Every OBP host the node is on, or none yet.
+            .map(|targets| targets.as_slice())
+            .unwrap_or_default()
+            .iter()
+            // Not the one the credit came from.
+            .filter(|target| target.obp_host != self.obp_host)
+            .collect();
+        // Where the final bank was found: the OBP host and its bank_id there.
+        let mut found: Option<(&ForwardTarget, String)> = None;
+        // OBP hosts whose banks could not be listed.
+        let mut lookup_errors: Vec<String> = Vec::new();
+        // Look on each other OBP host in turn.
+        for target in targets {
+            // That OBP host's Open Corridor bank with the routing, if any.
+            match find_participant_bank(&target.obp, &scheme, &address).await {
+                // Found it: stop looking.
+                Ok(Some(bank_id)) => {
+                    // Keep where it was found.
+                    found = Some((target, bank_id));
+                    break;
+                }
+                // Not on this OBP host.
+                Ok(None) => {}
+                // This OBP host could not be asked.
+                Err(e) => lookup_errors.push(format!("OBP host {}: {e}", target.obp_host)),
+            }
+        }
+        // The final bank was not found anywhere.
+        let Some((target, final_bank_id)) = found else {
+            // An OBP host that could not be asked might have it: try again later rather than return the money.
+            if !lookup_errors.is_empty() {
+                // The reason, for the log and the reply.
+                let reason = format!("could not look up {scheme} {address}: {}", lookup_errors.join("; "));
+                warn!(transaction_request_id = %cn.transaction_request_id, %reason, "credit_notification: cannot carry the payment on yet");
+                // Transient: OBP-API delivers the credit again.
+                return ReplyEnvelope::error(correlation_id, error_code::CBS_DELIVERY_FAILED, reason);
+            }
+            // No route: return the first leg.
+            return self
+                .refuse_forward(correlation_id, cn, &format!("no route to the final bank {scheme} {address} from this hub"))
+                .await;
+        };
+        // The corridor account that sends this currency on the final bank's OBP host.
+        let Some(account_id) = target.corridor_account_for(&cn.value.currency) else {
+            // Without one the hub cannot pay there: return the first leg.
+            return self
+                .refuse_forward(
+                    correlation_id,
+                    cn,
+                    &format!("this hub has no corridor account for {} on OBP host {}", cn.value.currency, target.obp_host),
+                )
+                .await;
+        };
+        // The second leg, built from the first leg's instruction.
+        let request = match self.second_leg(cn, &scheme, &address) {
+            // Built.
+            Ok(request) => request,
+            // The first leg's instruction is missing something the second leg needs: return the first leg.
+            Err(reason) => return self.refuse_forward(correlation_id, cn, &reason).await,
+        };
+        // The second leg as the outbox stores it.
+        let payload = match serde_json::to_string(&request) {
+            // Serialized.
+            Ok(payload) => payload,
+            // Cannot happen for these types; reported as a platform error.
+            Err(e) => {
+                return ReplyEnvelope::error(correlation_id, error_code::PLATFORM, format!("serializing the second leg: {e}"))
+            }
+        };
+        // One second leg per first leg, however often the credit is delivered.
+        let idempotency_key = format!("forward:{}:{}", self.obp_host, cn.transaction_request_id);
+        // A new id for the second leg.
+        let new_id = uuid::Uuid::new_v4().to_string();
+        // A fresh salt for its promise commitment.
+        let salt = uuid::Uuid::new_v4().simple().to_string();
+        // Put it in the outbox on the final bank's OBP host.
+        let inserted = self
+            .outbox
+            .insert_with_idempotency_key(
+                crate::outbox::NewEntry {
+                    transaction_request_id: &new_id,
+                    // The OBP host the final bank is on.
+                    obp_host: &target.obp_host,
+                    // The hub's bank there.
+                    bank_id: &target.bank_id,
+                    // Its corridor account for the currency.
+                    account_id,
+                    request_payload: &payload,
+                    commitment_salt: &salt,
+                },
+                &idempotency_key,
+            )
+            .await;
+        // The second leg's id: the new one, or the one an earlier delivery made.
+        let second_leg_id = match inserted {
+            // Made now.
+            Ok(()) => new_id,
+            // Made by an earlier delivery of this credit: use that one.
+            Err(crate::outbox::OutboxError::DuplicateIdempotencyKey) => match self.outbox.get_by_idempotency_key(&idempotency_key).await {
+                // The earlier second leg.
+                Ok(Some(existing)) => existing.transaction_request_id,
+                // Should not happen; retried.
+                _ => {
+                    return ReplyEnvelope::error(correlation_id, error_code::PLATFORM, "could not read back the second leg")
+                }
+            },
+            // The outbox could not be written; retried.
+            Err(e) => {
+                return ReplyEnvelope::error(correlation_id, error_code::PLATFORM, format!("persisting the second leg: {e}"))
+            }
+        };
+        // Note on the credit's evidence that it was carried on, and where.
+        if let Err(e) = self.evidence.record_forward(&cn.transaction_request_id, &second_leg_id, &target.obp_host).await {
+            warn!(error = %e, "credit_notification: failed to record the second leg");
+        }
+        // Not delivered to the CBS: carried on.
+        if let Err(e) = self.evidence.record_cbs_result(&cn.transaction_request_id, "FORWARDED", None).await {
+            warn!(error = %e, "credit_notification: failed to record the forward");
+        }
+        info!(
+            transaction_request_id = %cn.transaction_request_id,
+            second_leg_transaction_request_id = %second_leg_id,
+            obp_host = %target.obp_host,
+            final_bank_id = %final_bank_id,
+            "credit_notification: carried on to the final bank as a second leg"
+        );
+        // Tell OBP-API the credit was handled.
+        ReplyEnvelope::ok(
+            correlation_id,
+            serde_json::json!({
+                "transaction_request_id": cn.transaction_request_id,
+                "verified": true,
+                "cbs_reference": null,
+                "cbs_status": "FORWARDED",
+                "forwarded_as_transaction_request_id": second_leg_id,
+                "forwarded_on_obp_host": target.obp_host,
+            }),
+        )
+    }
+
+    /// The second leg of a payment through this hub: the same value, beneficiary, originator and charge policy as the first leg's instruction, paid to the final bank, and naming the first leg.
+    fn second_leg(
+        &self,
+        cn: &CreditNotification,
+        scheme: &str,
+        address: &str,
+    ) -> Result<crate::rest::types::InitiateRequest, String> {
+        use crate::rest::types as a1;
+        // The first leg's instruction, from the promise preimage (verified before this is called).
+        let preimage: serde_json::Value = cn
+            .promise_preimage
+            .as_deref()
+            // Parse it.
+            .map(serde_json::from_str)
+            // No preimage.
+            .ok_or("no preimage on the credit")?
+            // Not JSON.
+            .map_err(|e| format!("preimage is not JSON: {e}"))?;
+        // The instruction the first leg's originating bank sent.
+        let instruction = &preimage["instruction"];
+        // The final beneficiary: the first leg's `to`.
+        let mut to: a1::BeneficiaryRouting = serde_json::from_value(instruction["to"].clone())
+            // Say what was wrong.
+            .map_err(|e| format!("the first leg's beneficiary cannot be read: {e}"))?;
+        // Paid to the final bank, not to this hub.
+        to.other_bank_routing_scheme = scheme.to_string();
+        to.other_bank_routing_address = address.to_string();
+        // The Travel Rule originator travels on unchanged.
+        let originator: a1::Originator = serde_json::from_value(instruction["originator"].clone())
+            // Say what was wrong.
+            .map_err(|e| format!("the first leg's originator cannot be read: {e}"))?;
+        // The first leg's description, kept short.
+        let first_description = instruction["description"].as_str().unwrap_or_default();
+        Ok(a1::InitiateRequest {
+            // The same value: this version adds no hub fee and no currency conversion.
+            value: a1::MoneyValue {
+                currency: cn.value.currency.clone(),
+                amount: cn.value.amount.clone(),
+            },
+            // Says which payment this carries on.
+            description: format!("Carried on from {} (OBP host {}): {}", cn.transaction_request_id, self.obp_host, first_description)
+                .chars()
+                .take(250)
+                .collect(),
+            to,
+            originator,
+            // The first leg's charge policy.
+            charge_policy: instruction["charge_policy"].as_str().unwrap_or("SHARED").to_string(),
+            // Not a return.
+            return_of: None,
+            // The final bank is reached: no further hub.
+            final_bank_routing: None,
+            // The first leg, which this one carries on.
+            previous_leg: Some(a1::PreviousLeg {
+                obp_host: self.obp_host.clone(),
+                transaction_request_id: cn.transaction_request_id.clone(),
+                promise_commitment: cn.promise_commitment.clone().unwrap_or_default(),
+            }),
+        })
+    }
+
+    /// The first leg cannot be carried on: return it to the originator, as for a credit the CBS refuses, and record why.
+    async fn refuse_forward(&self, correlation_id: &str, cn: &CreditNotification, reason: &str) -> ReplyEnvelope {
+        warn!(transaction_request_id = %cn.transaction_request_id, %reason, "credit_notification: cannot carry the payment on");
+        // Not delivered, not carried on.
+        if let Err(e) = self.evidence.record_cbs_result(&cn.transaction_request_id, "NOT_FORWARDED", None).await {
+            warn!(error = %e, "credit_notification: failed to record the refusal");
+        }
+        // Return the money to the originator.
+        match self.initiate_return(cn, reason).await {
+            // The return is on its way.
+            Ok(return_id) => {
+                // Link the return to the credit.
+                if let Err(e) = self.evidence.record_return(&cn.transaction_request_id, &return_id).await {
+                    warn!(error = %e, "credit_notification: failed to record return linkage");
+                }
+                ReplyEnvelope::ok(
+                    correlation_id,
+                    serde_json::json!({
+                        "transaction_request_id": cn.transaction_request_id,
+                        "verified": true,
+                        "cbs_reference": null,
+                        "cbs_status": "NOT_FORWARDED",
+                        "return_transaction_request_id": return_id,
+                    }),
+                )
+            }
+            // No return possible either: parked for an operator.
+            Err(return_reason) => ReplyEnvelope::error(
+                correlation_id,
+                error_code::CBS_REJECTED,
+                format!("{reason}; no return initiated: {return_reason}"),
+            ),
+        }
+    }
+
     /// Build and enqueue the RETURN promise for a CBS-rejected credit: same
     /// amount and currency back to the ORIGINAL ORIGINATOR, whose identity and
     /// account routing come out of the promise preimage (the canonical A1.1
@@ -351,6 +663,10 @@ impl Router {
             },
             charge_policy: "SHARED".into(),
             return_of: Some(cn.transaction_request_id.clone()),
+            // A return goes straight back to the originating bank.
+            final_bank_routing: None,
+            // Not a second leg.
+            previous_leg: None,
         };
         let payload =
             serde_json::to_string(&request).map_err(|e| format!("serializing return: {e}"))?;
@@ -360,6 +676,8 @@ impl Router {
         self.outbox
             .insert(crate::outbox::NewEntry {
                 transaction_request_id: &return_id,
+                // The return is made on the OBP host the credit came from.
+                obp_host: &self.obp_host,
                 bank_id: &self.bank_id,
                 account_id: &self.account_id,
                 request_payload: &payload,
@@ -397,6 +715,10 @@ impl Router {
                 if let Err(e) = svc
                     .store
                     .record_incoming(
+                        // The OBP host the advice came from.
+                        &self.obp_host,
+                        // This node's bank on it: the creditor.
+                        &self.bank_id,
                         &advice.settlement_id,
                         advice.debtor_bank_id.as_deref(),
                         advice.currency.as_deref(),
@@ -415,7 +737,8 @@ impl Router {
             .await;
         let promises = self
             .outbox
-            .mark_settled(&advice.covered_transaction_request_ids, &advice.settlement_id)
+            // Only the promises made on this router's OBP host.
+            .mark_settled(&self.obp_host, &advice.covered_transaction_request_ids, &advice.settlement_id)
             .await;
         match (credits, promises) {
             (Ok(credits_stamped), Ok(promises_stamped)) => {
@@ -541,6 +864,10 @@ impl Router {
             .store
             .claim(NewClaim {
                 idempotency_key: &idempotency_key,
+                // The OBP host the instruction came from.
+                obp_host: &self.obp_host,
+                // This node's bank on it: the debtor.
+                bank_id: &self.bank_id,
                 settlement_id: si.settlement_id.as_deref(),
                 snapshot_id: si.snapshot_id.as_deref(),
                 currency: si.currency.as_deref().unwrap_or_default(),
@@ -788,6 +1115,60 @@ fn parse_minor_units(amount: &str, decimals: u32) -> Result<u128, String> {
         .ok_or_else(|| "amount overflow".into())
 }
 
+/// The final bank a promise's instruction names (`final_bank_routing`), as scheme and address, when this bank is the hub that should carry it on. None for an ordinary payment, a return, or a credit without a readable preimage.
+fn final_bank_routing_of(cn: &CreditNotification) -> Option<(String, String)> {
+    // A return goes back the way it came, never on.
+    if cn.return_of.is_some() {
+        return None;
+    }
+    // The instruction the originating bank hashed.
+    let preimage: serde_json::Value = serde_json::from_str(cn.promise_preimage.as_deref()?).ok()?;
+    // Its final bank, if any.
+    let routing = &preimage["instruction"]["final_bank_routing"];
+    // The scheme, for example BIC.
+    let scheme = routing["scheme"].as_str()?.trim();
+    // The address, for example DEMCZZ22.
+    let address = routing["address"].as_str()?.trim();
+    // Both are needed.
+    if scheme.is_empty() || address.is_empty() {
+        return None;
+    }
+    Some((scheme.to_string(), address.to_string()))
+}
+
+/// The bank_id of the Open Corridor participant on an OBP host whose bank routing matches (scheme and address compared without case), from that OBP-API's getBanks. None when no participant there has it.
+async fn find_participant_bank(
+    obp: &crate::obp_client::ObpClient,
+    scheme: &str,
+    address: &str,
+) -> Result<Option<String>, String> {
+    // The OBP host's banks.
+    let banks = obp.get_banks().await.map_err(|e| e.to_string())?;
+    // Each bank in the list.
+    for bank in banks["banks"].as_array().cloned().unwrap_or_default() {
+        // Does one of its routings match?
+        let routing_matches = bank["bank_routings"].as_array().cloned().unwrap_or_default().iter().any(|routing| {
+            // Same scheme.
+            routing["scheme"].as_str().is_some_and(|s| s.eq_ignore_ascii_case(scheme))
+                // Same address.
+                && routing["address"].as_str().is_some_and(|a| a.trim().eq_ignore_ascii_case(address))
+        });
+        // Is it an Open Corridor participant there?
+        let participant = bank["attributes"].as_array().cloned().unwrap_or_default().iter().any(|attribute| {
+            // The participant mark the setup page sets.
+            attribute["name"].as_str() == Some("OPEN_CORRIDOR_PARTICIPANT")
+                // Set to true.
+                && attribute["value"].as_str().is_some_and(|v| v.eq_ignore_ascii_case("true"))
+        });
+        // Both: this is the final bank.
+        if routing_matches && participant {
+            return Ok(bank["bank_id"].as_str().map(str::to_string));
+        }
+    }
+    // No participant on this OBP host has the routing.
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -846,7 +1227,7 @@ mod tests {
             .await
             .unwrap();
         (
-            Router::new("ke.01.kcs", "settlement-ke", evidence, cbs, outbox, service),
+            Router::new("test-host-a:8080", "ke.01.kcs", "settlement-ke", evidence, cbs, outbox, service),
             store,
         )
     }
@@ -954,7 +1335,8 @@ mod tests {
         r.handle(message_id::SETTLEMENT_ADVICE, "c", advice("in-1", "ke.01.kcs").as_bytes())
             .await;
 
-        let rows = store.list_incoming(10).await.unwrap();
+        // Listed under the router's OBP host and bank.
+        let rows = store.list_incoming("test-host-a:8080", "ke.01.kcs", 10).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].settlement_id, "in-1");
         assert_eq!(rows[0].status, crate::settlement_store::incoming_status::NETTED);
@@ -969,6 +1351,10 @@ mod tests {
             r.evidence
                 .upsert(crate::evidence::NewEvidence {
                     transaction_request_id: id,
+                    // The OBP host the notification came from.
+                    obp_host: "test-host-a:8080",
+                    // The node's bank there.
+                    bank_id: "ke.01.kcs",
                     promise_commitment: "c",
                     promise_salt: "s",
                     promise_preimage: "p",
@@ -994,6 +1380,8 @@ mod tests {
             r.outbox
                 .insert(crate::outbox::NewEntry {
                     transaction_request_id: local_id,
+                    // The OBP host the row belongs to: the router's own.
+                    obp_host: "test-host-a:8080",
                     bank_id: "ke.01.kcs",
                     account_id: "settlement-ke",
                     request_payload: "{}",
@@ -1252,7 +1640,7 @@ mod tests {
 
         // The return entered this node's outbound pipeline: same value, back
         // to the ORIGINAL ORIGINATOR's routing, linked via return_of.
-        let rows = r.outbox.list(10).await.unwrap();
+        let rows = r.outbox.list("test-host-a:8080", "ke.01.kcs", 10).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].transaction_request_id, return_id);
         assert_eq!(rows[0].bank_id, "ke.01.kcs");
@@ -1277,6 +1665,183 @@ mod tests {
         );
     }
 
+    /// A credit for a payment through this bank as the hub: `to` names this bank, with the final beneficiary's account, and `final_bank_routing` names the final bank by BIC.
+    fn credit_through_hub() -> (String, String) {
+        // The instruction the originating bank hashed.
+        let instruction = serde_json::json!({
+            "value": {"currency": "KES", "amount": "300.00"},
+            "description": "School fees",
+            "to": {
+                "name": "Cara Customer", "description": "",
+                "other_bank_routing_scheme": "BIC", "other_bank_routing_address": "DEMBZZ22",
+                "other_account_routing_scheme": "ACCOUNT_NUMBER", "other_account_routing_address": "c-123",
+                "other_account_secondary_routing_scheme": "", "other_account_secondary_routing_address": "",
+                "other_branch_routing_scheme": "", "other_branch_routing_address": ""
+            },
+            "originator": {
+                "name": "Alice Sender", "address": "1 Sender Street",
+                "account_routing": {"scheme": "IBAN", "address": "KE93 0000 1234"}
+            },
+            "charge_policy": "SHARED",
+            "final_bank_routing": {"scheme": "BIC", "address": "DEMCZZ22"},
+        });
+        // The preimage around it.
+        let preimage = serde_json::json!({
+            "transaction_request_id": "tr-leg-1",
+            "originating_bank_id": "rt.bank.a",
+            "originating_account_id": "settlement-a",
+            "instruction": instruction,
+        })
+        .to_string();
+        // A valid commitment over it.
+        let salt = "00112233445566778899aabbccddeeff";
+        let commitment = PromiseRecord::compute_commitment(preimage.as_bytes(), salt.as_bytes());
+        // The credit notification.
+        let body = serde_json::json!({
+            "transaction_request_id": "tr-leg-1",
+            "value": {"currency": "KES", "amount": "300.00"},
+            "originator": {"name": "Alice Sender"},
+            "beneficiary": {"name": "Cara Customer", "account_routing": {"scheme": "ACCOUNT_NUMBER", "address": "c-123"}},
+            "promise_id": "tx-leg-1", "promise_blockchain": "cardano",
+            "promise_commitment": commitment, "promise_salt": salt, "promise_preimage": preimage,
+        });
+        (body.to_string(), "tr-leg-1".into())
+    }
+
+    /// A stub OBP-API answering getBanks with the given banks body, or with a 500 when `banks` is None.
+    async fn obp_banks_stub(banks: Option<serde_json::Value>) -> String {
+        // The one route the forward uses.
+        let router = AxumRouter::new().route(
+            "/obp/v6.0.0/banks",
+            axum::routing::get(move || {
+                // Each request gets its own copy.
+                let banks = banks.clone();
+                async move {
+                    match banks {
+                        // The banks, as OBP-API sends them.
+                        Some(banks) => (axum::http::StatusCode::OK, Json(banks)),
+                        // OBP-API failing.
+                        None => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"code": 500, "message": "OBP-50000: Unknown Error."}))),
+                    }
+                }
+            }),
+        );
+        // Serve it on a free port.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr: SocketAddr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    /// A router on test-host-a:8080 whose node is also on test-host-b:8081, whose OBP-API is `obp_b_url`.
+    async fn hub_router(obp_b_url: &str) -> Router {
+        // The CBS is never called when a credit is carried on.
+        let router = router_with_cbs("http://127.0.0.1:1/credit").await;
+        // Both OBP hosts the node is on.
+        let targets = vec![
+            ForwardTarget {
+                obp_host: "test-host-a:8080".into(),
+                bank_id: "ke.01.kcs".into(),
+                account_id: "settlement-ke".into(),
+                corridor_accounts: Default::default(),
+                obp: Arc::new(crate::obp_client::ObpClient::new("http://127.0.0.1:1", crate::obp_client::ObpAuth::None).unwrap()),
+            },
+            ForwardTarget {
+                obp_host: "test-host-b:8081".into(),
+                bank_id: "ke.01.kcs".into(),
+                account_id: "settlement-ke".into(),
+                corridor_accounts: [("KES".to_string(), "settlement-ke-b".to_string())].into_iter().collect(),
+                obp: Arc::new(crate::obp_client::ObpClient::new(obp_b_url, crate::obp_client::ObpAuth::None).unwrap()),
+            },
+        ];
+        // The shared list, filled in.
+        let forward_targets: ForwardTargets = Arc::new(std::sync::OnceLock::new());
+        let _ = forward_targets.set(targets);
+        router.with_forward_targets(forward_targets)
+    }
+
+    /// Bank C on OBP host B: an Open Corridor participant with BIC DEMCZZ22.
+    fn banks_with_bank_c() -> serde_json::Value {
+        serde_json::json!({"banks": [{
+            "bank_id": "rt.bank.c4",
+            "bank_routings": [{"scheme": "BIC", "address": "DEMCZZ22"}],
+            "attributes": [{"name": "OPEN_CORRIDOR_PARTICIPANT", "value": "true"}]
+        }]})
+    }
+
+    #[tokio::test]
+    async fn hub_carries_a_payment_on_to_the_final_bank() {
+        // OBP host B has Bank C.
+        let r = hub_router(&obp_banks_stub(Some(banks_with_bank_c())).await).await;
+        // The first leg arrives on OBP host A.
+        let (body, id) = credit_through_hub();
+        let reply = r.handle(message_id::CREDIT_NOTIFICATION, "corr-hub-1", body.as_bytes()).await;
+        // Handled, as carried on.
+        assert!(reply.is_ok(), "expected ok, got {:?}", reply.status);
+        assert_eq!(reply.data["cbs_status"], "FORWARDED");
+        assert_eq!(reply.data["forwarded_on_obp_host"], "test-host-b:8081");
+        let second_leg_id = reply.data["forwarded_as_transaction_request_id"].as_str().unwrap().to_string();
+        // Nothing was made on OBP host A.
+        assert!(r.outbox.list("test-host-a:8080", "ke.01.kcs", 10).await.unwrap().is_empty());
+        // The second leg is on OBP host B, from the hub's KES corridor account there.
+        let rows = r.outbox.list("test-host-b:8081", "ke.01.kcs", 10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].transaction_request_id, second_leg_id);
+        assert_eq!(rows[0].account_id, "settlement-ke-b");
+        // Paid to the final bank, to the same beneficiary, with the same value and originator, naming the first leg.
+        let payload: serde_json::Value = serde_json::from_str(&rows[0].request_payload).unwrap();
+        assert_eq!(payload["to"]["other_bank_routing_scheme"], "BIC");
+        assert_eq!(payload["to"]["other_bank_routing_address"], "DEMCZZ22");
+        assert_eq!(payload["to"]["other_account_routing_address"], "c-123");
+        assert_eq!(payload["to"]["name"], "Cara Customer");
+        assert_eq!(payload["value"]["amount"], "300.00");
+        assert_eq!(payload["originator"]["name"], "Alice Sender");
+        assert_eq!(payload["previous_leg"]["obp_host"], "test-host-a:8080");
+        assert_eq!(payload["previous_leg"]["transaction_request_id"], id);
+        assert!(payload.get("final_bank_routing").is_none(), "the second leg goes no further");
+        // The evidence says where it went.
+        let rec = r.evidence.get(&id).await.unwrap().unwrap();
+        assert_eq!(rec.cbs_status.as_deref(), Some("FORWARDED"));
+        assert_eq!(rec.forwarded_as_transaction_request_id.as_deref(), Some(second_leg_id.as_str()));
+        assert_eq!(rec.forwarded_on_obp_host.as_deref(), Some("test-host-b:8081"));
+        // A redelivery makes no second second leg.
+        let again = r.handle(message_id::CREDIT_NOTIFICATION, "corr-hub-2", body.as_bytes()).await;
+        assert_eq!(again.data["forwarded_as_transaction_request_id"], second_leg_id);
+        assert_eq!(r.outbox.list("test-host-b:8081", "ke.01.kcs", 10).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn hub_returns_a_payment_it_has_no_route_for() {
+        // OBP host B does not have the final bank.
+        let r = hub_router(&obp_banks_stub(Some(serde_json::json!({"banks": []}))).await).await;
+        let (body, id) = credit_through_hub();
+        let reply = r.handle(message_id::CREDIT_NOTIFICATION, "corr-hub-3", body.as_bytes()).await;
+        // Handled, with a return.
+        assert!(reply.is_ok(), "expected ok, got {:?}", reply.status);
+        assert_eq!(reply.data["cbs_status"], "NOT_FORWARDED");
+        // The return is on OBP host A, back to the originator.
+        let rows = r.outbox.list("test-host-a:8080", "ke.01.kcs", 10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        let payload: serde_json::Value = serde_json::from_str(&rows[0].request_payload).unwrap();
+        assert_eq!(payload["return_of"], id);
+        // Nothing on OBP host B.
+        assert!(r.outbox.list("test-host-b:8081", "ke.01.kcs", 10).await.unwrap().is_empty());
+        let rec = r.evidence.get(&id).await.unwrap().unwrap();
+        assert_eq!(rec.cbs_status.as_deref(), Some("NOT_FORWARDED"));
+    }
+
+    #[tokio::test]
+    async fn hub_retries_when_it_cannot_look_the_final_bank_up() {
+        // OBP host B's OBP-API fails.
+        let r = hub_router(&obp_banks_stub(None).await).await;
+        let (body, _id) = credit_through_hub();
+        let reply = r.handle(message_id::CREDIT_NOTIFICATION, "corr-hub-4", body.as_bytes()).await;
+        // Transient: OBP-API delivers it again later; no money moves yet.
+        assert_eq!(reply.status.error_code, error_code::CBS_DELIVERY_FAILED);
+        assert!(r.outbox.list("test-host-a:8080", "ke.01.kcs", 10).await.unwrap().is_empty());
+        assert!(r.outbox.list("test-host-b:8081", "ke.01.kcs", 10).await.unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn rejected_return_is_never_returned_again() {
         let url = cbs_stub_fixed(
@@ -1292,7 +1857,7 @@ mod tests {
         // One hop: the refused RETURN parks STICKY at OBP-API, no ping-pong.
         assert_eq!(reply.status.error_code, error_code::CBS_REJECTED);
         assert!(
-            r.outbox.list(10).await.unwrap().is_empty(),
+            r.outbox.list("test-host-a:8080", "ke.01.kcs", 10).await.unwrap().is_empty(),
             "must not create a return-of-return"
         );
         let rec = r.evidence.get(&id).await.unwrap().unwrap();
@@ -1345,6 +1910,8 @@ mod tests {
         r.outbox
             .insert(crate::outbox::NewEntry {
                 transaction_request_id: "local-1",
+                // The OBP host the row belongs to: the router's own.
+                obp_host: "test-host-a:8080",
                 bank_id: "ke.01.kcs",
                 account_id: "acct",
                 request_payload: "{}",

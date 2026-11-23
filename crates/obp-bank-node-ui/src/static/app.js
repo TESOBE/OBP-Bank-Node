@@ -66,37 +66,32 @@ function moreLink(total, shown, href, what) {
 
 // ---- header: node health -------------------------------------------------
 
-// Per-node identity from /health (bank_id, account_id) — the fallback for
-// renderSendNodeAccount and otherBanks when /status has not answered yet.
-const NODE_INFO = {};
-
 async function renderHealth() {
   const parts = await Promise.all(NODES.map(async (n) => {
     const r = await getJson(nodeUrl(n.name, "health"));
     const up = r.ok && r.body && r.body.status === "healthy";
-    if (up) NODE_INFO[n.name] = { bank_id: r.body.bank_id, account_id: r.body.account_id };
     const chain = up ? ` · ${esc(r.body.blockchain)}` : "";
     // "disabled" is a deliberate config; anything else non-connected means the
     // node cannot receive settlement instructions or credit notifications.
     const ifc = up && r.body.interface_c && !["connected", "disabled"].includes(r.body.interface_c);
     if (ifc) {
       return `<span class="node-chip warn" title="${esc(r.body.interface_c_detail || r.body.interface_c)}">
-        ${esc(n.name)} · up${chain} · AMQP ${esc(r.body.interface_c)}</span>`;
+        ${esc(nodeName(n.name))} · up${chain} · AMQP ${esc(r.body.interface_c)}</span>`;
     }
-    return `<span class="node-chip ${up ? "up" : "down"}">${esc(n.name)} · ${up ? "up" : "down"}${chain}</span>`;
+    return `<span class="node-chip ${up ? "up" : "down"}">${esc(nodeName(n.name))} · ${up ? "up" : "down"}${chain}</span>`;
   }));
-  // Group the node chips by the OBP-API instance each node is connected to.
-  // A hub node is on several instances, so it appears in each group.
+  // Group the node chips by the OBP host each node is on.
+  // A hub node is on several OBP hosts, so it appears in each group.
   const groups = new Map();
   NODES.forEach((n, i) => {
-    const names = instanceNames(n.name);
+    const names = hostNames(n.name);
     for (const name of names.length ? names : ["?"]) {
       if (!groups.has(name)) groups.set(name, []);
       groups.get(name).push(parts[i]);
     }
   });
   $("#node-health").innerHTML = [...groups].map(([name, chips]) =>
-    `<span class="instance-group"><span class="instance-name" title="OBP-API instance">${esc(name)}</span>${chips.join("")}</span>`,
+    `<span class="host-group"><span class="host-name" title="OBP host">${esc(name)}</span>${chips.join("")}</span>`,
   ).join("");
   renderSendNodeAccount();
 }
@@ -113,22 +108,120 @@ async function fetchStatus(name) {
   return NODE_STATUS[name];
 }
 
-// The OBP-API instances a node is connected to, from its /status. One today;
+// A node's own name, from its /status (the node's config `name`). This UI's config also names each node, and uses that name in its URLs; it is shown until the node's /status has answered.
+function nodeName(uiName) {
+  return NODE_STATUS[uiName]?.name || uiName;
+}
+
+// The OBP hosts a node is on, from its /status. One today;
 // a hub node lists several.
-function nodeInstances(name) {
-  return NODE_STATUS[name]?.instances || [];
+function nodeHosts(name) {
+  return NODE_STATUS[name]?.hosts || [];
 }
 
-function instanceNames(name) {
-  return nodeInstances(name).map((instance) => instance.name);
+function hostNames(name) {
+  return nodeHosts(name).map((host) => host.host);
 }
 
-// A node's heading in the tables: its name and the instance(s) it is on.
+// The node's bank on an OBP host (the selected one unless named): its entry in the node's /status `hosts`, or null when the node is not on that OBP host.
+function nodeHostEntry(node, host = CURRENT_HOST) {
+  return nodeHosts(node).find((entry) => entry.host === host) || null;
+}
+
+// A URL for the node's bank on the selected OBP host: /hosts/HOST/banks/BANK_ID/PATH, mirroring OBP-API's own URLs. Null when the node is not on the selected OBP host.
+function nodeBankUrl(node, path) {
+  const entry = nodeHostEntry(node);
+  if (!entry) return null;
+  return nodeUrl(node, `hosts/${encodeURIComponent(entry.host)}/banks/${encodeURIComponent(entry.bank_id)}/${path}`);
+}
+
+// GET a URL from nodeBankUrl; a missing URL (node not on the selected OBP host) reads as a failed request.
+async function getBankJson(url) {
+  return url ? getJson(url) : { ok: false, status: 404, body: null };
+}
+
+// A node's heading in the tables: its name and the OBP host(s) it is on.
 function nodeTitle(name) {
-  const names = instanceNames(name);
+  const names = hostNames(name);
   return names.length
-    ? `${esc(name)} <span class="dim">· on ${esc(names.join(", "))}</span>`
-    : esc(name);
+    ? `${esc(nodeName(name))} <span class="dim">· on ${esc(names.join(", "))}</span>`
+    : esc(nodeName(name));
+}
+
+// ---- OBP host tabs ---------------------------------------------------------
+
+// The UI shows one OBP host at a time: the
+// tables, the Send and Settle forms and the latest settlement cover the nodes
+// on the selected OBP host. The header still shows every node. The choice is
+// kept in the browser, so it stays the same from page to page.
+const HOST_KEY = "bank-node-ui:host";
+// The tab for nodes whose /status has not answered, so their OBP host is not known.
+const UNKNOWN_HOST = "?";
+// A link can open a given OBP host's tab with ?host=HOST.
+let CURRENT_HOST = new URLSearchParams(location.search).get("host")
+  || localStorage.getItem(HOST_KEY) || "";
+
+// The OBP hosts a node is on, or the unknown tab when its /status has not answered.
+function nodeHostNames(name) {
+  const names = hostNames(name);
+  return names.length ? names : [UNKNOWN_HOST];
+}
+
+// Every OBP host any node is on, in the order of the configured nodes.
+function allHosts() {
+  return [...new Set(NODES.flatMap((n) => nodeHostNames(n.name)))];
+}
+
+// The OBP-API URL on an OBP host, from the first node on it.
+function hostUrl(hostName) {
+  for (const n of NODES) {
+    const host = nodeHosts(n.name).find((h) => h.host === hostName);
+    if (host) return host.obp_api_url;
+  }
+  return "";
+}
+
+// The nodes on the selected OBP host. A hub node is on several, so it is on several tabs.
+function visibleNodes() {
+  return NODES.filter((n) => nodeHostNames(n.name).includes(CURRENT_HOST));
+}
+
+// Draw the tab bar under the header, and keep the selection on an OBP host that
+// exists. Returns true when the selection changed, so the caller can redraw.
+function renderHostTabs() {
+  const header = $("header");
+  // The Network page shows every OBP host at once, so it has no tabs.
+  if (!header || $("#network-view")) return false;
+  const hosts = allHosts();
+  const before = CURRENT_HOST;
+  if (!hosts.includes(CURRENT_HOST)) CURRENT_HOST = hosts[0] || "";
+  let nav = $("#host-tabs");
+  if (!nav) {
+    nav = document.createElement("nav");
+    nav.id = "host-tabs";
+    nav.className = "host-tabs";
+    nav.setAttribute("aria-label", "OBP hosts");
+    header.after(nav);
+  }
+  nav.innerHTML = hosts.map((name) => {
+    const url = hostUrl(name);
+    const title = name === UNKNOWN_HOST
+      ? "nodes whose OBP host is not known yet: their /status has not answered"
+      : `OBP host · OBP-API ${url}`;
+    const active = name === CURRENT_HOST;
+    return `<button type="button" class="host-tab${active ? " active" : ""}" data-host="${esc(name)}"
+      title="${esc(title)}" aria-pressed="${active}">${esc(name)}</button>`;
+  }).join("");
+  return CURRENT_HOST !== before;
+}
+
+// Show another OBP host: redraw the tabs, the node pickers and the tables.
+async function selectHost(name) {
+  CURRENT_HOST = name;
+  localStorage.setItem(HOST_KEY, name);
+  renderHostTabs();
+  await refillForms();
+  await refresh();
 }
 
 // Read-only line under the Sending node select: the corridor account the
@@ -140,50 +233,89 @@ async function renderSendNodeAccount() {
   if (!el) return;
   const node = $("#send-node")?.value;
   if (!node) { el.textContent = ""; return; }
-  const status = await fetchStatus(node);
+  await fetchStatus(node);
+  // The node's bank on the selected OBP host.
+  const entry = nodeHostEntry(node);
+  if (!entry) { el.textContent = ""; return; }
   const currency = ($("#send-form")?.elements.namedItem("currency")?.value || "")
     .trim().toUpperCase();
-  const map = status?.corridor_accounts || {};
+  const map = entry.corridor_accounts || {};
   if (Object.keys(map).length && currency) {
     el.textContent = map[currency]
-      ? `corridor account: ${status.bank_id} / ${map[currency]}${
-        instanceNames(node).length ? ` · on ${instanceNames(node).join(", ")}` : ""}`
+      ? `corridor account: ${bankLabel(entry.bank_id, node)} / ${map[currency]} · on ${entry.host}`
       : `no corridor account for ${currency} — the node will refuse this send`;
     return;
   }
-  const info = status || NODE_INFO[node];
-  el.textContent = info ? `corridor account: ${info.bank_id} / ${info.account_id}` : "";
-  const names = instanceNames(node);
-  if (names.length && el.textContent) el.textContent += ` · on ${names.join(", ")}`;
+  el.textContent = `corridor account: ${bankLabel(entry.bank_id, node)} / ${entry.account_id} · on ${entry.host}`;
 }
 
 // ---- the other bank: picked from getBanks ---------------------------------
 
-// Node name -> the banks on the OBP-API instance, as the node relays getBanks
-// (GET /obp-bank-node/v5.1.0/banks); null when the node could not list them.
+// "node|OBP host" -> the banks on that OBP host, as the node relays its getBanks
+// (GET /obp-bank-node/v5.1.0/hosts/HOST/banks); null when the node could not list them.
 const BANKS = {};
 
+// The cache key for a node's banks on an OBP host (the selected one unless named).
+const banksKey = (node, host = CURRENT_HOST) => `${node}|${host}`;
+
+// A node's banks on the selected OBP host.
 async function fetchBanks(node) {
-  if (!(node in BANKS)) {
-    const r = await getJson(nodeUrl(node, "banks"));
-    BANKS[node] = r.ok && Array.isArray(r.body?.banks) ? r.body.banks : null;
-  }
-  return BANKS[node];
+  return fetchBanksOn(node, CURRENT_HOST);
 }
 
-// The banks a node can pay: every bank on the instance except its own.
-// null when the list could not be fetched.
+// A node's banks on an OBP host. null when the node is not on that OBP host or could not list them.
+async function fetchBanksOn(node, host) {
+  // Only for an OBP host the node is on.
+  const entry = nodeHostEntry(node, host);
+  if (!entry) return null;
+  // Ask again when an earlier try failed (null), for example because the node was down.
+  if (!BANKS[banksKey(node, host)]) {
+    const r = await getJson(nodeUrl(node, `hosts/${encodeURIComponent(entry.host)}/banks`));
+    BANKS[banksKey(node, host)] = r.ok && Array.isArray(r.body?.banks) ? r.body.banks : null;
+  }
+  return BANKS[banksKey(node, host)];
+}
+
+// The bank attribute the setup page sets on each Open Corridor bank. getBanks
+// lists every bank on the OBP host; only the ones carrying this are in the corridor.
+const PARTICIPANT_ATTRIBUTE = "OPEN_CORRIDOR_PARTICIPANT";
+
+function isParticipant(bank) {
+  return (bank.attributes || []).some((attribute) =>
+    attribute.name === PARTICIPANT_ATTRIBUTE && String(attribute.value).toLowerCase() === "true");
+}
+
+// The banks a node can pay: the OBP host's Open Corridor participants, except
+// its own bank. null when the list could not be fetched.
 async function otherBanks(node) {
-  const ownBankId = (await fetchStatus(node))?.bank_id || NODE_INFO[node]?.bank_id;
+  await fetchStatus(node);
+  // The node's own bank on the selected OBP host.
+  const ownBankId = nodeHostEntry(node)?.bank_id;
   const banks = await fetchBanks(node);
-  return banks ? banks.filter((bank) => bank.id !== ownBankId) : null;
+  return banks ? banks.filter((bank) => bank.bank_id !== ownBankId && isParticipant(bank)) : null;
+}
+
+// A bank's BIC: the address of its BIC bank routing. "" when it has none.
+function bankBic(bank) {
+  const routing = (bank.bank_routings || []).find((r) => String(r.scheme).toUpperCase() === "BIC");
+  return routing?.address || "";
+}
+
+// A bank_id with its BIC, for example "rt.bank.b4 · BIC DEMBZZ22", as plain text.
+// A bank_id is local to one OBP host, so the bank is looked up in the banks
+// of the node the row belongs to. Just the bank_id when its BIC is not known.
+function bankLabel(bankId, node) {
+  if (!bankId) return "";
+  const bank = (BANKS[banksKey(node)] || []).find((b) => b.bank_id === bankId);
+  const bic = bank ? bankBic(bank) : "";
+  return bic ? `${bankId} · BIC ${bic}` : bankId;
 }
 
 function bankOption(bank) {
   const routings = (bank.bank_routings || [])
     .map((routing) => `${routing.scheme} ${routing.address}`).join(", ");
-  const name = bank.full_name && bank.full_name !== bank.id ? `${bank.full_name} (${bank.id})` : bank.id;
-  return `<option value="${esc(bank.id)}">${esc(routings ? `${name} · ${routings}` : name)}</option>`;
+  const name = bank.full_name && bank.full_name !== bank.bank_id ? `${bank.full_name} (${bank.bank_id})` : bank.bank_id;
+  return `<option value="${esc(bank.bank_id)}">${esc(routings ? `${name} · ${routings}` : name)}</option>`;
 }
 
 // Fill a bank picker with the node's other banks. Keeps `wantedBankId` selected
@@ -193,7 +325,7 @@ async function fillBankSelect(select, node, wantedBankId) {
   if (!select || !node) return "";
   const banks = await otherBanks(node);
   if (!banks || banks.length === 0) {
-    const why = banks ? "no other banks on this OBP-API instance" : "the node could not list the banks";
+    const why = banks ? "no other Open Corridor banks on this OBP host" : "the node could not list the banks";
     select.innerHTML = `<option value="">${why}</option>`;
     select.disabled = true;
     return "";
@@ -201,9 +333,9 @@ async function fillBankSelect(select, node, wantedBankId) {
   select.disabled = false;
   select.innerHTML = banks.map(bankOption).join("");
   const note = select.parentElement?.querySelector(".fnote");
-  const names = instanceNames(node);
-  if (note && names.length) note.textContent = `banks on ${names.join(", ")} (getBanks)`;
-  if (banks.some((bank) => bank.id === wantedBankId)) select.value = wantedBankId;
+  const names = hostNames(node);
+  if (note && names.length) note.textContent = `Open Corridor banks on ${names.join(", ")} (getBanks)`;
+  if (banks.some((bank) => bank.bank_id === wantedBankId)) select.value = wantedBankId;
   return select.value;
 }
 
@@ -211,9 +343,11 @@ async function fillBankSelect(select, node, wantedBankId) {
 // configured node that serves the picked bank (the localhost demo runs both).
 // A real deployment fronts one node, so the account stays as typed.
 async function accountAtBank(bankId) {
-  for (const n of NODES) {
-    const status = await fetchStatus(n.name);
-    if (status?.bank_id === bankId && status.account_id) return status.account_id;
+  for (const n of visibleNodes()) {
+    await fetchStatus(n.name);
+    // The node's bank on the selected OBP host.
+    const entry = nodeHostEntry(n.name);
+    if (entry?.bank_id === bankId && entry.account_id) return entry.account_id;
   }
   return null;
 }
@@ -248,8 +382,9 @@ async function fillSettleBanks() {
 let TRS = {}; // node name -> array of transaction request status rows
 
 async function fetchTrs() {
-  for (const n of NODES) {
-    const r = await getJson(nodeUrl(n.name, "transaction-requests"));
+  TRS = {};
+  for (const n of visibleNodes()) {
+    const r = await getBankJson(nodeBankUrl(n.name, "transaction-requests"));
     TRS[n.name] = r.ok && Array.isArray(r.body) ? r.body : [];
   }
 }
@@ -276,7 +411,7 @@ function trDetails(tr) {
 function renderTrTables() {
   const el = $("#tr-tables");
   if (!el) return;
-  const html = NODES.map((n) => {
+  const html = visibleNodes().map((n) => {
     const rows = TRS[n.name] || [];
     if (rows.length === 0) {
       return `<h3>${nodeTitle(n.name)}</h3><p class="empty">no outbound transaction requests</p>`;
@@ -287,7 +422,7 @@ function renderTrTables() {
         <td class="id-full">${esc(tr.transaction_request_id)}</td>
         <td>${chip(tr.status)}</td>
         <td class="num">${esc(tr.value ? `${tr.value.amount} ${tr.value.currency}` : "")}</td>
-        <td>${esc(tr.other_bank_id || "")}</td>
+        <td>${esc(bankLabel(tr.other_bank_id, n.name))}</td>
         <td>${tr.promise_id ? txLink(tr.promise_id) : ""}</td>
         <td class="id-full">${esc(tr.settlement_id || "")}</td>
         <td>${esc(tr.settled_at ? tr.settled_at.slice(0, 19) : "")}</td>
@@ -330,13 +465,13 @@ function outboundExposure(rows) {
 function renderPosition() {
   const el = $("#position-view");
   if (!el) return;
-  const html = NODES.map((n) => {
+  const html = visibleNodes().map((n) => {
     const corridors = outboundExposure(TRS[n.name] || []);
     if (corridors.length === 0) {
       return `<h3>${nodeTitle(n.name)}</h3><p class="empty">no unsettled outbound corridor legs</p>`;
     }
     const rows = corridors.map((c) => `<tr>
-      <td>${esc(c.other)}</td>
+      <td>${esc(c.other === "?" ? "?" : bankLabel(c.other, n.name))}</td>
       <td>${esc(c.currency)}</td>
       <td class="num net">${c.total.toFixed(2)}</td>
       <td class="num">${c.count}</td>
@@ -400,7 +535,7 @@ function incomingTable(n, rows) {
       <tr>
         <td class="id-full">${esc(s.settlement_id)}</td>
         <td>${chip(s.status)}</td>
-        <td>${esc(s.debtor_bank_id || "")}</td>
+        <td>${esc(bankLabel(s.debtor_bank_id, n.name))}</td>
         <td class="num">${esc(s.net_amount || "")} ${esc(s.currency || "")}</td>
         <td class="num">${esc(fmtRail(s.received_amount || s.asset_amount, s.asset))}</td>
         <td>${txLink(s.tx_id)}</td>
@@ -419,10 +554,10 @@ function incomingTable(n, rows) {
 let SETTLEMENTS = {}; // node name -> { out: [...], in: [...] }
 
 async function fetchSettlements() {
-  const entries = await Promise.all(NODES.map(async (n) => {
+  const entries = await Promise.all(visibleNodes().map(async (n) => {
     const [r, inc] = await Promise.all([
-      getJson(nodeUrl(n.name, "settlements")),
-      getJson(nodeUrl(n.name, "incoming-settlements")),
+      getBankJson(nodeBankUrl(n.name, "settlements")),
+      getBankJson(nodeBankUrl(n.name, "incoming-settlements")),
     ]);
     const list = (x) => (x.ok && Array.isArray(x.body) ? x.body : []);
     return [n.name, { out: list(r), in: list(inc) }];
@@ -456,8 +591,8 @@ function renderLatestSettlement() {
   const i = latest.in;
   const net = o ? `${fmtMinor(o.net_amount_minor)} ${o.currency}` : `${i.net_amount || ""} ${i.currency || ""}`;
   const rail = o ? fmtRail(o.asset_amount, o.asset) : fmtRail(i.received_amount || i.asset_amount, i.asset);
-  const from = o ? latest.payer : (i.debtor_bank_id || "?");
-  const to = i ? latest.payee : "";
+  const from = o ? nodeName(latest.payer) : (bankLabel(i.debtor_bank_id, latest.payee) || "?");
+  const to = i ? nodeName(latest.payee) : "";
   const payLeg = o
     ? `${chip(settlementStatus(o))} depth ${o.depth}/${o.finality_depth} ${txLink(o.tx_id)}
        <div class="details">${esc(settlementError(o))}</div>`
@@ -480,7 +615,7 @@ function renderLatestSettlement() {
 async function renderSettlements() {
   const el = $("#settlement-tables");
   if (!el) return;
-  const parts = NODES.map((n) => {
+  const parts = visibleNodes().map((n) => {
     const data = SETTLEMENTS[n.name] || { out: [], in: [] };
     const rows = data.out;
     const incoming = incomingTable(n, data.in.slice(0, rowLimit(el)));
@@ -518,7 +653,7 @@ async function showCorridor(node, key) {
   const view = $("#corridor-view");
   view.hidden = false;
   view.textContent = "loading corridor view…";
-  const r = await getJson(nodeUrl(node, `settlements/${encodeURIComponent(key)}/corridor`));
+  const r = await getBankJson(nodeBankUrl(node, `settlements/${encodeURIComponent(key)}/corridor`));
   view.textContent = JSON.stringify(r.body, null, 2);
 }
 
@@ -527,8 +662,8 @@ async function showCorridor(node, key) {
 async function renderEvidence() {
   const el = $("#evidence-tables");
   if (!el) return;
-  const parts = await Promise.all(NODES.map(async (n) => {
-    const r = await getJson(nodeUrl(n.name, "evidence"));
+  const parts = await Promise.all(visibleNodes().map(async (n) => {
+    const r = await getBankJson(nodeBankUrl(n.name, "evidence"));
     const rows = r.ok && Array.isArray(r.body) ? r.body : [];
     if (rows.length === 0) {
       return `<h3>${nodeTitle(n.name)}</h3><p class="empty">no received credits</p>`;
@@ -540,7 +675,9 @@ async function renderEvidence() {
           ev.return_of_transaction_request_id
             ? `<div class="dim">↩ return of ${esc(short(ev.return_of_transaction_request_id, 8))}</div>` : ""}${
           ev.returned_by_transaction_request_id
-            ? `<div class="dim">↩ returned by ${esc(short(ev.returned_by_transaction_request_id, 8))}</div>` : ""}</td>
+            ? `<div class="dim">↩ returned by ${esc(short(ev.returned_by_transaction_request_id, 8))}</div>` : ""}${
+          ev.forwarded_as_transaction_request_id
+            ? `<div class="dim" title="${esc(ev.forwarded_as_transaction_request_id)}">→ carried on as ${esc(short(ev.forwarded_as_transaction_request_id, 8))} on ${esc(ev.forwarded_on_obp_host || "")}</div>` : ""}</td>
         <td>${ev.verified
           ? `<span class="chip chip-verified">verified</span>`
           : `<span class="chip chip-error">MISMATCH</span>`}</td>
@@ -593,6 +730,10 @@ function sendPayload(form) {
       },
     },
     charge_policy: "SHARED",
+    // Through a hub: the final bank, on another OBP host. Left out for a direct payment.
+    ...(String(f.get("final_bank") || "").trim()
+      ? { final_bank_routing: { scheme: String(f.get("final_bank_scheme") || "BIC").trim(), address: String(f.get("final_bank")).trim() } }
+      : {}),
   };
 }
 
@@ -606,7 +747,10 @@ async function onSend(e) {
   e.preventDefault();
   const form = e.target;
   const node = form.elements.node.value;
-  const r = await postJson(nodeUrl(node, "transaction-requests"), sendPayload(form));
+  // Sent by the node's bank on the selected OBP host.
+  const url = nodeBankUrl(node, "transaction-requests");
+  if (!url) return showResult($("#send-result"), { ok: false, status: 0, body: { message: `${node} is not on OBP host ${CURRENT_HOST}` } });
+  const r = await postJson(url, sendPayload(form));
   showResult($("#send-result"), r);
   refresh();
 }
@@ -615,7 +759,10 @@ async function onSettle(e) {
   e.preventDefault();
   const form = e.target;
   const node = form.elements.node.value;
-  const r = await postJson(nodeUrl(node, "settlements"), {
+  // Settled by the node's bank on the selected OBP host.
+  const url = nodeBankUrl(node, "settlements");
+  if (!url) return showResult($("#settle-result"), { ok: false, status: 0, body: { message: `${node} is not on OBP host ${CURRENT_HOST}` } });
+  const r = await postJson(url, {
     other_bank_id: form.elements.other_bank_id.value,
     currency: form.elements.currency.value,
   });
@@ -683,13 +830,26 @@ function initFieldHistory(form) {
 
 // ---- boot + polling ------------------------------------------------------
 
+// Fill the Send and Settle node pickers with the selected OBP host's nodes,
+// keeping the picked node when it is still there.
 function fillNodeSelects() {
   for (const sel of [$("#send-node"), $("#settle-node")]) {
-    if (sel) sel.innerHTML = NODES.map((n) => `<option>${esc(n.name)}</option>`).join("");
+    if (!sel) continue;
+    const picked = sel.value;
+    sel.innerHTML = visibleNodes().map((n) => `<option value="${esc(n.name)}">${esc(nodeName(n.name))}</option>`).join("");
+    if (visibleNodes().some((n) => n.name === picked)) sel.value = picked;
   }
 }
 
-// Apply the instance's configured prefill (/api/ui-defaults) to any Send or
+// Refill everything in the forms that depends on the selected OBP host.
+async function refillForms() {
+  fillNodeSelects();
+  await fillSendBanks();
+  await fillSettleBanks();
+  await renderSendNodeAccount();
+}
+
+// Apply this app's configured prefill (/api/ui-defaults) to any Send or
 // Settle input whose name matches a key. Config wins over the HTML defaults.
 async function applyUiDefaults() {
   const forms = [$("#send-form"), $("#settle-form")].filter(Boolean);
@@ -704,11 +864,192 @@ async function applyUiDefaults() {
   }
 }
 
+// ---- the Network page ------------------------------------------------------
+
+// What the Network page draws, rebuilt on each refresh.
+// hosts: [{ host, obpApiUrl, banks: [{ bankId, bic, nodes: [node names on it] }] }]
+// payments: [{ host, fromBankId, toBankId, count }]
+let NETWORK = { hosts: [], payments: [] };
+
+// Gather, for every OBP host any of this UI's nodes is on: its Open Corridor banks (as the first node on it that answers lists them), which of them are this UI's nodes' banks, and the payments each node's bank has sent there.
+async function fetchNetwork() {
+  const hosts = [];
+  const payments = [];
+  for (const hostName of allHosts().filter((name) => name !== UNKNOWN_HOST)) {
+    // The UI's nodes on this OBP host.
+    const nodesHere = NODES.filter((n) => hostNames(n.name).includes(hostName));
+    // The OBP host's banks, from the first of those nodes that can list them.
+    let banks = null;
+    for (const n of nodesHere) {
+      banks = await fetchBanksOn(n.name, hostName);
+      if (banks) break;
+    }
+    // Every Open Corridor bank on the OBP host, with the UI's nodes that serve it.
+    const bankRows = (banks || []).filter(isParticipant).map((bank) => ({
+      bankId: bank.bank_id,
+      bic: bankBic(bank),
+      nodes: nodesHere.filter((n) => nodeHostEntry(n.name, hostName)?.bank_id === bank.bank_id).map((n) => n.name),
+    }));
+    // A node's own bank is drawn even when the bank list could not be fetched.
+    for (const n of nodesHere) {
+      const ownBankId = nodeHostEntry(n.name, hostName)?.bank_id;
+      if (ownBankId && !bankRows.some((row) => row.bankId === ownBankId)) {
+        bankRows.push({ bankId: ownBankId, bic: "", nodes: [n.name] });
+      }
+    }
+    hosts.push({ host: hostName, obpApiUrl: hostUrl(hostName), banks: bankRows, listed: banks !== null });
+    // The payments each node's bank sent on this OBP host, counted per receiving bank.
+    for (const n of nodesHere) {
+      const entry = nodeHostEntry(n.name, hostName);
+      const url = nodeUrl(n.name, `hosts/${encodeURIComponent(entry.host)}/banks/${encodeURIComponent(entry.bank_id)}/transaction-requests`);
+      const r = await getJson(url);
+      const rows = r.ok && Array.isArray(r.body) ? r.body : [];
+      const counts = {};
+      for (const tr of rows) {
+        if (tr.other_bank_id) counts[tr.other_bank_id] = (counts[tr.other_bank_id] || 0) + 1;
+      }
+      for (const [toBankId, count] of Object.entries(counts)) {
+        payments.push({ host: hostName, fromBankId: entry.bank_id, toBankId, count });
+      }
+    }
+  }
+  NETWORK = { hosts, payments };
+}
+
+// A BIC that is on more than one of the drawn OBP hosts belongs to a hub.
+function hubBics() {
+  const seen = {};
+  for (const host of NETWORK.hosts) {
+    for (const bic of new Set(host.banks.map((bank) => bank.bic).filter(Boolean))) {
+      seen[bic] = (seen[bic] || 0) + 1;
+    }
+  }
+  return new Set(Object.keys(seen).filter((bic) => seen[bic] > 1));
+}
+
+// Shorten a label for the drawing.
+function clip(text, max) {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+// Draw the OBP hosts side by side, each bank as a circle, hubs joined across OBP hosts, and payment lines between banks.
+function renderNetworkView() {
+  const el = $("#network-view");
+  if (!el) return;
+  if (NETWORK.hosts.length === 0) {
+    el.innerHTML = `<p class="empty">no OBP host known yet: no node has answered /status</p>`;
+    return;
+  }
+  const hubs = hubBics();
+  // Sizes of the drawing.
+  const boxWidth = 380, boxHeight = 400, gap = 140, top = 40, bankRadius = 24;
+  const width = NETWORK.hosts.length * boxWidth + (NETWORK.hosts.length - 1) * gap + 20;
+  const height = boxHeight + top + 20;
+  // Where each bank is drawn: "host|bankId" -> {x, y}.
+  const position = {};
+  const boxes = NETWORK.hosts.map((host, hostIndex) => {
+    const boxX = 10 + hostIndex * (boxWidth + gap);
+    const centreX = boxX + boxWidth / 2, centreY = top + boxHeight / 2 + 10;
+    // Hubs first, so they sit on the side facing the next OBP host (or the previous one for the last box).
+    const banks = [...host.banks].sort((a, b) => (hubs.has(b.bic) ? 1 : 0) - (hubs.has(a.bic) ? 1 : 0));
+    const facingAngle = hostIndex === NETWORK.hosts.length - 1 && hostIndex > 0 ? Math.PI : 0;
+    const ringRadius = banks.length > 1 ? 120 : 0;
+    banks.forEach((bank, bankIndex) => {
+      const angle = facingAngle + (2 * Math.PI * bankIndex) / banks.length;
+      position[`${host.host}|${bank.bankId}`] = {
+        x: centreX + ringRadius * Math.cos(angle),
+        y: centreY + ringRadius * Math.sin(angle),
+      };
+    });
+    const note = host.listed ? "" : `<text x="${centreX}" y="${top + boxHeight - 12}" class="net-note" text-anchor="middle">could not list this OBP host's banks</text>`;
+    return `<g>
+      <rect x="${boxX}" y="${top}" width="${boxWidth}" height="${boxHeight}" rx="14" class="net-host"/>
+      <text x="${boxX + 14}" y="${top + 24}" class="net-host-name">OBP host ${esc(host.host)}</text>
+      ${note}
+    </g>`;
+  });
+  // Payment lines inside each OBP host, labelled with the number of payments near the sending end, so lines both ways between two banks keep their labels apart.
+  const paymentLines = NETWORK.payments.map((payment) => {
+    const from = position[`${payment.host}|${payment.fromBankId}`];
+    const to = position[`${payment.host}|${payment.toBankId}`];
+    if (!from || !to) return "";
+    const label = payment.count === 1 ? "1 payment" : `${payment.count} payments`;
+    return `<g>
+      <line x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}" class="net-payment" marker-end="url(#net-arrow)"/>
+      <text x="${from.x + (to.x - from.x) / 3}" y="${from.y + (to.y - from.y) / 3 - 6}" class="net-edge-label" text-anchor="middle">${label}</text>
+    </g>`;
+  }).join("");
+  // Dashed lines joining a hub's banks on neighbouring OBP hosts.
+  const hubLines = [];
+  for (let hostIndex = 0; hostIndex + 1 < NETWORK.hosts.length; hostIndex++) {
+    const left = NETWORK.hosts[hostIndex], right = NETWORK.hosts[hostIndex + 1];
+    for (const leftBank of left.banks.filter((bank) => hubs.has(bank.bic))) {
+      const rightBank = right.banks.find((bank) => bank.bic === leftBank.bic);
+      if (!rightBank) continue;
+      const from = position[`${left.host}|${leftBank.bankId}`];
+      const to = position[`${right.host}|${rightBank.bankId}`];
+      hubLines.push(`<g>
+        <line x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}" class="net-hub-link"/>
+        <text x="${(from.x + to.x) / 2}" y="${(from.y + to.y) / 2 - 8}" class="net-edge-label" text-anchor="middle">hub · BIC ${esc(leftBank.bic)}</text>
+      </g>`);
+    }
+  }
+  // The banks, drawn last so they sit on top of the lines.
+  const bankMarks = NETWORK.hosts.flatMap((host) => host.banks.map((bank) => {
+    const point = position[`${host.host}|${bank.bankId}`];
+    // A bank can be both: a hub node's bank is served by this UI and is a hub.
+    const kind = ["net-bank", bank.nodes.length ? "own" : "", hubs.has(bank.bic) ? "hub" : ""].join(" ").trim();
+    const nodeLine = bank.nodes.length ? `<text x="${point.x}" y="${point.y + 4}" class="net-node-name" text-anchor="middle">${esc(clip(bank.nodes.map(nodeName).join(", "), 10))}</text>` : "";
+    const title = `${bank.bankId}${bank.bic ? ` · BIC ${bank.bic}` : ""} on ${host.host}${bank.nodes.length ? ` · node ${bank.nodes.map(nodeName).join(", ")}` : ""}${hubs.has(bank.bic) ? " · hub" : ""}`;
+    return `<g>
+      <title>${esc(title)}</title>
+      <circle cx="${point.x}" cy="${point.y}" r="${bankRadius}" class="${kind}"/>
+      ${nodeLine}
+      <text x="${point.x}" y="${point.y + bankRadius + 14}" class="net-bank-id" text-anchor="middle">${esc(clip(bank.bankId, 22))}</text>
+      <text x="${point.x}" y="${point.y + bankRadius + 28}" class="net-bic" text-anchor="middle">${esc(bank.bic ? `BIC ${bank.bic}` : "no BIC")}</text>
+    </g>`;
+  })).join("");
+  el.innerHTML = `<svg class="net-svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="Open Corridor banks per OBP host">
+    <defs><marker id="net-arrow" viewBox="0 0 10 10" refX="27" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="net-arrow"/></marker></defs>
+    ${boxes.join("")}${hubLines.join("")}${paymentLines}${bankMarks}
+  </svg>
+  <p class="hint net-legend"><span class="net-key own"></span> a bank served by one of this UI's nodes · <span class="net-key hub"></span> a hub (the same BIC on two OBP hosts) · <span class="net-key"></span> another Open Corridor bank</p>`;
+}
+
+// Under the drawing: per OBP host, the banks as text, for reading and copying.
+function renderNetworkHosts() {
+  const el = $("#network-hosts");
+  if (!el) return;
+  const hubs = hubBics();
+  el.innerHTML = NETWORK.hosts.map((host) => {
+    const rows = host.banks.map((bank) => {
+      const sent = NETWORK.payments.filter((p) => p.host === host.host && p.fromBankId === bank.bankId)
+        .map((p) => `${p.count} to ${p.toBankId}`).join(", ");
+      return `<tr>
+        <td>${esc(bank.bankId)}</td>
+        <td>${esc(bank.bic)}</td>
+        <td>${esc(bank.nodes.map(nodeName).join(", "))}</td>
+        <td>${hubs.has(bank.bic) ? "hub" : ""}</td>
+        <td>${esc(sent)}</td>
+      </tr>`;
+    }).join("");
+    return `<h3>OBP host ${esc(host.host)} <span class="dim">· OBP-API ${esc(host.obpApiUrl)}</span></h3>
+      <table>
+        <thead><tr><th>bank id</th><th>BIC</th><th>this UI's node</th><th>role</th><th>payments sent</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="5" class="empty">no Open Corridor banks listed</td></tr>`}</tbody>
+      </table>`;
+  }).join("");
+}
+
 // One app.js serves every page: each renderer no-ops when its container is
 // absent, so refresh() only fetches what the current page shows.
 async function refresh() {
-  // Node identity and instances, used by the headings below (cached per node).
+  // Node identity and OBP hosts, used by the headings below (cached per node).
   await Promise.all(NODES.map((n) => fetchStatus(n.name)));
+  // A node that has just answered can bring a new OBP host: redraw the tabs, and the forms if the selection moved.
+  if (renderHostTabs()) await refillForms();
+  // Each node's banks, so the tables can show a BIC next to each bank_id (cached per node).
+  await Promise.all(NODES.map((n) => fetchBanks(n.name)));
   if ($("#tr-tables") || $("#position-view")) {
     await fetchTrs();
     renderTrTables();
@@ -717,6 +1058,11 @@ async function refresh() {
   if ($("#settlement-tables") || $("#latest-settlement")) {
     await fetchSettlements();
     renderLatestSettlement();
+  }
+  if ($("#network-view")) {
+    await fetchNetwork();
+    renderNetworkView();
+    renderNetworkHosts();
   }
   await Promise.all([renderHealth(), renderSettlements(), renderEvidence()]);
 }
@@ -735,6 +1081,9 @@ async function boot() {
   initSectionFolds();
   const r = await getJson("/api/nodes");
   NODES = r.ok && Array.isArray(r.body) ? r.body : [];
+  // Each node's OBP host, for the tabs, before anything is drawn.
+  await Promise.all(NODES.map((n) => fetchStatus(n.name)));
+  renderHostTabs();
   fillNodeSelects();
   await applyUiDefaults();
   initFieldHistory($("#send-form"));
@@ -754,6 +1103,8 @@ async function boot() {
   document.addEventListener("click", (e) => {
     const btn = e.target.closest(".corridor-btn");
     if (btn) showCorridor(btn.dataset.node, btn.dataset.key);
+    const tab = e.target.closest(".host-tab");
+    if (tab && tab.dataset.host !== CURRENT_HOST) selectHost(tab.dataset.host);
   });
   await refresh();
   setInterval(() => { if (!document.hidden) refresh(); }, POLL_MS);

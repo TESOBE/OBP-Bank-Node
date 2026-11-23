@@ -5,7 +5,7 @@
 //! OIDC login for the `/setup` operator page — the same scheme the OBP
 //! Portal / API Manager use (`OBP-Frontend/packages/shared/src/lib/server/oauth`):
 //!
-//! 1. `GET {obp}/obp/v5.1.0/well-known` lists the instance's OIDC providers
+//! 1. `GET {obp}/obp/v5.1.0/well-known` lists the OBP host's OIDC providers
 //!    as `{provider, url}` pairs; we pick the configured one (default
 //!    `obp-oidc`) and fetch its discovery document for the authorization and
 //!    token endpoints. A `discovery_url` config override skips the list.

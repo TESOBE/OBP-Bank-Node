@@ -86,6 +86,8 @@ async fn interface_c_transport_round_trips_all_message_types() {
     // asserts the NOT_CONFIGURED reply. The idempotency/finality path has its
     // own unit coverage in router.rs / settlement_store.rs / finality.rs.
     let router = Arc::new(Router::new(
+        // The OBP host the messages come from.
+        "test-host-a:8080",
         "test-bank",
         "test-account",
         evidence.clone(),

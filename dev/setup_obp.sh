@@ -15,13 +15,40 @@
 #     CanAttachOpenCorridorPromise and CanSettleOpenCorridor
 #   - FX rates and the per-bank AMQP broker registrations
 # and writes the admin's DirectLogin token to env.sh (run_roundtrip.sh settles with it).
+#
+# Another OBP host (for example a second local OBP-API, on :8081) is set up with the same
+# script and these environment variables, all optional. Unset, the script sets up the
+# round-trip pair above on dev/local.env's OBP host, as it always has.
+#   RT_LOCAL_ENV  the env file to read, instead of dev/local.env
+#   RT_NODES      the banks that have a node, as space-separated rows of
+#                 side|bank_id|BIC|address file in secrets/|consumer_id variable|broker user|broker password[|vhost]
+#                 The node's config is dev/node-<side>.yaml. The vhost defaults to /bank.<bank_id>; a bank on
+#                 several local OBP hosts needs a different one on each, because they share one RabbitMQ.
+#   RT_HUB_BANKS  banks with no node yet, as space-separated rows of bank_id|BIC. Each gets its BIC
+#                 and FX rates, but no participant mark: with no node, a payment to it could not be
+#                 delivered. A hub bank gets its node once a node can be on several OBP hosts.
+#   RT_ENV_SH     where to write the admin's token, instead of dev/env.sh
 set -uo pipefail
 
 # Per-machine settings come from dev/local.env (gitignored; see dev/local.env.example):
 # RT_CONSUMER_KEY, NODE_A_CONSUMER_ID, NODE_B_CONSUMER_ID (written by dev/create_consumers.sh),
 # RT_SA_USER, RT_SA_PASS, and optionally RT_OBP_URL.
 SETUP_DIR="$(cd "$(dirname "$0")" && pwd)"
-[ -f "$SETUP_DIR/local.env" ] && source "$SETUP_DIR/local.env"
+LOCAL_ENV="${RT_LOCAL_ENV:-$SETUP_DIR/local.env}"
+[ -f "$LOCAL_ENV" ] && source "$LOCAL_ENV"
+LOCAL_ENV_NAME="dev/$(basename "$LOCAL_ENV")"
+ENV_SH="${RT_ENV_SH:-$SETUP_DIR/env.sh}"
+
+# The banks with a node: side|bank_id|BIC|address file|consumer_id variable|broker user|broker password.
+# Each demo bank has a made-up BIC, so a payment can name the beneficiary bank by BIC instead of by
+# OBP bank id. ZZ is not assigned to any country, so these can never be a real bank's BIC.
+DEFAULT_NODES=(
+  "a|rt.bank.a4|DEMAZZ22|cardano.addr|NODE_A_CONSUMER_ID|bank_a_node|rtpass-a"
+  "b|rt.bank.b4|DEMBZZ22|creditor.addr|NODE_B_CONSUMER_ID|bank_b_node|rtpass-b"
+)
+if [ -n "${RT_NODES:-}" ]; then read -r -a NODES <<<"$RT_NODES"; else NODES=("${DEFAULT_NODES[@]}"); fi
+# The banks with no node yet: bank_id|BIC.
+if [ -n "${RT_HUB_BANKS:-}" ]; then read -r -a HUB_BANKS <<<"$RT_HUB_BANKS"; else HUB_BANKS=(); fi
 
 OBP="${RT_OBP_URL:-http://localhost:8080}"
 CK="${RT_CONSUMER_KEY:-}"   # consumer 'obp-bank-node-roundtrip', for the admin's DirectLogin
@@ -29,29 +56,38 @@ SA_USER="${RT_SA_USER:-}"
 SA_PASS="${RT_SA_PASS:-}"
 missing=""
 [ -n "$CK" ] || missing+=" RT_CONSUMER_KEY"
-[ -n "${NODE_A_CONSUMER_ID:-}" ] && [ -n "${NODE_B_CONSUMER_ID:-}" ] || missing+=" NODE_A_CONSUMER_ID/NODE_B_CONSUMER_ID"
+for row in "${NODES[@]}"; do
+  IFS='|' read -r _ _ _ _ CONSUMER_VAR _ _ <<<"$row"
+  [ -n "${!CONSUMER_VAR:-}" ] || missing+=" $CONSUMER_VAR"
+done
 [ -n "$SA_USER" ] && [ -n "$SA_PASS" ] || missing+=" RT_SA_USER/RT_SA_PASS"
-[ -z "$missing" ] || { echo "FATAL: set in dev/local.env (dev/create_consumers.sh writes the Consumer values):$missing" >&2; exit 1; }
+[ -z "$missing" ] || { echo "FATAL: set in $LOCAL_ENV_NAME (dev/create_consumers.sh writes the Consumer values):$missing" >&2; exit 1; }
 
-BANK_A="rt.bank.a4"; BANK_B="rt.bank.b4"
 # Cardano addresses (preprod) of the nodes' wallets, written by dev/wallets.py next to the keys.
 REPO_DIR="$(cd "$SETUP_DIR/.." && pwd)"
 read_addr() { # read_addr <file> -> address
   [ -s "$REPO_DIR/secrets/$1" ] || { echo "FATAL: secrets/$1 not found — run python3 dev/wallets.py" >&2; exit 1; }
   tr -d '[:space:]' < "$REPO_DIR/secrets/$1"
 }
-ADDR_A=$(read_addr cardano.addr) || exit 1
-ADDR_B=$(read_addr creditor.addr) || exit 1
-# The UI setup pages apply the same address as the CARDANO routing on OBP-INCOMING-SETTLEMENT-ACCOUNT.
-for pair in "ui-a.yaml:$ADDR_A" "ui-b.yaml:$ADDR_B"; do
-  grep -q "address: \"${pair#*:}\"" "$SETUP_DIR/${pair%%:*}" \
-    || echo "WARN: dev/${pair%%:*} has a different CARDANO settlement address than secrets/ (${pair#*:})"
+# Each node's settlement address, by side.
+declare -A ADDR
+for row in "${NODES[@]}"; do
+  IFS='|' read -r S _ _ ADDR_FILE _ _ _ <<<"$row"
+  ADDR[$S]=$(read_addr "$ADDR_FILE") || exit 1
+  # The UI setup pages apply the same address as the CARDANO routing on OBP-INCOMING-SETTLEMENT-ACCOUNT.
+  if [ -f "$SETUP_DIR/ui-$S.yaml" ]; then
+    grep -q "address: \"${ADDR[$S]}\"" "$SETUP_DIR/ui-$S.yaml" \
+      || echo "WARN: dev/ui-$S.yaml has a different CARDANO settlement address than secrets/ (${ADDR[$S]})"
+  fi
+  echo "settlement address ${S^^}: ${ADDR[$S]}"
 done
-echo "settlement addresses: A=$ADDR_A B=$ADDR_B"
 
 # From a node config: its corridor accounts ("CURRENCY ACCOUNT_ID" lines) and its view.
+# The node configs list their banks under hosts:, so the block may sit at any indentation: the currency lines are the ones indented deeper than corridor_accounts:.
 corridor_accounts() {
-  awk '/^  corridor_accounts:/{f=1;next} f&&/^    [A-Z]{3}:/{gsub(/[":]/,""); print $1, $2; next} f&&!/^    /{f=0}' "$SETUP_DIR/$1"
+  awk 'match($0, /^ *corridor_accounts:/) {f=1; depth=index($0, "c"); next}
+       f && /^ *[A-Z][A-Z][A-Z]:/ && match($0, /[^ ]/) > depth {gsub(/[":]/,""); print $1, $2; next}
+       f {f=0}' "$SETUP_DIR/$1" | awk '!seen[$0]++'   # once each: a hub node lists the same accounts on each OBP host
 }
 node_view() { grep -oP '^\s*view_id:\s*"\K[^"]+' "$SETUP_DIR/$1" | head -1; }
 
@@ -90,16 +126,32 @@ grant "$SA_ID" ""        CanCreatePlatformApp
 grant "$SA_ID" ""        CanCreateCustomView
 
 echo "== creating banks"
-# Each demo bank has a made-up BIC, so a payment can name the beneficiary bank by BIC instead of by
-# OBP bank id. ZZ is not assigned to any country, so these can never be a real bank's BIC.
-for pair in "$BANK_A:DEMAZZ22" "$BANK_B:DEMBZZ22"; do
-  B="${pair%%:*}"; BIC="${pair#*:}"
+# bank_id|BIC|has a node, for the banks with a node and then the hub banks.
+BANK_ROWS=()
+for row in "${NODES[@]}"; do IFS='|' read -r _ B BIC _ _ _ _ <<<"$row"; BANK_ROWS+=("$B|$BIC|node"); done
+for row in "${HUB_BANKS[@]}"; do IFS='|' read -r B BIC <<<"$row"; BANK_ROWS+=("$B|$BIC|hub"); done
+for bank_row in "${BANK_ROWS[@]}"; do
+  IFS='|' read -r B BIC KIND <<<"$bank_row"
   BANK_JSON="{\"id\":\"$B\",\"bank_code\":\"$B\",\"full_name\":\"Round-trip $B\",\"logo\":\"\",\"website\":\"\",\"bank_routings\":[{\"scheme\":\"BIC\",\"address\":\"$BIC\"}]}"
   api POST /obp/v5.1.0/banks "$BANK_JSON" \
     | grep -qE '"id"|OBP-34000|already exists' && echo "  bank $B ok" || echo "  bank $B — check"
   # A bank created before the BICs were added gets its BIC here. Update Bank is defined in v5.0.0.
   api PUT /obp/v5.1.0/banks "$BANK_JSON" \
     | grep -q "\"$BIC\"" && echo "  bank $B BIC $BIC ok" || echo "  bank $B BIC — check"
+  # Mark the bank as an Open Corridor participant. getBanks lists every bank on the OBP host, and the
+  # Bank Node UI's bank pickers show only those carrying this attribute. Create Bank Attribute adds a
+  # new attribute on every call, so it is only called when the bank does not carry it yet.
+  # A hub bank with no node yet is not marked: a payment to it could not be delivered.
+  grant "$SA_ID" "$B" CanCreateBankAttribute
+  if [ "$KIND" = "hub" ]; then
+    echo "  bank $B is a hub bank with no node yet: not marked as a participant"
+  elif api GET "/obp/v5.1.0/banks/$B" | grep -q '"OPEN_CORRIDOR_PARTICIPANT"'; then
+    echo "  bank $B participant ok"
+  else
+    api POST "/obp/v5.1.0/banks/$B/attribute" \
+      '{"name":"OPEN_CORRIDOR_PARTICIPANT","type":"BOOLEAN","value":"true","is_active":true}' \
+      | grep -q bank_attribute_id && echo "  bank $B participant set" || echo "  bank $B participant — check"
+  fi
   grant "$SA_ID" "$B" CanCreateAccount
   grant "$SA_ID" "$B" CanConfigureAmqpBankBroker
   # Bank-scoped since 2026-08-07: the settle POST is addressed to a bank's URL
@@ -161,8 +213,9 @@ platform_app() { # platform_app CONSUMER_ID BANK LABEL
   done
 }
 
-for side in "a|$BANK_A|$NODE_A_CONSUMER_ID" "b|$BANK_B|$NODE_B_CONSUMER_ID"; do
-  IFS='|' read -r S B CONSUMER <<<"$side"
+for row in "${NODES[@]}"; do
+  IFS='|' read -r S B _ _ CONSUMER_VAR _ _ <<<"$row"
+  CONSUMER="${!CONSUMER_VAR}"
   VIEW="$(node_view "node-$S.yaml")"
   [ -n "$VIEW" ] || { echo "FATAL: no bank.view_id in dev/node-$S.yaml"; exit 1; }
   echo "== bank $B: corridor accounts, the node's view and its Consumer's access"
@@ -178,7 +231,8 @@ for side in "a|$BANK_A|$NODE_A_CONSUMER_ID" "b|$BANK_B|$NODE_B_CONSUMER_ID"; do
 done
 
 echo "== creating EUR<->KES FX rates (challenge threshold conversion needs them)"
-for B in "$BANK_A" "$BANK_B"; do
+for bank_row in "${BANK_ROWS[@]}"; do
+  B="${bank_row%%|*}"
   grant "$SA_ID" "$B" CanCreateFxRate
   api PUT "/obp/v5.1.0/banks/$B/fx" \
     "{\"bank_id\":\"$B\",\"from_currency_code\":\"EUR\",\"to_currency_code\":\"KES\",\"conversion_value\":150.0,\"inverse_conversion_value\":0.006667,\"effective_date\":\"2026-07-31T00:00:00Z\"}" \
@@ -189,15 +243,17 @@ for B in "$BANK_A" "$BANK_B"; do
 done
 
 echo "== registering AMQP brokers"
-api PUT "/obp/v7.0.0/banks/$BANK_A/amqp-broker" \
-  "{\"host\":\"localhost\",\"port\":5672,\"virtual_host\":\"/bank.$BANK_A\",\"username\":\"bank_a_node\",\"password\":\"rtpass-a\",\"use_ssl\":false,\"settlement_address\":\"$ADDR_A\"}" \
-  | grep -q '"bank_id"' && echo "  broker $BANK_A ok" || echo "  broker $BANK_A — check"
-api PUT "/obp/v7.0.0/banks/$BANK_B/amqp-broker" \
-  "{\"host\":\"localhost\",\"port\":5672,\"virtual_host\":\"/bank.$BANK_B\",\"username\":\"bank_b_node\",\"password\":\"rtpass-b\",\"use_ssl\":false,\"settlement_address\":\"$ADDR_B\"}" \
-  | grep -q '"bank_id"' && echo "  broker $BANK_B ok" || echo "  broker $BANK_B — check"
+for row in "${NODES[@]}"; do
+  IFS='|' read -r S B _ _ _ BROKER_USER BROKER_PASS VHOST <<<"$row"
+  # The vhost from the row, or /bank.<bank_id>.
+  VHOST="${VHOST:-/bank.$B}"
+  api PUT "/obp/v7.0.0/banks/$B/amqp-broker" \
+    "{\"host\":\"localhost\",\"port\":5672,\"virtual_host\":\"$VHOST\",\"username\":\"$BROKER_USER\",\"password\":\"$BROKER_PASS\",\"use_ssl\":false,\"settlement_address\":\"${ADDR[$S]}\"}" \
+    | grep -q '"bank_id"' && echo "  broker $B ok" || echo "  broker $B — check"
+done
 
-echo "== writing the admin token to env.sh"
-cat > "$SETUP_DIR/env.sh" <<EOF
+echo "== writing the admin token to dev/$(basename "$ENV_SH")"
+cat > "$ENV_SH" <<EOF
 # generated by setup_obp.sh $(date -Is)
 export RT_ADMIN_TOKEN="$TOK"
 EOF

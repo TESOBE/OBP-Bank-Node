@@ -10,7 +10,7 @@ way (see "Fixes applied"); the follow-ups they exposed are in
 `WIP/NEXT_STEPS.md`.**
 
 Goal: full Open Corridor round trip on one machine — Bank Node A (debtor,
-`rt.bank.a`, Cardano preprod) → OBP-API (one instance, both banks) →
+`rt.bank.a`, Cardano preprod) → OBP-API (one OBP host, both banks) →
 settle-pair → RabbitMQ per-bank vhosts → Node A executes ADA settlement,
 Node B receives credit notification + evidence and posts to a CBS stub.
 
@@ -112,8 +112,8 @@ Node B receives credit notification + evidence and posts to a CBS stub.
 4. Start the three processes (from repo root; each in its own terminal or
    nohup):
    - `python3 dev/cbs_stub.py`
-   - `source dev/env.sh && OBP_BANK_NODE_CONFIG=dev/node-a.yaml OBP_BN_OBP_API__DIRECT_LOGIN_TOKEN="$RT_NODE_A_TOKEN" cargo run -p obp-bank-node`
-   - `source dev/env.sh && OBP_BANK_NODE_CONFIG=dev/node-b.yaml OBP_BN_OBP_API__DIRECT_LOGIN_TOKEN="$RT_NODE_B_TOKEN" cargo run -p obp-bank-node`
+   - `dev/start_node_a.sh` (the node's login comes from the environment variables its config names under `hosts:`, here `NODE_A_CLIENT_ID` / `NODE_A_CLIENT_SECRET`)
+   - `dev/start_node_b.sh`
 5. `bash dev/run_roundtrip.sh` — caveats to verify on first run:
    the sqlite column names it queries (`settlements.confirmation_depth`,
    `evidence` table columns) were written from memory, not checked against

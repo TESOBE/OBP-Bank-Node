@@ -69,7 +69,8 @@ impl Default for DispatcherConfig {
 
 pub struct Dispatcher {
     store: OutboxStore,
-    obp: Arc<ObpClient>,
+    /// One OBP-API client per OBP host the node is on, keyed by the OBP host. A row is sent with the client of its own OBP host.
+    obp_clients: std::collections::HashMap<String, Arc<ObpClient>>,
     backend: Arc<dyn BlockchainBackend>,
     blockchain_label: &'static str,
     config: DispatcherConfig,
@@ -78,14 +79,14 @@ pub struct Dispatcher {
 impl Dispatcher {
     pub fn new(
         store: OutboxStore,
-        obp: Arc<ObpClient>,
+        obp_clients: std::collections::HashMap<String, Arc<ObpClient>>,
         backend: Arc<dyn BlockchainBackend>,
         blockchain_label: &'static str,
         config: DispatcherConfig,
     ) -> Self {
         Self {
             store,
-            obp,
+            obp_clients,
             backend,
             blockchain_label,
             config,
@@ -137,10 +138,24 @@ impl Dispatcher {
         let mut promise_tx_id = row.promise_tx_id.clone();
         let mut advanced = false;
 
+        // The OBP-API client of the OBP host the row was made on.
+        let Some(obp) = self.obp_clients.get(&row.obp_host) else {
+            // The row's OBP host is not in this node's config (or the row was written before the node recorded hosts).
+            let reason = format!(
+                "this node is not on OBP host '{}', where this transaction request was made, so it cannot be sent",
+                row.obp_host
+            );
+            // Say so in the log.
+            warn!(transaction_request_id = %id, obp_host = %row.obp_host, "{reason}");
+            // A terminal failure, like a rejection by OBP-API.
+            self.raise_exception(row, &reason).await?;
+            // The row's status changed.
+            return Ok(true);
+        };
+
         // Step 1: submit to OBP-API if not already done.
         if current == status::INITIATED {
-            match self
-                .obp
+            match obp
                 .submit_open_corridor(&row.bank_id, &row.account_id, &row.request_payload)
                 .await
             {
@@ -257,8 +272,7 @@ impl Dispatcher {
                 salt: &row.commitment_salt,
                 preimage: &preimage,
             };
-            match self
-                .obp
+            match obp
                 .report_promise(&row.bank_id, &row.account_id, obp_tr_id, &evidence)
                 .await
             {
@@ -493,10 +507,21 @@ mod tests {
         )
     }
 
+    // The OBP host the test rows are made on, unless a test says otherwise.
+    const TEST_HOST: &str = "test-host-a:8080";
+
     async fn insert_row(store: &OutboxStore, id: &str) {
+        // A row on the test OBP host.
+        insert_row_on(store, id, TEST_HOST).await;
+    }
+
+    // Insert a row made on the given OBP host.
+    async fn insert_row_on(store: &OutboxStore, id: &str, obp_host: &str) {
         store
             .insert(NewEntry {
                 transaction_request_id: id,
+                // The OBP host the row was made on.
+                obp_host,
                 bank_id: "ke.01.kcs",
                 account_id: "acct-1",
                 request_payload: r#"{"value":{"currency":"KES","amount":"1500.00"}}"#,
@@ -522,10 +547,16 @@ mod tests {
         backend: Arc<dyn BlockchainBackend>,
         max_retry_duration: Duration,
     ) -> Dispatcher {
-        let obp = Arc::new(ObpClient::new(obp_base, ObpAuth::None).unwrap());
+        // One client, for the test OBP host.
+        let obp_clients = std::collections::HashMap::from([(
+            // The test OBP host.
+            TEST_HOST.to_string(),
+            // Its OBP-API stub.
+            Arc::new(ObpClient::new(obp_base, ObpAuth::None).unwrap()),
+        )]);
         Dispatcher::new(
             store,
-            obp,
+            obp_clients,
             backend,
             "mock",
             DispatcherConfig {
@@ -715,6 +746,74 @@ mod tests {
         assert_eq!(rec.status, status::EXCEPTION);
         assert!(rec.exception_reason.unwrap().contains("OBP-30018"));
         assert!(!backend.written_kinds().contains(&"promise"), "no Promise on a rejected request");
+    }
+
+    // Each row is sent to the OBP-API of the OBP host it was made on.
+    #[tokio::test]
+    async fn each_row_goes_to_its_own_obp_host() {
+        // An empty outbox.
+        let store = OutboxStore::connect_in_memory().await.unwrap();
+        // A row made on OBP host A.
+        insert_row_on(&store, "tr-on-a", "host-a:8080").await;
+        // A row made on OBP host B.
+        insert_row_on(&store, "tr-on-b", "host-b:8081").await;
+        // OBP-API A accepts and takes the report.
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        // Its stub.
+        let base_a = spawn_obp_stub(full_obp(tx)).await;
+        // OBP-API B refuses: the account is not found there.
+        let base_b = spawn_obp_stub(rejecting_obp()).await;
+        // One client per OBP host.
+        let obp_clients = std::collections::HashMap::from([
+            // OBP host A's client.
+            ("host-a:8080".to_string(), Arc::new(ObpClient::new(base_a, ObpAuth::None).unwrap())),
+            // OBP host B's client.
+            ("host-b:8081".to_string(), Arc::new(ObpClient::new(base_b, ObpAuth::None).unwrap())),
+        ]);
+        // A dispatcher with both.
+        let disp = Dispatcher::new(
+            store.clone(),
+            obp_clients,
+            Arc::new(MockBackend::new()),
+            "mock",
+            DispatcherConfig {
+                tick_interval: Duration::from_millis(10),
+                retry_interval: Duration::from_secs(0),
+                batch_size: 50,
+                max_retry_duration: Duration::from_secs(3600),
+            },
+        );
+        // One pass over the outbox.
+        disp.process_due_once().await.unwrap();
+        // OBP host A's row was accepted by OBP-API A.
+        assert_eq!(store.get("tr-on-a").await.unwrap().unwrap().status, status::REPORTED);
+        // OBP host B's row was refused by OBP-API B, and only by it.
+        let on_b = store.get("tr-on-b").await.unwrap().unwrap();
+        // Refused.
+        assert_eq!(on_b.status, status::EXCEPTION);
+        // With OBP-API B's reason.
+        assert!(on_b.exception_reason.unwrap().contains("OBP-30018"));
+    }
+
+    // A row made on an OBP host the node is no longer on cannot be sent, and says why.
+    #[tokio::test]
+    async fn a_row_on_an_unknown_obp_host_becomes_an_exception() {
+        // An empty outbox.
+        let store = OutboxStore::connect_in_memory().await.unwrap();
+        // A row made on an OBP host the node is not configured for.
+        insert_row_on(&store, "tr-elsewhere", "gone.example").await;
+        // A dispatcher that only knows the test OBP host.
+        let base = spawn_obp_stub(accepting_obp()).await;
+        // Built with the usual test client.
+        let disp = dispatcher(store.clone(), base, Arc::new(MockBackend::new()));
+        // One pass over the outbox.
+        disp.process_due_once().await.unwrap();
+        // The row is an exception.
+        let rec = store.get("tr-elsewhere").await.unwrap().unwrap();
+        // Terminal.
+        assert_eq!(rec.status, status::EXCEPTION);
+        // Naming the OBP host.
+        assert!(rec.exception_reason.unwrap().contains("gone.example"));
     }
 
     #[tokio::test]

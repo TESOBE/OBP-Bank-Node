@@ -79,29 +79,34 @@ one mode), local operations.
 ### TESOBE provides at registration
 
 ```yaml
-bank:
-  bank_id:    "ke.01.kcs"                            # your bank ID
-  account_id: "7bc9a8e4-5d02-40e3-b129-1c3bf89de9f1" # your settlement account
-  view_id:    "owner"
-
-obp_api:
-  base_url:      "https://obp-api.example.com"
-  # OAuth2 client-credentials (machine-to-machine).
-  token_url:     "https://obp-api.example.com/oauth2/token"
-  client_id:     "..."
-  client_secret: "..."
-  # scope:       "..."          # optional
-  # Alternative: a pre-obtained DirectLogin token.
-  # direct_login_token: "..."
-
-rabbitmq:
-  host:          "rmq.openbankproject.com"
-  port:          5672
-  username:      "..."
-  password:      "..."
-  virtual_host:  "/bank.ke.01.kcs"
-  request_queue: "obp_rpc_queue"
+# The OBP host the node is on, and your bank there. A bank on several OBP hosts lists one entry per OBP host,
+# each with its own bank_id, accounts and RabbitMQ.
+hosts:
+  - obp_api:
+      base_url:          "https://obp-api.example.com"  # its host names the OBP host: obp-api.example.com
+      # OAuth2 client credentials (machine-to-machine). The id and secret are read from the
+      # environment variables named here; they are never written in this file.
+      token_url:         "https://obp-api.example.com/oauth2/token"
+      client_id_env:     "OBP_BANK_NODE_CLIENT_ID"
+      client_secret_env: "OBP_BANK_NODE_CLIENT_SECRET"
+      # scope:           "..."          # optional
+      # Alternative: a pre-obtained DirectLogin token, from an environment variable.
+      # direct_login_token_env: "OBP_BANK_NODE_DIRECT_LOGIN_TOKEN"
+    rabbitmq:
+      enabled:       true
+      host:          "rmq.openbankproject.com"
+      port:          5672
+      username:      "..."
+      password:      "..."
+      virtual_host:  "/bank.ke.01.kcs"
+      request_queue: "obp_rpc_queue"
+    bank:
+      bank_id:    "ke.01.kcs"                            # your bank ID on this OBP host
+      account_id: "7bc9a8e4-5d02-40e3-b129-1c3bf89de9f1" # your settlement account there
+      view_id:    "owner"
 ```
+
+Set `OBP_BANK_NODE_CLIENT_ID` and `OBP_BANK_NODE_CLIENT_SECRET` in the node's environment (for example in your container's secrets). The node refuses to start if a variable named here is missing or empty.
 
 ### You provide
 
@@ -220,8 +225,10 @@ re-registering a new key with TESOBE.
 
 ### Initiate a payment
 
+The URLs name the OBP host and your bank there, as OBP-API's own URLs name a bank: `{OBP_HOST}` is the host (and port, if it has one) of the OBP-API the payment is made on, for example `obp-api.example.com`, and `{BANK_ID}` is your bank's id on that OBP host. A bank on several OBP hosts has a different `{BANK_ID}` on each. `GET /obp-bank-node/v5.1.0/hosts` lists the OBP hosts the node is on, with your bank on each. A URL naming an OBP host the node is not on, or another bank, is answered with 404 `OBP-BANK-NODE-NOT-FOUND-001`.
+
 ```
-POST http://local-node:8088/obp-bank-node/v5.1.0/transaction-requests
+POST http://local-node:8088/obp-bank-node/v5.1.0/hosts/{OBP_HOST}/banks/{BANK_ID}/transaction-requests
 Authorization: Bearer <local_secret>
 Content-Type: application/json
 ```
@@ -285,7 +292,7 @@ etc.).
 ### Query a payment
 
 ```
-GET  http://local-node:8088/obp-bank-node/v5.1.0/transaction-requests/{transaction_request_id}
+GET  http://local-node:8088/obp-bank-node/v5.1.0/hosts/{OBP_HOST}/banks/{BANK_ID}/transaction-requests/{transaction_request_id}
 Authorization: Bearer <local_secret>
 ```
 
@@ -299,7 +306,7 @@ Status values:
 ### List recent payments
 
 ```
-GET  http://local-node:8088/obp-bank-node/v5.1.0/transaction-requests
+GET  http://local-node:8088/obp-bank-node/v5.1.0/hosts/{OBP_HOST}/banks/{BANK_ID}/transaction-requests
 Authorization: Bearer <local_secret>
 ```
 
@@ -421,7 +428,7 @@ Returns liveness, RabbitMQ connection state, and OBP API / Cardano backend
 status. `rabbitmq` should report `connected`. Then send a test payment:
 
 ```bash
-curl -X POST http://local-node:8088/obp-bank-node/v5.1.0/transaction-requests \
+curl -X POST http://local-node:8088/obp-bank-node/v5.1.0/hosts/obp-api.example.com/banks/ke.01.kcs/transaction-requests \
   -H "Authorization: Bearer <local_secret>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -445,7 +452,7 @@ You should get a `202` with a `transaction_request_id`. Query it back:
 
 ```bash
 curl -H "Authorization: Bearer <local_secret>" \
-  http://local-node:8088/obp-bank-node/v5.1.0/transaction-requests/<transaction_request_id>
+  http://local-node:8088/obp-bank-node/v5.1.0/hosts/obp-api.example.com/banks/ke.01.kcs/transaction-requests/<transaction_request_id>
 ```
 
 That's the entire bank-side surface area: one host, one YAML file, one

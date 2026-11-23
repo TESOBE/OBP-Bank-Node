@@ -28,6 +28,8 @@ const INDEX_HTML: &str = include_str!("static/index.html");
 const PROMISES_HTML: &str = include_str!("static/promises.html");
 const CREDITS_HTML: &str = include_str!("static/credits.html");
 const SETTLEMENTS_HTML: &str = include_str!("static/settlements.html");
+const NETWORK_HTML: &str = include_str!("static/network.html");
+const RATIONALE_HTML: &str = include_str!("static/rationale.html");
 const APP_JS: &str = include_str!("static/app.js");
 const STYLE_CSS: &str = include_str!("static/style.css");
 
@@ -39,7 +41,7 @@ pub struct AppState {
     nodes: Arc<HashMap<String, NodeConfig>>,
     /// Insertion order of the configured nodes, for a stable `/api/nodes` list.
     node_order: Arc<Vec<String>>,
-    /// Per-instance form prefill (config `ui_defaults`), keyed by form-field
+    /// This app's form prefill (config `ui_defaults`), keyed by form-field
     /// name and served verbatim at `/api/ui-defaults`.
     ui_defaults: Arc<HashMap<String, String>>,
     http: reqwest::Client,
@@ -74,6 +76,10 @@ pub fn build_router(state: AppState, setup: Option<crate::setup::SetupState>) ->
         .route("/promises", get(|| async { Html(PROMISES_HTML) }))
         .route("/credits", get(|| async { Html(CREDITS_HTML) }))
         .route("/settlements", get(|| async { Html(SETTLEMENTS_HTML) }))
+        // The banks the nodes can see, per OBP host, and the payments between them.
+        .route("/network", get(|| async { Html(NETWORK_HTML) }))
+        // What Open Corridor changes, and why it is worth guarding.
+        .route("/rationale", get(|| async { Html(RATIONALE_HTML) }))
         .route("/app.js", get(app_js))
         .route("/style.css", get(style_css))
         .route("/api/nodes", get(list_nodes))
@@ -107,7 +113,7 @@ async fn list_nodes(State(state): State<AppState>) -> Response {
     Json(body).into_response()
 }
 
-/// `GET /api/ui-defaults` — the instance's form-prefill map, verbatim from
+/// `GET /api/ui-defaults` — this app's form-prefill map, verbatim from
 /// config. The UI applies each entry to the matching input by field name.
 async fn ui_defaults(State(state): State<AppState>) -> Response {
     Json(state.ui_defaults.as_ref().clone()).into_response()
@@ -117,11 +123,23 @@ async fn ui_defaults(State(state): State<AppState>) -> Response {
 /// compromised or curious browser can only reach what the UI actually needs.
 fn allowed(method: &Method, path: &str) -> bool {
     let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    match segs.as_slice() {
+        // The node itself, and the OBP hosts it is on.
+        ["health"] | ["status"] | ["hosts"] => *method == Method::GET,
+        // The banks on one OBP host (that OBP-API's getBanks, relayed by the node).
+        ["hosts", _, "banks"] => *method == Method::GET,
+        // Everything about the node's bank on one OBP host.
+        ["hosts", _, "banks", _, rest @ ..] => allowed_for_bank(method, rest),
+        // Anything else is refused.
+        _ => false,
+    }
+}
+
+/// The paths allowed under `/hosts/HOST/banks/BANK_ID/`.
+fn allowed_for_bank(method: &Method, rest: &[&str]) -> bool {
     matches!(
-        (method, segs.as_slice()),
-        (&Method::GET, ["health"])
-            | (&Method::GET, ["status"])
-            | (&Method::GET, ["transaction-requests"])
+        (method, rest),
+        (&Method::GET, ["transaction-requests"])
             | (&Method::GET, ["transaction-requests", _])
             | (&Method::GET, ["settlements"])
             | (&Method::GET, ["settlements", _])
@@ -129,8 +147,6 @@ fn allowed(method: &Method, path: &str) -> bool {
             | (&Method::GET, ["incoming-settlements"])
             | (&Method::GET, ["evidence"])
             | (&Method::GET, ["evidence", _])
-            // The banks on the OBP-API instance (getBanks, relayed by the node).
-            | (&Method::GET, ["banks"])
             | (&Method::POST, ["transaction-requests"])
             | (&Method::POST, ["settlements"])
     )

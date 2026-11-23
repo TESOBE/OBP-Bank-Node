@@ -31,7 +31,7 @@ API calls) and MESSAGE_SECURITY.md.
   `bank_id` as it appears in the register (the join key between certificate
   and register).
 - Key: EC P-256 or RSA 3072+.
-- Extended key usage: `clientAuth`. One certificate per Bank Node instance.
+- Extended key usage: `clientAuth`. One certificate per Bank Node.
 - Validity: 12 months.
 - A separate signing certificate (JWS message seals, QSEAL-analog) may be
   added later under the same policy; transport and signing keys are then

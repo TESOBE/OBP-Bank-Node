@@ -13,6 +13,11 @@ ADMIN="guest:guest"
 declare -a ROWS=(
   "/bank.rt.bank.a4 bank_a_node rtpass-a"
   "/bank.rt.bank.b4 bank_b_node rtpass-b"
+  # Node C, on the second OBP host (dev/node-c.yaml). One RabbitMQ serves both OBP hosts.
+  "/bank.rt.bank.c4 bank_c_node rtpass-c"
+  # Node B on the second OBP host too (dev/node-b.yaml), where Bank B is the hub between the two OBP hosts.
+  # Its own vhost and user there, because both OBP hosts share this RabbitMQ.
+  "/host-b.bank.rt.bank.b4 bank_b_host_b_node rtpass-b-host-b"
 )
 
 for row in "${ROWS[@]}"; do

@@ -1,47 +1,49 @@
 # OBP Bank Node — example configuration.
 # Provided pre-populated by the OBP API operator at registration; replace
-# placeholders. Every field can also be set by environment variable:
+# placeholders. Any setting outside hosts: can also be set by environment variable:
 # OBP_BN_ prefix, __ between levels (e.g. OBP_BN_SERVER__BIND=0.0.0.0:8088).
 
 server:
   bind: "0.0.0.0:8088"
 
-bank:
-  bank_id: "ke.01.kcs"
-  # Settlement account to debit.
-  account_id: "7bc9a8e4-5d02-40e3-b129-1c3bf89de9f1"
+# The OBP hosts the node is on, each with your bank there. A bank on one OBP host has one
+# entry; a hub bank lists several. Each OBP host is named by the host (and port) of its
+# obp_api.base_url.
+hosts:
+  # Interface B — how to reach OBP-API.
+  - obp_api:
+      # The OBP host the node is on is the host (and port) of base_url, here localhost:8080.
+      base_url: "http://localhost:8080"
+      # OAuth2 client credentials (machine-to-machine). The client id and secret are read from the
+      # environment variables named here; they are never written in this file. Leave them out
+      # to run unauthenticated against a local or mock OBP-API.
+      token_url: "http://localhost:8080/oauth2/token"
+      client_id_env: "OBP_BANK_NODE_CLIENT_ID"
+      client_secret_env: "OBP_BANK_NODE_CLIENT_SECRET"
+      # scope: "..."          # optional
+      # Alternative to client credentials: a pre-obtained DirectLogin token, from an environment variable.
+      # direct_login_token_env: "OBP_BANK_NODE_DIRECT_LOGIN_TOKEN"
+    rabbitmq:
+      # Interface C — inbound from OBP-API. Off by default so the node boots without
+      # a broker; set true to start the consumer.
+      enabled: false
+      # Defaults match the rabbitmq:3-management Docker image:
+      #   AMQP        amqp://guest:guest@localhost:5672/
+      #   Management  http://localhost:15672  (guest / guest)
+      host: "localhost"
+      port: 5672
+      username: "guest"
+      password: "guest"
+      # Per-bank isolation: each bank consumes on its own vhost, e.g. /bank.ke.01.kcs
+      virtual_host: "/bank.ke.01.kcs"
+      request_queue: "obp_rpc_queue"
+    bank:
+      bank_id: "ke.01.kcs"
+      # Settlement account to debit.
+      account_id: "7bc9a8e4-5d02-40e3-b129-1c3bf89de9f1"
 
 # Shared secret sent as the bearer token on the A2 CBS webhook.
 local_secret: "change-me-on-first-run"
-
-# Interface B — how to reach OBP-API.
-obp_api:
-  # Name of this OBP-API instance, as the Bank Node apps show it. Empty means the host of base_url.
-  # name: "open-corridor-a"
-  base_url: "http://localhost:8080"
-  # OAuth2 client-credentials (machine-to-machine). Leave empty to run
-  # unauthenticated against a local/mock OBP-API.
-  token_url: "http://localhost:8080/oauth2/token"
-  client_id: "provided-at-registration"
-  client_secret: "provided-at-registration"
-  # scope: "..."          # optional
-  # Alternative to client-credentials: a pre-obtained DirectLogin token.
-  # direct_login_token: ""
-
-rabbitmq:
-  # Interface C — inbound from OBP-API. Off by default so the node boots without
-  # a broker; set true to start the consumer.
-  enabled: false
-  # Defaults match the rabbitmq:3-management Docker image:
-  #   AMQP        amqp://guest:guest@localhost:5672/
-  #   Management  http://localhost:15672  (guest / guest)
-  host: "localhost"
-  port: 5672
-  username: "guest"
-  password: "guest"
-  # Per-bank isolation: each bank consumes on its own vhost, e.g. /bank.ke.01.kcs
-  virtual_host: "/bank.ke.01.kcs"
-  request_queue: "obp_rpc_queue"
 
 # The signing key is the only wallet input — the verification key and wallet
 # address are derived from it. All cardano fields are optional; the defaults

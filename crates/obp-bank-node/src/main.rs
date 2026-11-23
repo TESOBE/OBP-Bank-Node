@@ -43,17 +43,18 @@ use crate::evidence::EvidenceStore;
 use crate::finality::FinalityWatcher;
 use crate::obp_client::{ObpAuth, ObpClient};
 use crate::outbox::OutboxStore;
-use crate::rest::{build_router, BankNodeState};
+use crate::rest::{build_router, BankNodeState, HostState};
 use crate::settlement_store::SettlementStore;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct Config {
+    /// The node's name, shown on its status pages so people can tell nodes apart, for example `node-a`. The same name the Bank Node UI's config gives the node is a good choice.
+    name: String,
     server: ServerConfig,
-    bank: BankConfig,
+    /// The OBP hosts the node is on, each with the node's bank there. A bank on one OBP host has a list of one; a hub bank lists several.
+    hosts: Vec<HostConfig>,
     blockchain: BlockchainConfig,
-    obp_api: ObpApiConfig,
     outbox: OutboxConfig,
-    rabbitmq: RabbitMqConfig,
     cbs_delivery: CbsDeliveryConfig,
     evidence: EvidenceConfig,
     settlement: SettlementConfig,
@@ -65,23 +66,36 @@ struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            // A name for a node started without a config file.
+            name: "obp-bank-node".into(),
             server: ServerConfig {
                 bind: "0.0.0.0:8088".into(),
             },
-            bank: BankConfig::default(),
+            // One placeholder OBP host, so the binary boots without a config file.
+            hosts: vec![HostConfig::default()],
             blockchain: BlockchainConfig {
                 kind: BlockchainKind::Mock,
                 cardano: CardanoConfig::default(),
             },
-            obp_api: ObpApiConfig::default(),
             outbox: OutboxConfig::default(),
-            rabbitmq: RabbitMqConfig::default(),
             cbs_delivery: CbsDeliveryConfig::default(),
             evidence: EvidenceConfig::default(),
             settlement: SettlementConfig::default(),
             local_secret: None,
         }
     }
+}
+
+/// One OBP host the node is on: how to reach its OBP-API (Interface B), its RabbitMQ (Interface C), and the node's bank there. The default is a placeholder, so the binary boots without a config file.
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+struct HostConfig {
+    /// How to reach this OBP host's OBP-API. Its base URL also names the OBP host.
+    obp_api: ObpApiConfig,
+    /// The RabbitMQ this OBP host's OBP-API sends messages to the node through. Off unless set.
+    #[serde(default)]
+    rabbitmq: RabbitMqConfig,
+    /// The node's bank on this OBP host.
+    bank: BankConfig,
 }
 
 /// Settlement (value-leg) configuration.
@@ -346,30 +360,25 @@ impl Default for EvidenceConfig {
     }
 }
 
-/// Interface B — how to reach OBP-API. The Bank Node authenticates as a
-/// configured service: OAuth2 client-credentials (set `token_url` + `client_id`
-/// + `client_secret`) or a pre-obtained DirectLogin token. With all of them
-/// empty the client runs unauthenticated, which is fine against a local/mock
-/// OBP-API.
+/// Interface B — how to reach one OBP host's OBP-API. The Bank Node logs in as its own Consumer there: OAuth2 client credentials (`token_url`, `client_id_env` and `client_secret_env`) or a pre-obtained DirectLogin token (`direct_login_token_env`). Secrets are never written in the config file: these settings name the environment variables that hold them. With none set the client runs unauthenticated, which is fine against a local or mock OBP-API.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct ObpApiConfig {
-    /// The name of this OBP-API instance, as shown in the Bank Node apps.
-    /// Empty means the host of `base_url`.
-    #[serde(default)]
-    name: String,
+    /// OBP-API's base URL. Its host (with the port, when the URL names one) is how the Bank Node and its apps identify this OBP host.
     base_url: String,
     /// OAuth2 token endpoint for the client-credentials grant.
     #[serde(default)]
     token_url: String,
+    /// The environment variable holding the node's OAuth2 client id (its Consumer key) on this OBP host.
     #[serde(default)]
-    client_id: String,
+    client_id_env: String,
+    /// The environment variable holding the node's OAuth2 client secret on this OBP host.
     #[serde(default)]
-    client_secret: String,
+    client_secret_env: String,
     #[serde(default)]
     scope: Option<String>,
-    /// Alternative to client-credentials: a pre-obtained DirectLogin token.
+    /// Alternative to client credentials: the environment variable holding a pre-obtained DirectLogin token.
     #[serde(default)]
-    direct_login_token: String,
+    direct_login_token_env: String,
     /// How often to refresh the cached routing-scheme registry used for A1.1
     /// beneficiary-routing validation. `0` disables the refresher entirely —
     /// the registry then never loads and validation stays off (fail-open).
@@ -377,22 +386,27 @@ struct ObpApiConfig {
     routing_refresh_secs: u64,
 }
 
-/// The name the node reports for its OBP-API instance: `obp_api.name` when
-/// set, otherwise the host of `obp_api.base_url`, otherwise the URL itself.
-fn instance_name(obp_api: &ObpApiConfig) -> String {
-    // A configured name wins.
-    if !obp_api.name.trim().is_empty() {
-        // Use it as written, without surrounding spaces.
-        return obp_api.name.trim().to_string();
+/// The OBP host the node is on: the host of `obp_api.base_url`, with the port
+/// when the URL names one (`localhost:8081`, `apisandbox.openbankproject.com`).
+/// Falls back to the base URL itself when it cannot be parsed.
+fn obp_host(obp_api: &ObpApiConfig) -> String {
+    // Parse the base URL; a URL that does not parse is reported as written.
+    let Ok(url) = reqwest::Url::parse(&obp_api.base_url) else {
+        // Use the base URL itself.
+        return obp_api.base_url.clone();
+    };
+    // The host part, or the whole URL when it has none.
+    let Some(host) = url.host_str() else {
+        // Use the base URL itself.
+        return obp_api.base_url.clone();
+    };
+    // `port()` is only set when the URL names a port other than the scheme's default.
+    match url.port() {
+        // Host and port, as in `localhost:8081`.
+        Some(port) => format!("{host}:{port}"),
+        // The host alone, as in `apisandbox.openbankproject.com`.
+        None => host.to_string(),
     }
-    // Otherwise take the host from the base URL.
-    reqwest::Url::parse(&obp_api.base_url)
-        // Keep only the host part, if the URL has one.
-        .ok()
-        // Copy the host out of the parsed URL.
-        .and_then(|url| url.host_str().map(str::to_string))
-        // Fall back to the base URL when it cannot be parsed.
-        .unwrap_or_else(|| obp_api.base_url.clone())
 }
 
 fn default_routing_refresh_secs() -> u64 {
@@ -402,13 +416,15 @@ fn default_routing_refresh_secs() -> u64 {
 impl Default for ObpApiConfig {
     fn default() -> Self {
         ObpApiConfig {
-            name: String::new(),
             base_url: "http://localhost:8080".into(),
             token_url: String::new(),
-            client_id: String::new(),
-            client_secret: String::new(),
+            // No client credentials.
+            client_id_env: String::new(),
+            // No client secret.
+            client_secret_env: String::new(),
             scope: None,
-            direct_login_token: String::new(),
+            // No DirectLogin token.
+            direct_login_token_env: String::new(),
             routing_refresh_secs: default_routing_refresh_secs(),
         }
     }
@@ -459,9 +475,7 @@ struct ServerConfig {
     bind: String,
 }
 
-/// The single bank this Bank Node serves. Sourced from the `bank:` block in
-/// `obp-bank-node-config.yaml`; defaults are placeholders so the binary boots
-/// without a config file.
+/// The bank this Bank Node serves, as it is on one OBP host: each entry of `hosts:` has its own `bank:` block, because a bank has a different `bank_id` and corridor accounts on each OBP host. Defaults are placeholders so the binary boots without a config file.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct BankConfig {
     bank_id: String,
@@ -545,11 +559,15 @@ async fn main() -> anyhow::Result<()> {
 
     info!(
         bind = %config.server.bind,
-        bank_id = %config.bank.bank_id,
-        account_id = %config.bank.account_id,
+        // Each OBP host and the node's bank there.
+        hosts = %config
+            .hosts
+            .iter()
+            .map(|host_config| format!("{} (bank {})", obp_host(&host_config.obp_api), host_config.bank.bank_id))
+            .collect::<Vec<_>>()
+            .join(", "),
         blockchain = blockchain_label,
         outbox = %config.outbox.path.display(),
-        obp_api = %config.obp_api.base_url,
         version = env!("CARGO_PKG_VERSION"),
         "OBP Bank Node starting"
     );
@@ -557,39 +575,6 @@ async fn main() -> anyhow::Result<()> {
     let outbox = OutboxStore::connect(&config.outbox.path)
         .await
         .with_context(|| format!("failed to open outbox at {}", config.outbox.path.display()))?;
-
-    let obp = Arc::new(
-        ObpClient::new(
-            config.obp_api.base_url.clone(),
-            build_obp_auth(&config.obp_api),
-        )
-        .context("failed to build OBP API client")?
-        .with_view_id(config.bank.view_id.clone()),
-    );
-
-    // As a Platform App (client credentials), tell OBP-API which Scopes the
-    // node needs, so its administrators can see which are missing.
-    if obp.uses_client_credentials() {
-        tokio::spawn(declare_platform_app(
-            Arc::clone(&obp),
-            config.bank.bank_id.clone(),
-        ));
-    }
-
-    // The finality watcher writes Settlement Reference records with the same notary.
-    let backend_for_records = Arc::clone(&backend);
-    // The dispatcher owns the backend and drains the outbox asynchronously.
-    let dispatcher = Dispatcher::new(
-        outbox.clone(),
-        Arc::clone(&obp),
-        backend,
-        blockchain_label,
-        DispatcherConfig::default(),
-    );
-    tokio::spawn(dispatcher.run());
-    if config.outbox.retention_days > 0 {
-        tokio::spawn(run_outbox_retention(outbox.clone(), config.outbox.retention_days));
-    }
 
     // The settlement and evidence stores are opened unconditionally — the
     // south-side read API serves them even when no settlement rail or
@@ -603,124 +588,219 @@ async fn main() -> anyhow::Result<()> {
             )
         })?;
 
+    // The finality watcher writes Settlement Reference records with the same notary.
+    let backend_for_records = Arc::clone(&backend);
+
     // Settlement finality: whenever a settlement rail exists, start the
     // finality watcher — even with the Interface C consumer off, previously
     // SUBMITTED settlements must still be promoted to FINAL (or flagged) as
-    // the chain advances.
-    let settlement_parts = match &settlement {
-        Some(backend) => {
-            let watcher = FinalityWatcher {
-                store: settlement_store.clone(),
-                backend: Arc::clone(backend),
-                notary: Arc::clone(&backend_for_records),
-                outbox: outbox.clone(),
-                bank_id: config.bank.bank_id.clone(),
-                finality_depth: config.settlement.finality_depth,
-                poll_interval: std::time::Duration::from_secs(config.settlement.finality_poll_secs),
-            };
-            tokio::spawn(watcher.run());
-            // Settlements this bank receives as creditor: checked against what
-            // actually arrives at its own address.
+    // the chain advances. One watcher serves every OBP host: settlements are
+    // paid from the one wallet, and each row says which bank paid it.
+    if let Some(settlement_backend) = &settlement {
+        // The shared watcher.
+        let watcher = FinalityWatcher {
+            store: settlement_store.clone(),
+            backend: Arc::clone(settlement_backend),
+            notary: Arc::clone(&backend_for_records),
+            outbox: outbox.clone(),
+            finality_depth: config.settlement.finality_depth,
+            poll_interval: std::time::Duration::from_secs(config.settlement.finality_poll_secs),
+        };
+        // Run it in the background.
+        tokio::spawn(watcher.run());
+    }
+
+    // CBS delivery is shared by every OBP host: credits all go to the bank's one core banking system.
+    let cbs = CbsClient::new(
+        config.cbs_delivery.webhook.url.clone(),
+        config.local_secret.clone(),
+        config.cbs_delivery.webhook.timeout_seconds,
+    )
+    .context("failed to build CBS client")?;
+
+    // What each OBP host needs: its own OBP-API client, routing schemes, Interface C consumer and incoming-settlement watcher.
+    let mut host_states: Vec<HostState> = Vec::new();
+    // Every OBP host the node is on, for a hub's routers to carry a payment on to another of them. Filled in once all are set up.
+    let forward_targets: interface_c::router::ForwardTargets = Arc::new(std::sync::OnceLock::new());
+    // The entries, collected as each OBP host is set up.
+    let mut forward_target_list: Vec<interface_c::router::ForwardTarget> = Vec::new();
+    // The dispatcher's clients, keyed by OBP host.
+    let mut obp_clients: std::collections::HashMap<String, Arc<ObpClient>> = std::collections::HashMap::new();
+    // Set up each OBP host in turn.
+    for host_config in &config.hosts {
+        // The OBP host's name: the host (and port) of its OBP-API's base URL.
+        let host_name = obp_host(&host_config.obp_api);
+        // This OBP host's OBP-API client, logged in as the node's Consumer there.
+        let obp = Arc::new(
+            ObpClient::new(
+                // This OBP-API's base URL.
+                host_config.obp_api.base_url.clone(),
+                // The node's login there, from the environment variables the config names.
+                build_obp_auth(&host_config.obp_api, &host_name)?,
+            )
+            // Name the OBP host in the error.
+            .with_context(|| format!("failed to build the OBP-API client for OBP host {host_name}"))?
+            // The view the node creates Transaction Requests through there.
+            .with_view_id(host_config.bank.view_id.clone()),
+        );
+
+        // As a Platform App (client credentials), tell this OBP-API which Scopes the node needs, so its administrators can see which are missing.
+        if obp.uses_client_credentials() {
+            // In the background: OBP-API may not be up yet.
+            tokio::spawn(declare_platform_app(
+                Arc::clone(&obp),
+                host_config.bank.bank_id.clone(),
+            ));
+        }
+
+        // Settlements this bank receives as creditor on this OBP host: checked against what actually arrives at its own address.
+        if let Some(settlement_backend) = &settlement {
+            // One watcher per OBP host, asking that OBP host's OBP-API.
             tokio::spawn(
                 incoming::IncomingWatcher {
                     store: settlement_store.clone(),
                     obp: Arc::clone(&obp),
-                    backend: Arc::clone(backend),
-                    bank_id: config.bank.bank_id.clone(),
+                    backend: Arc::clone(settlement_backend),
+                    // The OBP host this watcher serves.
+                    obp_host: host_name.clone(),
+                    bank_id: host_config.bank.bank_id.clone(),
                     finality_depth: config.settlement.finality_depth,
                     poll_interval: std::time::Duration::from_secs(config.settlement.incoming_poll_secs),
                     paid_timeout: std::time::Duration::from_secs(config.settlement.incoming_timeout_secs),
                 }
                 .run(),
             );
-            Some((Arc::clone(backend), settlement_store.clone()))
         }
-        None => None,
-    };
 
-    // Interface C — inbound from OBP-API over RabbitMQ. Off by default; when on,
-    // it consumes credit notifications (capturing the salt as evidence) and
-    // delivers credits to the bank's CBS.
-    let interface_c_status = interface_c::consumer::ConsumerStatus::new();
-    if config.rabbitmq.enabled {
-        let cbs = CbsClient::new(
-            config.cbs_delivery.webhook.url.clone(),
-            config.local_secret.clone(),
-            config.cbs_delivery.webhook.timeout_seconds,
-        )
-        .context("failed to build CBS client")?;
-        let settlement_service =
-            settlement_parts.map(|(backend, store)| interface_c::router::SettlementService {
-                backend,
-                store,
-                finality_depth: config.settlement.finality_depth,
+        // Interface C — inbound from this OBP host's OBP-API over RabbitMQ. Off by default; when on,
+        // it consumes credit notifications (capturing the salt as evidence) and
+        // delivers credits to the bank's CBS.
+        let interface_c_status = interface_c::consumer::ConsumerStatus::new();
+        if host_config.rabbitmq.enabled {
+            // The value leg, when the node has a settlement rail.
+            let settlement_service = settlement.as_ref().map(|settlement_backend| {
+                // The rail and the store it records progress in.
+                interface_c::router::SettlementService {
+                    backend: Arc::clone(settlement_backend),
+                    store: settlement_store.clone(),
+                    finality_depth: config.settlement.finality_depth,
+                }
             });
-        let c_router = Arc::new(interface_c::Router::new(
-            config.bank.bank_id.clone(),
-            config.bank.account_id.clone(),
-            evidence.clone(),
-            cbs,
-            outbox.clone(),
-            settlement_service,
-        ));
-        let consumer_cfg = interface_c::consumer::ConsumerConfig {
-            uri: build_amqp_uri(&config.rabbitmq),
-            queue: config.rabbitmq.request_queue.clone(),
-            consumer_tag: format!("obp-bank-node.{}", config.bank.bank_id),
-        };
-        info!(
-            vhost = %config.rabbitmq.virtual_host,
-            queue = %config.rabbitmq.request_queue,
-            cbs = %config.cbs_delivery.webhook.url,
-            "Interface C enabled — starting RabbitMQ consumer"
-        );
-        // Supervised: reconnects with backoff forever. A consumer that stayed
-        // dead after one failure left the node deaf while HTTP looked healthy.
-        tokio::spawn(interface_c::consumer::run_supervised(
-            consumer_cfg,
-            c_router,
-            interface_c_status.clone(),
-        ));
-    } else {
-        interface_c_status.set_disabled();
-        info!("rabbitmq.enabled=false — Interface C consumer not started");
+            // This OBP host's message router: what it writes is recorded as this OBP host's.
+            let c_router = Arc::new(interface_c::Router::new(
+                host_name.clone(),
+                host_config.bank.bank_id.clone(),
+                host_config.bank.account_id.clone(),
+                evidence.clone(),
+                cbs.clone(),
+                outbox.clone(),
+                settlement_service,
+            )
+            // The node's OBP hosts, so a credit can be carried on to another of them.
+            .with_forward_targets(Arc::clone(&forward_targets)));
+            let consumer_cfg = interface_c::consumer::ConsumerConfig {
+                uri: build_amqp_uri(&host_config.rabbitmq),
+                queue: host_config.rabbitmq.request_queue.clone(),
+                consumer_tag: format!("obp-bank-node.{}", host_config.bank.bank_id),
+            };
+            info!(
+                obp_host = %host_name,
+                vhost = %host_config.rabbitmq.virtual_host,
+                queue = %host_config.rabbitmq.request_queue,
+                cbs = %config.cbs_delivery.webhook.url,
+                "Interface C enabled — starting RabbitMQ consumer"
+            );
+            // Supervised: reconnects with backoff forever. A consumer that stayed
+            // dead after one failure left the node deaf while HTTP looked healthy.
+            tokio::spawn(interface_c::consumer::run_supervised(
+                consumer_cfg,
+                c_router,
+                interface_c_status.clone(),
+            ));
+        } else {
+            interface_c_status.set_disabled();
+            info!(obp_host = %host_name, "rabbitmq.enabled=false — Interface C consumer not started for this OBP host");
+        }
+
+        // Routing-scheme registry: cached from this OBP host's OBP-API for synchronous A1.1
+        // beneficiary-routing validation. Fail-open until first load.
+        let routing = routing::RoutingRegistry::default();
+        if host_config.obp_api.routing_refresh_secs > 0 {
+            routing::spawn_refresher(
+                routing.clone(),
+                Arc::clone(&obp),
+                host_config.obp_api.routing_refresh_secs,
+            );
+        } else {
+            info!(obp_host = %host_name, "obp_api.routing_refresh_secs=0 — routing-scheme validation disabled for this OBP host");
+        }
+
+        // The dispatcher sends this OBP host's rows with this client.
+        obp_clients.insert(host_name.clone(), Arc::clone(&obp));
+        // What the REST API needs about this OBP host.
+        // This OBP host as a place a hub can carry a payment on to.
+        forward_target_list.push(interface_c::router::ForwardTarget {
+            // The OBP host.
+            obp_host: host_name.clone(),
+            // The node's bank there.
+            bank_id: host_config.bank.bank_id.clone(),
+            // Its shorthand corridor account.
+            account_id: host_config.bank.account_id.clone(),
+            // Its corridor accounts, keyed by upper-case currency.
+            corridor_accounts: host_config
+                .bank
+                .corridor_accounts
+                .iter()
+                .map(|(currency, account)| (currency.to_uppercase(), account.clone()))
+                .collect(),
+            // Its OBP-API client.
+            obp: Arc::clone(&obp),
+        });
+        host_states.push(HostState {
+            host: host_name,
+            obp_api_url: host_config.obp_api.base_url.clone(),
+            obp,
+            routing,
+            bank_id: host_config.bank.bank_id.clone(),
+            account_id: host_config.bank.account_id.clone(),
+            // Keys uppercased once here so lookup is case-insensitive on the
+            // currency without re-normalizing per request.
+            corridor_accounts: host_config
+                .bank
+                .corridor_accounts
+                .iter()
+                .map(|(currency, account)| (currency.to_uppercase(), account.clone()))
+                .collect(),
+            interface_c: interface_c_status,
+        });
     }
 
-    // Routing-scheme registry: cached from OBP-API for synchronous A1.1
-    // beneficiary-routing validation. Fail-open until first load.
-    let routing = routing::RoutingRegistry::default();
-    if config.obp_api.routing_refresh_secs > 0 {
-        routing::spawn_refresher(
-            routing.clone(),
-            Arc::clone(&obp),
-            config.obp_api.routing_refresh_secs,
-        );
-    } else {
-        info!("obp_api.routing_refresh_secs=0 — routing-scheme validation disabled");
+    // Every OBP host is set up: give the routers the full list. Set only here, so this cannot fail.
+    let _ = forward_targets.set(forward_target_list);
+
+    // The dispatcher owns the backend and drains the outbox asynchronously, sending each row to its own OBP host.
+    let dispatcher = Dispatcher::new(
+        outbox.clone(),
+        obp_clients,
+        backend,
+        blockchain_label,
+        DispatcherConfig::default(),
+    );
+    tokio::spawn(dispatcher.run());
+    if config.outbox.retention_days > 0 {
+        tokio::spawn(run_outbox_retention(outbox.clone(), config.outbox.retention_days));
     }
 
     let state = BankNodeState {
+        // The node's name, from its config.
+        name: config.name.clone(),
         outbox,
         settlements: settlement_store,
         evidence,
-        obp,
-        routing,
         blockchain_label,
-        bank_id: config.bank.bank_id.clone(),
-        account_id: config.bank.account_id.clone(),
-        // Keys uppercased once here so lookup is case-insensitive on the
-        // currency without re-normalizing per request.
-        corridor_accounts: config
-            .bank
-            .corridor_accounts
-            .iter()
-            .map(|(currency, account)| (currency.to_uppercase(), account.clone()))
-            .collect(),
+        // Every OBP host the node is on.
+        hosts: Arc::new(host_states),
         finality_depth: config.settlement.finality_depth,
-        interface_c: interface_c_status,
-        obp_api_url: config.obp_api.base_url.clone(),
-        // The instance's configured name, or the host of its base URL.
-        obp_api_name: instance_name(&config.obp_api),
         chain_health_url: match config.blockchain.kind {
             BlockchainKind::Mock => None,
             BlockchainKind::Cardano => Some(ogmios_health_url(&config.blockchain.cardano.ogmios_url)),
@@ -792,6 +872,28 @@ const CBS_DELIVERY_MODES: &[&str] = &["webhook_obp"];
 
 /// Refuse a config the node would otherwise misread at runtime.
 fn validate_config(cfg: &Config) -> anyhow::Result<()> {
+    // The node must be on at least one OBP host.
+    if cfg.hosts.is_empty() {
+        // Nothing to connect to.
+        anyhow::bail!("hosts is empty: list at least one OBP host the node is on");
+    }
+    // The OBP hosts seen so far, to find one listed twice.
+    let mut seen_hosts = std::collections::HashSet::new();
+    // Each OBP host in turn.
+    for host_config in &cfg.hosts {
+        // The OBP host's name.
+        let host_name = obp_host(&host_config.obp_api);
+        // The URLs and the stores tell OBP hosts apart by name, so each may appear only once.
+        if !seen_hosts.insert(host_name.clone()) {
+            // Name the OBP host that is listed twice.
+            anyhow::bail!("OBP host {host_name} is listed more than once under hosts: each OBP host may appear only once");
+        }
+        // Client credentials need both a client id and a client secret.
+        if !host_config.obp_api.client_id_env.trim().is_empty() && host_config.obp_api.client_secret_env.trim().is_empty() {
+            // Say which setting is missing.
+            anyhow::bail!("OBP host {host_name}: obp_api.client_id_env is set but obp_api.client_secret_env is not");
+        }
+    }
     let mode = cfg.cbs_delivery.mode.trim();
     if !mode.is_empty() && !CBS_DELIVERY_MODES.contains(&mode) {
         anyhow::bail!(
@@ -800,9 +902,10 @@ fn validate_config(cfg: &Config) -> anyhow::Result<()> {
             CBS_DELIVERY_MODES.join(", ")
         );
     }
-    if cfg.rabbitmq.enabled && cfg.cbs_delivery.webhook.url.trim().is_empty() {
+    // Interface C on at any OBP host means credits arrive, and they must go somewhere.
+    if cfg.hosts.iter().any(|host_config| host_config.rabbitmq.enabled) && cfg.cbs_delivery.webhook.url.trim().is_empty() {
         anyhow::bail!(
-            "cbs_delivery.webhook.url is empty, but rabbitmq.enabled is true: credit \
+            "cbs_delivery.webhook.url is empty, but rabbitmq.enabled is true for an OBP host: credit \
              notifications would have nowhere to go"
         );
     }
@@ -820,6 +923,136 @@ mod tests {
         assert_eq!(cfg.retention_days, 0);
         let cfg: OutboxConfig = serde_json::from_str(r#"{"path":"x.db","retention_days":90}"#).unwrap();
         assert_eq!(cfg.retention_days, 90);
+    }
+
+    // The OBP host is the host of OBP-API's base URL, with the port only when the URL names one.
+    #[test]
+    fn obp_host_is_the_host_and_port_of_the_base_url() {
+        // A URL with a port keeps it.
+        let mut obp_api = ObpApiConfig { base_url: "http://localhost:8081".into(), ..ObpApiConfig::default() };
+        // The host and port.
+        assert_eq!(obp_host(&obp_api), "localhost:8081");
+        // A URL with the scheme's default port, and a path.
+        obp_api.base_url = "https://apisandbox.openbankproject.com/".into();
+        // The host alone.
+        assert_eq!(obp_host(&obp_api), "apisandbox.openbankproject.com");
+        // A base URL that does not parse.
+        obp_api.base_url = "not a url".into();
+        // Is reported as written.
+        assert_eq!(obp_host(&obp_api), "not a url");
+    }
+
+    // An empty hosts list is refused.
+    #[test]
+    fn no_hosts_is_rejected_at_startup() {
+        // The default config, with its one OBP host taken away.
+        let mut cfg = Config::default();
+        // No OBP hosts.
+        cfg.hosts.clear();
+        // Refused, naming the setting.
+        let err = validate_config(&cfg).unwrap_err().to_string();
+        // The message names hosts.
+        assert!(err.contains("hosts is empty"), "{err}");
+    }
+
+    // The same OBP host twice is refused: URLs and stores tell OBP hosts apart by name.
+    #[test]
+    fn the_same_obp_host_twice_is_rejected_at_startup() {
+        // The default config has one OBP host on localhost:8080.
+        let mut cfg = Config::default();
+        // A second entry on the same OBP-API, written slightly differently.
+        let mut second = HostConfig::default();
+        // Same host and port, with a trailing slash.
+        second.obp_api.base_url = "http://localhost:8080/".into();
+        // Add it.
+        cfg.hosts.push(second);
+        // Refused.
+        let err = validate_config(&cfg).unwrap_err().to_string();
+        // The message names the OBP host.
+        assert!(err.contains("localhost:8080"), "{err}");
+    }
+
+    // Two different OBP hosts are fine.
+    #[test]
+    fn two_different_obp_hosts_validate() {
+        // The default config has one OBP host on localhost:8080.
+        let mut cfg = Config::default();
+        // A second OBP host on another port.
+        let mut second = HostConfig::default();
+        // Another OBP-API.
+        second.obp_api.base_url = "http://localhost:8081".into();
+        // Add it.
+        cfg.hosts.push(second);
+        // Accepted.
+        validate_config(&cfg).unwrap();
+    }
+
+    // A client id without a client secret is refused.
+    #[test]
+    fn client_id_without_client_secret_is_rejected_at_startup() {
+        // The default config.
+        let mut cfg = Config::default();
+        // A client id variable, but no secret variable.
+        cfg.hosts[0].obp_api.client_id_env = "SOME_CLIENT_ID".into();
+        // Refused.
+        let err = validate_config(&cfg).unwrap_err().to_string();
+        // The message names the missing setting.
+        assert!(err.contains("client_secret_env"), "{err}");
+    }
+
+    // A credential setting naming a variable that is not set stops the node, without showing any value.
+    #[test]
+    fn a_missing_credential_variable_stops_the_node() {
+        // An OBP-API config naming variables nobody sets.
+        let obp_api = ObpApiConfig {
+            // A client id variable that is not set.
+            client_id_env: "OBP_BN_TEST_UNSET_CLIENT_ID_7F3A".into(),
+            // And a secret variable that is not set either.
+            client_secret_env: "OBP_BN_TEST_UNSET_CLIENT_SECRET_7F3A".into(),
+            // Everything else as default.
+            ..ObpApiConfig::default()
+        };
+        // Building the login fails.
+        // (ObpAuth holds secrets, so it is not printable; take the error side only.)
+        let err = build_obp_auth(&obp_api, "localhost:8081").err().expect("a missing variable must stop the node").to_string();
+        // The message names the OBP host and the variable.
+        assert!(err.contains("localhost:8081") && err.contains("OBP_BN_TEST_UNSET_CLIENT_ID_7F3A"), "{err}");
+    }
+
+    // Credentials are read from the variables the config names.
+    #[test]
+    fn credentials_come_from_the_named_variables() {
+        // Set a client id variable for this test only (the name is unique to it).
+        std::env::set_var("OBP_BN_TEST_CLIENT_ID_9C21", "the-client-id");
+        // And its secret.
+        std::env::set_var("OBP_BN_TEST_CLIENT_SECRET_9C21", "the-client-secret");
+        // An OBP-API config naming them.
+        let obp_api = ObpApiConfig {
+            // The token endpoint.
+            token_url: "http://localhost:9001/obp-oidc/token".into(),
+            // The client id variable.
+            client_id_env: "OBP_BN_TEST_CLIENT_ID_9C21".into(),
+            // The client secret variable.
+            client_secret_env: "OBP_BN_TEST_CLIENT_SECRET_9C21".into(),
+            // Everything else as default.
+            ..ObpApiConfig::default()
+        };
+        // Build the login.
+        let auth = build_obp_auth(&obp_api, "localhost:8081").unwrap();
+        // Client credentials, with the values from the environment.
+        match auth {
+            // The expected kind of login.
+            ObpAuth::ClientCredentials { client_id, client_secret, token_url, .. } => {
+                // The id came from its variable.
+                assert_eq!(client_id, "the-client-id");
+                // The secret came from its variable.
+                assert_eq!(client_secret, "the-client-secret");
+                // The token URL came from the config.
+                assert_eq!(token_url, "http://localhost:9001/obp-oidc/token");
+            }
+            // Any other kind is wrong.
+            _ => panic!("expected client credentials"),
+        }
     }
 
     #[test]
@@ -847,7 +1080,8 @@ mod tests {
     #[test]
     fn empty_webhook_url_is_rejected_when_interface_c_is_on() {
         let mut cfg = Config::default();
-        cfg.rabbitmq.enabled = true;
+        // Interface C on at the one OBP host.
+        cfg.hosts[0].rabbitmq.enabled = true;
         cfg.cbs_delivery.webhook.url = " ".into();
         let err = validate_config(&cfg).unwrap_err().to_string();
         assert!(err.contains("cbs_delivery.webhook.url"), "{err}");
@@ -911,25 +1145,50 @@ async fn declare_platform_app(obp: Arc<ObpClient>, bank_id: String) {
     warn!("gave up declaring the node's Scopes to OBP-API; it is retried on the next start");
 }
 
-/// Choose the OBP-API auth scheme from config. Prefer OAuth2 client-credentials
-/// when a `client_id` is set, fall back to a DirectLogin token, and otherwise
-/// run unauthenticated (local/mock OBP-API).
-fn build_obp_auth(cfg: &ObpApiConfig) -> ObpAuth {
-    if !cfg.client_id.is_empty() {
-        ObpAuth::ClientCredentials {
-            token_url: cfg.token_url.clone(),
-            client_id: cfg.client_id.clone(),
-            client_secret: cfg.client_secret.clone(),
-            scope: cfg.scope.clone(),
-        }
-    } else if !cfg.direct_login_token.is_empty() {
-        ObpAuth::DirectLogin {
-            token: cfg.direct_login_token.clone(),
-        }
-    } else {
-        warn!("no OBP-API credentials configured — OBP client will send unauthenticated requests");
-        ObpAuth::None
+/// The value of the environment variable a config setting names. `Ok(None)` when the setting is empty (not configured). A named variable that is missing or empty stops the node, saying which setting named it.
+fn value_from_env(host_name: &str, setting: &str, variable: &str) -> anyhow::Result<Option<String>> {
+    // An empty setting means the node does not use this credential.
+    if variable.trim().is_empty() {
+        // Nothing to read.
+        return Ok(None);
     }
+    // Read the variable the setting names.
+    match std::env::var(variable.trim()) {
+        // Set and not empty: use it.
+        Ok(value) if !value.trim().is_empty() => Ok(Some(value)),
+        // Missing or empty: the node cannot log in as configured. The value itself is never shown.
+        _ => anyhow::bail!(
+            "OBP host {host_name}: obp_api.{setting} names the environment variable {}, which is not set or is empty",
+            variable.trim()
+        ),
+    }
+}
+
+/// Choose the OBP-API auth scheme for one OBP host from its config. Prefer OAuth2 client credentials when `client_id_env` is set, fall back to a DirectLogin token (`direct_login_token_env`), and otherwise run unauthenticated (local or mock OBP-API).
+fn build_obp_auth(cfg: &ObpApiConfig, host_name: &str) -> anyhow::Result<ObpAuth> {
+    // Client credentials, when configured.
+    if let Some(client_id) = value_from_env(host_name, "client_id_env", &cfg.client_id_env)? {
+        // The secret is required with the id (validate_config checks the setting; this checks the variable).
+        let client_secret = value_from_env(host_name, "client_secret_env", &cfg.client_secret_env)?
+            // A missing secret setting is caught by validate_config; say so plainly here too.
+            .ok_or_else(|| anyhow::anyhow!("OBP host {host_name}: obp_api.client_secret_env is not set"))?;
+        // Log in with OAuth2 client credentials.
+        return Ok(ObpAuth::ClientCredentials {
+            token_url: cfg.token_url.clone(),
+            client_id,
+            client_secret,
+            scope: cfg.scope.clone(),
+        });
+    }
+    // A DirectLogin token, when configured.
+    if let Some(token) = value_from_env(host_name, "direct_login_token_env", &cfg.direct_login_token_env)? {
+        // Log in with DirectLogin.
+        return Ok(ObpAuth::DirectLogin { token });
+    }
+    // No credentials: fine only against a local or mock OBP-API.
+    warn!(obp_host = %host_name, "no OBP-API credentials configured for this OBP host — its OBP client will send unauthenticated requests");
+    // Unauthenticated.
+    Ok(ObpAuth::None)
 }
 
 /// Build the notary backend and, when on Cardano, the matching ADA settlement

@@ -494,14 +494,14 @@ impl ObpClient {
         }
     }
 
-    /// List the banks on this OBP-API instance (`GET /obp/v5.1.0/banks`),
-    /// each with its `bank_routings`. The body is returned as OBP-API sent it,
+    /// List the banks on this OBP host (`GET /obp/v6.0.0/banks`),
+    /// each with its `bank_id`, `bank_routings` and active `attributes`. The body is returned as OBP-API sent it,
     /// so the south-side `/banks` endpoint answers exactly as OBP-API does.
     pub async fn get_banks(&self) -> Result<serde_json::Value, ObpClientError> {
-        // getBanks is in v5.1.0 (STABLE), so call it there rather than at OBP_API_VERSION.
-        let url = format!("{}/obp/v5.1.0/banks", self.base_url);
+        // getBanks returns each bank's attributes from v6.0.0 on (v5.1.0's shape is stable and has none), and the participant mark is one of them.
+        let url = format!("{}/obp/v6.0.0/banks", self.base_url);
         // Log the call at debug level, like the other OBP-API reads.
-        debug!(%url, "listing the banks on this OBP-API instance");
+        debug!(%url, "listing the banks on this OBP host");
         // Build the GET request; credentials are added by send_authorized.
         let req = self.http.get(&url);
         // Send it, retrying once with a fresh token if a cached one is refused.

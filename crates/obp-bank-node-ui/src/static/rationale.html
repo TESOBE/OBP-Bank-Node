@@ -1,0 +1,331 @@
+<!doctype html>
+<!--
+  Copyright (C) 2025-2026 TESOBE GmbH
+  SPDX-License-Identifier: AGPL-3.0-or-later
+  Licensed under the GNU Affero General Public License v3 or later: see the LICENSE and NOTICE files.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OBP Bank Node — Rationale</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <a class="brand-logo" href="/" title="Open Bank Project"><svg width="28" height="28" viewBox="0 439 127 127" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Open Bank Project"><path d="M126.423 502.211C126.423 514.713 122.716 526.935 115.77 537.33C108.824 547.725 98.9518 555.827 87.4014 560.611C75.8511 565.396 63.1414 566.647 50.8795 564.208C38.6177 561.769 27.3545 555.749 18.5142 546.909C9.67395 538.068 3.65365 526.805 1.21462 514.543C-1.22441 502.282 0.027385 489.572 4.81171 478.021C9.59603 466.471 17.698 456.599 28.0931 449.653C38.4881 442.707 50.7094 439 63.2115 439C71.5129 438.999 79.7332 440.633 87.403 443.809C95.0727 446.985 102.042 451.641 107.912 457.511C113.782 463.381 118.438 470.35 121.614 478.02C124.79 485.69 126.424 493.91 126.423 502.211" fill="#51B265"/><path d="M89.3142 499.53C106.578 469.465 82.4636 462.82 82.4636 462.82C56.3139 454.991 39.1581 469.896 39.1581 469.896C26.6704 478.704 26.7976 500.235 26.7976 500.235C25.5939 527.852 42.1038 536.631 42.1038 536.631C42.1038 536.631 62.0684 550.489 87.9049 539.821C113.741 529.154 89.3534 499.51 89.3534 499.51L89.3142 499.53ZM77.2767 529.643C58.1342 531.953 49.8743 526.306 49.8743 526.306C49.8743 526.306 40.3227 520.591 40.0291 504.834C39.7355 489.078 43.5718 484.498 43.5718 484.498C45.9896 480.607 49.6165 477.616 53.8966 475.983C63.2917 472.372 73.8612 474.104 73.8612 474.104C73.8612 474.104 89.5197 475.249 79.4787 489.939C79.4787 489.939 59.8371 475.425 51.2445 490.996C51.2445 490.996 45.3725 503.171 53.6128 513.906C61.8531 524.642 80.7608 509.16 80.7608 509.16C80.7608 509.16 96.4682 527.343 77.3159 529.643H77.2767ZM71.4439 500.009L63.1547 504.903C60.6102 501.125 63.1058 496.222 63.1058 496.222L71.4439 500.009Z" fill="white"/></svg></a>
+    <h1>OBP Bank Node — Rationale</h1>
+    <nav class="page-nav"><a href="/">overview</a> · <a href="/promises">promises</a> · <a href="/credits">credits</a> · <a href="/settlements">settlements</a> · <a href="/network">network</a> · <a href="/accounts">accounts</a> · <a href="/setup">setup</a></nav>
+    <div id="node-health" class="node-health"></div>
+  </header>
+
+  <main>
+    <section id="rationale">
+      <h2>What Open Corridor actually changes</h2>
+      <p class="hint">These are the parts worth guarding.</p>
+      <ul class="rationale-list">
+        <li><strong>Speed:</strong> the customer is credited when the promise arrives, in seconds, not when the money moves.</li>
+        <li><strong>Netting:</strong> banks settle one net amount from time to time, instead of every payment.</li>
+        <li><strong>Less money tied up:</strong> banks don't need money sitting in accounts at every correspondent in advance.</li>
+        <li><strong>Shared evidence:</strong> each promise is a commitment on a public ledger that both banks can check, instead of each bank trusting the other's records.</li>
+        <li><strong>Open and neutral:</strong> open-source software that any operator can run, rather than one network every bank must join.</li>
+      </ul>
+    </section>
+
+    <section id="rationale-hubs">
+      <h2>Hubs</h2>
+      <p>Hubs avoid that because only the hub needs agreements on both sides.</p>
+      <ul class="rationale-list">
+        <li>The operators of two hosts in different regions never sign anything with each other. Each runs its own host, with its own rules, members and pace.</li>
+        <li>The hub is a bank that already has a business reason to be in both regions, and signs up to each host's rules the same way any member does.</li>
+        <li>That's how correspondent banking grew: through banks with relationships in both places, not through a treaty between networks.</li>
+      </ul>
+    </section>
+
+    <section id="rationale-game-theory">
+      <h2>How the network forms</h2>
+      <p>Hosts are clubs that form around a regulatory fit, and hubs emerge where a bank can legally stand in two clubs.</p>
+
+      <h3>Why a bank joins its home host</h3>
+      <p>The decision is easy because the host fits its regulator. Same rules, same supervisor, often the same currency. Joining costs little and brings faster payments with banks it already deals with. That makes hosts fairly stable, local groups.</p>
+
+      <h3>Why a bank becomes a hub</h3>
+      <p>It's a bigger decision, and two things have to hold.</p>
+      <ul class="rationale-list">
+        <li><strong>It's allowed to.</strong> It needs a licence, a subsidiary or branch, or its regulator's approval, to take part in a second jurisdiction's system. That rules most banks out, which is fine.</li>
+        <li><strong>It pays.</strong> What a hub earns: fees on the payments it carries; the FX spread when the two legs are in different currencies; and the value of being the bank everyone on one side relies on to reach the other. What it costs: liquidity on both sides; the credit risk between leg 1 and leg 2; compliance in two jurisdictions; and membership of two hosts.</li>
+      </ul>
+
+      <h3>Who is likely to be a hub</h3>
+      <p>Banking groups with subsidiaries in several regions, because for them "hub" is mostly moving money between their own entities. Then banks that are already correspondents for the two regions, since they already have the relationships and the compliance set-up. Open Corridor gives them a faster, cheaper way to do what they already do.</p>
+
+      <h3>The dynamics that follow</h3>
+      <ul class="rationale-list">
+        <li><strong>The first hub has power.</strong> If only one bank links two hosts, it's a bottleneck: it can set its price, and if it leaves, the hosts are cut off from each other. Reachability between regions is only as strong as the few banks bridging them.</li>
+        <li><strong>More hubs bring competition.</strong> A second hub on the same pair of hosts limits what the first can charge. Host operators have reason to want several hubs, because reachability makes their host more valuable to members. But they don't control who becomes one, since that's up to each bank and its regulator.</li>
+        <li><strong>It looks like internet routing.</strong> Hosts are like networks that keep their own members. Hubs are like transit providers paid to carry traffic between them. Big hubs may agree to carry each other's traffic without charging (peering). The structure isn't designed; it comes from each party acting in its own interest.</li>
+        <li><strong>Regulation can cut links quickly.</strong> A sanctions change or a lost licence removes a hub, and the routes through it go with it. Each host keeps working on its own, so the damage stays between hosts and doesn't spread inside them.</li>
+      </ul>
+      <p>The overall shape: tight, stable groups at the regulatory level, and looser, commercially driven links between them that can change. The design's preference for discovered over declared routes fits that, because the links between hosts are the part most likely to change.</p>
+    </section>
+
+    <section id="rationale-sanctions">
+      <h2>Sanctions and the choice of route</h2>
+      <p>A sending bank won't accept any route, and sanctions show why. The bank stays responsible for every payment it sends, including which banks and countries the money passes through. "Our system picked that route" is no defence. So whoever finds the route, the sending bank must control which routes are allowed.</p>
+
+      <h3>What the sending bank has to be able to do</h3>
+      <ul class="rationale-list">
+        <li><strong>Approve its hubs in advance.</strong> In correspondent banking, a bank only uses intermediaries it has checked: who owns them, where they're licensed, how good their anti-money-laundering controls are. So the bank should list the hubs it accepts (an allow-list), rather than list the ones it won't use (a block list). A hub that's new to the network, or that moves to a sanctioned country, can't be used until the bank approves it.</li>
+        <li><strong>Rule out countries.</strong> Beyond particular hubs, the bank should be able to say "never through these jurisdictions". That needs each hub's country to be known, which is a new thing a hub must declare.</li>
+        <li><strong>Check the destination as well as the route.</strong> The beneficiary bank and its customer are screened as now, wherever the money goes on its way.</li>
+        <li><strong>See the route before committing, if it chooses to.</strong> That's the "bank confirms" mode in the design (section 6). Some regulators may require it.</li>
+        <li><strong>Have a record afterwards.</strong> Which hub was used and why goes in the audit trail.</li>
+      </ul>
+      <p>The design already mentions "hubs the bank will not use" (section 6) and excluding hubs and jurisdictions (section 14). This should be an allow-list, not a block list.</p>
+
+      <h3>Every bank in the chain also screens</h3>
+      <p>The hub checks the payment against its own sanctions lists before sending it on. The originator details travel on both legs, so the hub and the beneficiary bank can screen the originator too. The sending bank screens, the hub screens, the beneficiary bank screens, as in correspondent banking.</p>
+
+      <h3>Who decides the route</h3>
+      <p>It's not really either-or. It splits in two:</p>
+      <ul class="rationale-list">
+        <li><strong>The sending bank decides which routes are allowed:</strong> its approved hubs and its excluded countries. This is policy, set once and reviewed.</li>
+        <li><strong>OBP-API picks a route for each payment, within those limits.</strong> It can't route through a hub the bank hasn't approved. If no approved hub can reach the beneficiary bank, the payment is refused with a clear reason.</li>
+      </ul>
+      <p>So the sending bank keeps the control that sanctions require, and doesn't have to work out the route for each payment.</p>
+      <p>This is a general view for design purposes, not legal advice. Sanctions rules differ by country, and each bank's compliance team would set its own policy.</p>
+    </section>
+
+    <section id="rationale-quiet-hub">
+      <h2>When a hub goes quiet</h2>
+      <p>Silence is the normal way a hub fails, much more often than a clean "I've stopped being a hub". The design has to work out that a hub is gone from what it doesn't do, and it matters a lot at which point it goes quiet.</p>
+
+      <h3>1. Silent before taking a payment</h3>
+      <p>A route query or a payment to it gets no answer. This is the easy case: no answer within the time limit counts as "no route", and OBP-API tries another approved hub or refuses the payment. A host doesn't have to wait for a query to find out, either:</p>
+      <ul class="rationale-list">
+        <li><strong>Its message queue:</strong> the host's OBP-API sends to each bank through RabbitMQ, which knows whether the hub's node is connected and reading its queue. A hub whose node has disconnected can be treated as unavailable straight away.</li>
+        <li><strong>Its health:</strong> a hub's node can report its own health on each host, as nodes already do through <code>/health</code>. A hub that stops reporting is dropped from routing.</li>
+      </ul>
+
+      <h3>2. Silent after accepting leg 1, before making leg 2</h3>
+      <p>This is the dangerous case, and the reason the design has the conditional promise. Leg 1 isn't final until leg 2 is accepted, and it has a deadline. If the hub goes quiet in between, the deadline passes, leg 1 is cancelled, and A's customer is told. No money is stuck and nobody has to chase the hub.</p>
+      <p>The version built now doesn't have this. Leg 1 is accepted on arrival, so a hub that goes quiet at that point leaves A's payment accepted but not carried on. A then has a claim against the hub under host A's rules, which is the correspondent-banking situation of today.</p>
+
+      <h3>3. Silent after leg 2 is accepted</h3>
+      <p>C has credited its customer, and the hub owes C. If the hub then doesn't settle, that's the hub's default towards C on host B, handled under B's rules (assumption 4 in the design). The node already watches for this: an incoming settlement that's reported but never seen arriving, or netted long ago and still unpaid, is flagged for an operator.</p>
+
+      <h3>4. Half-silent</h3>
+      <p>A hub can be fine on one host and not the other: its link to host B is down, but it's still taking leg 1s on host A. To host A it looks healthy. That's another reason leg 1 shouldn't be final until leg 2 is accepted: only the result of leg 2 shows whether the hub can actually reach the other side. It also argues for the hub reporting its own health per host, so it stops accepting routed payments on A when it knows it can't reach B.</p>
+
+      <h3>Over time</h3>
+      <p>Routes expire, so a quiet hub drops out of routing within one validity period even if nobody notices. And if hubs are scored on completed legs, a hub that goes quiet now and then loses traffic gradually, without anyone having to decide to remove it.</p>
+      <p>So "discovered, not declared" only helps if routes expire, timeouts are short, and leg 1 never becomes final before leg 2. With those three, a hub that goes quiet costs some delay and a cancelled payment, not lost money.</p>
+    </section>
+
+    <section id="rationale-onward-routes">
+      <h2>How banks on other hosts appear</h2>
+      <p>getBanks is central to OBP: a bank listed there is a member of this host, onboarded and checked by its operator under its rules. That meaning should not change. A bank on another host is never listed as a bank here. Instead, a hub's own record says which banks can be reached through it.</p>
+      <ul class="rationale-list">
+        <li><strong>The claim sits with the bank making it.</strong> "Through me you can reach Bank C" is the hub's statement about its own service, attached to its own record. The host operator vouches for its members; each member vouches for its own reach.</li>
+        <li><strong>Netting comes out right.</strong> The sending bank pays the hub and nets with the hub. It never ends up netting with a bank it has no agreement with.</li>
+        <li><strong>No ghost banks.</strong> Nothing can create accounts or grant roles at a bank that isn't a member here.</li>
+        <li><strong>It matches correspondent banking.</strong> A correspondent's reach is part of what it offers and publishes, not a directory owned by someone else.</li>
+      </ul>
+
+      <h3>Visible to everyone</h3>
+      <p>A hub's routes are as visible as the bank itself. Regulators can see which routes exist. Sending banks can screen a route before paying: which hub, and which host and jurisdiction a payment would pass through. Hubs that reach the same bank compete in the open. Only bank-to-bank reach is shown, and bank names and BICs are public anyway; no customers or volumes are. Each hub decides which routes it lists.</p>
+
+      <h3>Routes are a cache, and expire</h3>
+      <p>A route is a cached answer to "can you reach this bank?". The hub's node confirms its routes from time to time. OBP-API stamps when each was last confirmed and works out how long it is valid from a period the host sets (with a default), so a hub can't give itself longer than the host allows. Expired routes drop out of the list, so readers never have to check validity themselves.</p>
+      <p>A hub that goes quiet stops confirming, and its routes expire without anyone having to notice: expiry turns silence into withdrawal. A stale route is also less dangerous than it sounds, because the payment itself is the final test: a hub that can no longer reach the beneficiary bank returns the payment. That costs delay, not money.</p>
+
+      <h3>The shape of the data</h3>
+      <p>Next to <code>bank_routings</code>, which says how a bank is addressed, <code>onward_routes</code> says which banks can be reached through it. Each route looks like a small version of the bank itself, with its own list of <code>bank_routings</code>, because a bank on another host can be addressed in more than one way too. It appears in getBanks with the rest of the bank, and on its own at <code>GET /banks/BANK_ID/onward-routes</code>.</p>
+<pre class="rationale-json"><code>{
+  "bank_id": "rt.bank.b4",
+  "full_name": "Bank B",
+  "bank_routings": [{ "scheme": "BIC", "address": "DEMBZZ22" }],
+  "onward_routes": [
+    {
+      "full_name": "Bank C",
+      "bank_routings": [
+        { "scheme": "BIC", "address": "DEMCZZ22" },
+        { "scheme": "LEI", "address": "5493001KJTIIGC8Y1R12" }
+      ],
+      "obp_host": "localhost:8081",
+      "currencies": ["KES", "NGN", "USD"],
+      "last_confirmed": "2026-11-23T10:00:00Z",
+      "valid_until": "2026-11-23T11:00:00Z"
+    }
+  ]
+}</code></pre>
+      <p>Routes get their own field rather than bank attributes. Attributes are flat name/value strings, so a route would be JSON inside a string: OBP-API couldn't check it or search it, and the node's automatic updates would sit among the attributes the operator edits by hand.</p>
+
+      <h3>What Get Banks and Get Bank would show</h3>
+      <p>On OBP host A (<code>localhost:8080</code>), with Bank B as the hub to Bank C on OBP host B. <code>GET /obp/v6.0.0/banks</code>:</p>
+<pre class="rationale-json"><code>{
+  "banks": [
+    {
+      "bank_id": "rt.bank.a4",
+      "bank_code": "rt.bank.a4",
+      "full_name": "Bank A",
+      "logo": "",
+      "website": "",
+      "bank_routings": [
+        { "scheme": "OBP", "address": "rt.bank.a4" },
+        { "scheme": "BIC", "address": "DEMAZZ22" }
+      ],
+      "attributes": [
+        { "name": "OPEN_CORRIDOR_PARTICIPANT", "value": "true" }
+      ],
+      "onward_routes": []
+    },
+    {
+      "bank_id": "rt.bank.b4",
+      "bank_code": "rt.bank.b4",
+      "full_name": "Bank B",
+      "logo": "",
+      "website": "",
+      "bank_routings": [
+        { "scheme": "OBP", "address": "rt.bank.b4" },
+        { "scheme": "BIC", "address": "DEMBZZ22" }
+      ],
+      "attributes": [
+        { "name": "OPEN_CORRIDOR_PARTICIPANT", "value": "true" }
+      ],
+      "onward_routes": [
+        {
+          "full_name": "Bank C",
+          "bank_routings": [
+            { "scheme": "BIC", "address": "DEMCZZ22" }
+          ],
+          "obp_host": "localhost:8081",
+          "currencies": ["KES", "NGN", "USD", "EUR"],
+          "last_confirmed": "2026-11-23T10:00:00Z",
+          "valid_until": "2026-11-23T11:00:00Z"
+        }
+      ]
+    }
+  ]
+}</code></pre>
+      <p><code>GET /obp/v6.0.0/banks/rt.bank.b4</code> returns the same Bank B object on its own.</p>
+      <ul class="rationale-list">
+        <li><strong>Bank C isn't in the <code>banks</code> list.</strong> It is not a member of OBP host A, so Get Banks still means "listed on this OBP". It appears only inside Bank B's <code>onward_routes</code>, as Bank B's claim that it can reach Bank C.</li>
+        <li><strong>Bank A has an empty list,</strong> because it is not a hub.</li>
+        <li><strong>On OBP host B, Bank B would carry the reverse route,</strong> to Bank A on <code>localhost:8080</code>.</li>
+      </ul>
+
+      <h3>Which banks have onward routes</h3>
+      <p>Every bank in Get Banks has the <code>onward_routes</code> field, but it is only filled in for banks that currently forward payments. For every other bank it is an empty list. "Can forward" means two things:</p>
+      <ul class="rationale-list">
+        <li><strong>The bank has said so.</strong> Its own node confirms its routes. Neither the host operator nor another bank adds routes to a bank's record.</li>
+        <li><strong>It said so recently.</strong> A route appears only while it is within the host's validity period. If the node stops confirming, the route expires and the list goes back to empty, without anyone having to remove it.</li>
+      </ul>
+      <p>So any bank becomes a hub by its node starting to confirm routes, and stops being one by no longer confirming them. Get Banks always shows which banks are forwarding at that moment.</p>
+
+      <h3>Paying a bank on another host</h3>
+      <p>The payment names the beneficiary bank honestly: <code>to</code> carries the beneficiary bank's own scheme and address. OBP-API first looks for a member with that pair in <code>bank_routings</code>. If there is none, it looks for members with an onward route carrying that pair. Where several hubs reach the bank, it picks one within the sending bank's allowed hubs and excluded countries. It records the beneficiary bank and the hub separately (in ISO 20022 terms, the creditor agent and the intermediary agent). The sending bank never has to name the route itself.</p>
+      <p>Within one host, a scheme and address should identify one bank. Two hubs can both list the same BIC, and that gives the sending bank a choice. But if their entries for that BIC disagree, for example with different LEIs, the data contradicts itself, and OBP-API should refuse to choose rather than guess, as it already does when a bank's BIC in its routing pair and its <code>swift_bic</code> don't match.</p>
+    </section>
+
+    <section id="rationale-ask-first">
+      <h2>Can the sending bank check with the beneficiary bank first?</h2>
+      <p>Before sending a payment through a hub, can the sending bank ask the beneficiary bank: "if I send money to you through the hub, will you honour the payment to your customer?" It isn't useless, but it gets information, not a commitment. Those are two different things.</p>
+
+      <h3>What the beneficiary bank can't give: a binding promise</h3>
+      <p>The beneficiary bank has no agreement with the sending bank and no shared rules, so it has no obligation to the sending bank. Its obligation arises towards the hub, when it accepts leg 2 under its own host's rules. A "yes, we'll honour it" to the sending bank has no rulebook behind it. If the beneficiary bank then refused, the sending bank would have no claim against it, only against the hub.</p>
+
+      <h3>What the sending bank actually wants is covered by the conditional promise</h3>
+      <p>The sending bank's real worry is "will my customer's money reach the beneficiary, or will it get stuck?". The conditional promise answers that without any agreement between the two banks: leg 1 only becomes final once the beneficiary bank has accepted leg 2. By the time the sending bank is committed, the beneficiary bank has already committed to the hub. If the beneficiary bank refuses, leg 1 is cancelled. So the sending bank gets the assurance after the fact and automatically, rather than as a promise in advance.</p>
+
+      <h3>What a question in advance is good for</h3>
+      <p>Checking before sending avoids payments that would fail and have to be unwound. The beneficiary bank can usefully answer:</p>
+      <ul class="rationale-list">
+        <li><strong>Does this account exist, and does the name match?</strong> This is confirmation of payee, which a lot of failed cross-border payments come down to.</li>
+        <li><strong>Will it accept this payment at all?</strong> The beneficiary bank has its own sanctions and risk rules. It might not accept payments from the sending bank's jurisdiction, routed through that hub, in that currency, or above some amount.</li>
+        <li><strong>Can it credit the payment now?</strong> For example, whether its core banking system is up.</li>
+      </ul>
+
+      <h3>The question doesn't need a direct line between the two banks</h3>
+      <p>It can travel the same way the payment would: the sending bank asks through its host, the host asks the hub, and the hub asks the beneficiary bank on the other host. That's the route query, with "and would the beneficiary bank accept this payee?" added. The beneficiary bank's node can check the account with its core banking system without crediting it, much as it does when it credits a customer. The answer comes back through the hub. The two banks still never deal with each other directly, and each host still only sees its own members.</p>
+
+      <h3>The catch is privacy</h3>
+      <p>Telling a bank on another host that an account exists and whose name it's in is personal data. Confirmation-of-payee schemes have rules about what can be revealed, for example "close match" rather than the actual name. What the beneficiary bank may say would be set by its host's rules and its own data protection obligations.</p>
+
+      <p>So: asking first is worth doing, to avoid failed payments. The guarantee itself comes from how the two legs are tied together, not from anything the beneficiary bank says to the sending bank.</p>
+    </section>
+
+    <section id="rationale-stablecoins">
+      <h2>Where stablecoins fit</h2>
+      <p>Stablecoins remove one kind of hop but not the others. Open Corridor has three layers, and a hub does a different job in each. Below, the sending bank and the beneficiary bank are on different hosts.</p>
+
+      <h3>1. Moving value (settlement)</h3>
+      <p>This is the hop stablecoins remove. If both banks can hold the same stablecoin, value goes from the sending bank's wallet to the beneficiary bank's wallet in minutes, worldwide, with no correspondent in between. For this layer alone, no hub is needed.</p>
+
+      <h3>2. The promise and the credit</h3>
+      <p>Open Corridor credits the customer when the promise arrives, before any value moves, and settles the net later. That means one bank is extending credit to another for a while, which only works between banks that have agreed rules: who owes what, what happens on default, how disputes are handled. Inside a host, the host's rules provide that. Two banks on different hosts have no agreement with each other. The hub's real job is to stand in that legal and credit relationship: the sending bank's counterparty is the hub under the sending host's rules, and the beneficiary bank's counterparty is the hub under the beneficiary's host's rules. A stablecoin doesn't create an agreement between the two banks. It only moves the money once someone owes it.</p>
+
+      <h3>3. Compliance and messaging</h3>
+      <p>The sending bank still has to screen the beneficiary bank and its customer, send the originator details (the Travel Rule), and have a legal basis for paying a bank abroad. A stablecoin transfer carries none of that. It's a transfer between addresses.</p>
+
+      <h3>So, with stablecoins</h3>
+      <ul class="rationale-list">
+        <li><strong>The two banks could skip the hub entirely,</strong> if they're willing to settle each payment straight away and in full, with no credit, promise or netting, and if they exchange the compliance data some other way. That's a different model: real-time gross settlement on a public chain. It's simple, but it loses the main benefits: crediting at promise time against netted settlement, less money tied up, and the club's rules.</li>
+        <li><strong>Inside Open Corridor,</strong> stablecoins are a better settlement rail, not a replacement for the structure. They shrink the hub's job: the hub no longer needs money sitting in each region to pay out, because it can settle both legs in the same stablecoin. What's left is the credit and legal role, which is the hard part anyway.</li>
+      </ul>
+
+      <h3>Where stablecoins aren't allowed</h3>
+      <p>Rules differ widely. Some countries ban or restrict them, some allow only licensed issuers (the EU's MiCA regime, for example), and many haven't decided. The settlement rail is chosen per pair of banks, in the ledger policy's <code>settlement_system</code>, not for the whole network, so this fits:</p>
+      <ul class="rationale-list">
+        <li>On a host whose regulator allows a stablecoin, banks there can settle in it.</li>
+        <li>On a host where it isn't allowed, banks settle through the local payment system or a bank rail.</li>
+        <li><strong>A hub can bridge rails as well as hosts.</strong> It settles with the sending bank in a stablecoin on one host and with the beneficiary bank through the local payment system on the other. The hub carries the conversion between the two, just as it carries the FX between currencies.</li>
+      </ul>
+      <p>That gives hubs one more reason to exist: besides the legal relationships, they connect a region that uses stablecoins to one that can't.</p>
+
+      <h3>In short</h3>
+      <p>Stablecoins compress the money movement. The hops that remain come from law and trust, not from moving value. Where those are already solved, for example two banks in the same banking group, a stablecoin can make the route nearly direct. Where they aren't, a hub is still needed, and it now needs less money tied up in each region.</p>
+    </section>
+
+    <section id="rationale-ten-years">
+      <h2>Ten years from now</h2>
+      <p>This is speculation.</p>
+
+      <h3>Likely by then</h3>
+      <ul class="rationale-list">
+        <li><strong>Regulated digital money will be normal in many places, not everywhere.</strong> Several kinds will coexist: stablecoins from licensed issuers; tokenised bank deposits (a bank's own money on a ledger); and central bank digital currencies, in some countries.</li>
+        <li><strong>Countries will protect their own currency.</strong> A big worry for many central banks, especially smaller economies, is people moving their savings into US-dollar stablecoins, which weakens control over the local currency and the banks. So they'll tend to favour local-currency tokens and limit dollar stablecoins, rather than ban digital money outright.</li>
+        <li><strong>Compliance will move onto the ledgers.</strong> Identity of regulated institutions, Travel Rule data and sanctions checks will increasingly travel with the transfer, or alongside it in a standard way.</li>
+      </ul>
+
+      <h3>What that does to an Open Corridor-like system</h3>
+      <ul class="rationale-list">
+        <li><strong>Settlement becomes cheap and fast everywhere.</strong> Moving value stops being where the cost or delay is. Open Corridor's settlement layer becomes "pick the rail this pair of banks is allowed to use", with several to choose from.</li>
+        <li><strong>The promise becomes enforceable by code.</strong> Today the conditional promise (leg 1 final only when leg 2 is accepted) is a rule both sides follow. With programmable money it can be enforced by the ledger: leg 1's money is locked until leg 2 is accepted, and released or refunded automatically. That's a two-sided swap, a known technique. Netting may matter a little less as settlement gets cheaper, but not disappear: settling each payment in full means money held in advance, and netting still saves that.</li>
+        <li><strong>Hubs become currency markets more than correspondents.</strong> If each region has its own currency token, the main job between regions is converting one into another, at volume, with good prices. Hubs look more like FX liquidity providers than banks holding accounts for each other. Some of that may be automated, with the hub's node quoting and settling the swap itself.</li>
+        <li><strong>The legal layer stays.</strong> Who owes whom, what happens on default, which banks a sending bank will deal with, and accountability to a regulator: none of that goes away with better money. Clubs of banks under agreed rules, which is what a host is, remain useful.</li>
+      </ul>
+
+      <h3>Where Open Corridor is strong, and where it could be squeezed</h3>
+      <ul class="rationale-list">
+        <li><strong>Strong:</strong> it is neutral and doesn't depend on any one rail, so it can sit above whatever money each region allows. It connects to the banks' existing core banking systems and accounts, which is OBP's long-standing strength; banks will run old and new systems side by side for many years. And each region runs its own host, which suits countries that want control over their own currency.</li>
+        <li><strong>Squeezed:</strong> if a few large token networks build in identity, compliance and messaging themselves, Open Corridor's messaging becomes something those networks already provide. What's left that can't be commoditised is the rules and governance of each host, the promise and credit model, and the connection to the banks' own systems.</li>
+      </ul>
+
+      <h3>The likely picture</h3>
+      <p>Local regulated tokens inside each region. Hubs that convert between them. A rules and credit layer that decides who can promise what to whom, with the money movement underneath happening by itself on whatever ledger is allowed. That's roughly what Open Corridor is shaping up to be, with stablecoins and other digital money gradually replacing ADA and the bank rails underneath it.</p>
+      <p>Things could break differently, in either direction:</p>
+      <ul class="rationale-list">
+        <li><strong>Dollar stablecoins could win outright.</strong> If regulators give up on local-currency tokens, banks matter less for cross-border payments.</li>
+        <li><strong>Digital money could stay fragmented and slow to arrive.</strong> Then bank rails and correspondents stay in place for longer than people expect.</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer>
+    <p>&copy; <a href="https://www.tesobe.com" target="_blank" rel="noopener">TESOBE GmbH</a> 2026</p>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

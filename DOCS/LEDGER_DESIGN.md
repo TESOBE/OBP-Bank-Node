@@ -309,20 +309,12 @@ When a new bank is provisioned, the workflow includes creating settlement accoun
 and assigning the bank's user as owner-view holder. That's plain OBP-API account/view
 setup, not new code.
 
-## Multi-instance note
+## Multi-host note
 
-This ledger is the books of **one** Open Corridor instance. Snapshots,
-Promise/Settlement transactions and settlement accounts are instance-scoped
-by design (see `ARCHITECTURE.md`, "Multi-instance posture"). Two rules
-follow for anything that leaves the instance:
+This ledger is the books of **one** OBP host. Snapshots, Promise/Settlement transactions and settlement accounts are scoped to that OBP host by design (see `ARCHITECTURE.md`, "Multi-host posture"). Two rules follow for anything that leaves the OBP host:
 
-- Any record exported off-instance (RabbitMQ payloads, on-chain material,
-  regulator extracts) names banks by `bank_routings` scheme/address, not by
-  this instance's `bank_id`, and carries the originating `api_instance_id`.
-- Bilateral netting per `(from_bank, to_bank)` pair is already
-  federation-compatible: a cross-instance corridor appears as a pair whose
-  far member is a peer platform's gateway. No schema change is anticipated
-  for that step — only new rows.
+- Any record exported off the OBP host (RabbitMQ payloads, on-chain material, regulator extracts) names banks by `bank_routings` scheme/address, not by this OBP host's `bank_id`, and carries the OBP host it came from.
+- Bilateral netting per `(from_bank, to_bank)` pair is already federation-compatible: a corridor across OBP hosts appears as a pair whose far member is a hub bank on both. No schema change is anticipated for that step, only new rows.
 
 ## Things that aren't code
 

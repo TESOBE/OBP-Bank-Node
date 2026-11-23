@@ -2,7 +2,7 @@
 
 The OBP Bank Node forms part of Open Corridor, a new bank to bank payment / message / settlement system.
 
-An OBP Bank Node runs at the at the bank's datacenter and calls out to the Open Corridor REST APIs and Rabbit MQ provided by an OBP-API instance, and the Cardano blockchain.
+An OBP Bank Node runs at the at the bank's datacenter and calls out to the Open Corridor REST APIs and Rabbit MQ provided by an OBP host, and the Cardano blockchain.
 
 See [`DOCS/OBP-Bank-Node-Spec.md`](DOCS/OBP-Bank-Node-Spec.md) for the full specification.
 

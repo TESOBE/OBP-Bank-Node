@@ -38,6 +38,8 @@ struct Captured {
     entitlement_requests: Vec<Value>,
     /// POSTs made for the node's Consumer: (path, body).
     node_posts: Vec<(String, Value)>,
+    /// Create Bank Attribute POSTs: (bank_id, body).
+    bank_attribute_posts: Vec<(String, Value)>,
 }
 
 fn record_node_post(s: &Stub, path: String, body: Value) {
@@ -183,9 +185,14 @@ fn obp_stub(base: String, captured: Arc<Mutex<Captured>>) -> Router {
             "/obp/v5.1.0/banks/:bank_id",
             get(|Path(bank_id): Path<String>| async move {
                 match bank_id.as_str() {
-                    "rt.bank.a" => {
-                        Json(json!({ "id": "rt.bank.a", "full_name": "Bank A" })).into_response()
-                    }
+                    // Bank A exists but is not yet marked as a participant: its only
+                    // attribute is another one.
+                    "rt.bank.a" => Json(json!({
+                        "id": "rt.bank.a",
+                        "full_name": "Bank A",
+                        "attributes": [{ "name": "REGION", "value": "EA" }],
+                    }))
+                    .into_response(),
                     _ => (
                         StatusCode::NOT_FOUND,
                         Json(json!({ "message": "OBP-30001: Bank not found" })),
@@ -193,6 +200,18 @@ fn obp_stub(base: String, captured: Arc<Mutex<Captured>>) -> Router {
                         .into_response(),
                 }
             }),
+        )
+        // Create Bank Attribute: record what the setup page sends.
+        .route(
+            "/obp/v5.1.0/banks/:bank_id/attribute",
+            post(
+                |State(s): State<Stub>, Path(bank_id): Path<String>, Json(body): Json<Value>| async move {
+                    // Keep the bank and body for the test to check.
+                    s.captured.lock().unwrap().bank_attribute_posts.push((bank_id, body));
+                    // Answer like OBP-API's 201.
+                    (StatusCode::CREATED, Json(json!({ "bank_attribute_id": "ba1" })))
+                },
+            ),
         )
         .route(
             "/obp/v6.0.0/banks/:bank_id/account-directory",
@@ -623,13 +642,19 @@ async fn status_classifies_present_missing_and_broken_items() {
         .map(|i| (i["id"].as_str().unwrap().to_string(), i.clone()))
         .collect();
 
-    // One instance = one bank: only the own bank's items exist.
+    // One app = one bank: only the own bank's items exist.
     assert_eq!(v["bank"], "rt.bank.a");
     assert!(!by_id.keys().any(|k| k.contains("rt.bank.b")));
 
     assert_eq!(by_id["scheme:OBP"]["status"], "ok");
     assert_eq!(by_id["scheme:IBAN"]["status"], "missing");
     assert_eq!(by_id["bank:rt.bank.a"]["status"], "ok");
+    // Bank A has an attribute, but not the participant one.
+    assert_eq!(by_id["participant:rt.bank.a"]["status"], "missing");
+    // Applying it needs CanCreateBankAttribute at the bank.
+    assert_eq!(by_id["participant:rt.bank.a"]["required_role"]["role"], "CanCreateBankAttribute");
+    // At bank A.
+    assert_eq!(by_id["participant:rt.bank.a"]["required_role"]["bank_id"], "rt.bank.a");
     assert_eq!(by_id["account:rt.bank.a/settlement-a"]["status"], "ok");
     assert_eq!(by_id["fx:rt.bank.a:EUR:KES"]["status"], "missing");
     // Broker registered and matching on every non-password field.
@@ -839,6 +864,35 @@ async fn apply_posts_the_configured_bodies() {
             body["account_routings"],
             json!([{ "scheme": "CARDANO", "address": "addr_test1aaa" }])
         );
+    }
+
+    // Participant: an active BOOLEAN bank attribute set to true, at the own bank.
+    let resp = app
+        .clone()
+        .oneshot(post_json_with_cookie(
+            "/api/setup/apply",
+            &cookie,
+            json!({ "id": "participant:rt.bank.a" }),
+        ))
+        .await
+        .unwrap();
+    // OBP-API's 201 comes back.
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    {
+        // Look at what was sent.
+        let c = captured.lock().unwrap();
+        // One POST, for bank A.
+        let (bank_id, body) = &c.bank_attribute_posts[0];
+        // To the own bank.
+        assert_eq!(bank_id, "rt.bank.a");
+        // With the participant attribute.
+        assert_eq!(body["name"], "OPEN_CORRIDOR_PARTICIPANT");
+        // Typed as a boolean.
+        assert_eq!(body["type"], "BOOLEAN");
+        // Set to true.
+        assert_eq!(body["value"], "true");
+        // And active, so getBank and getBanks show it.
+        assert_eq!(body["is_active"], true);
     }
 }
 

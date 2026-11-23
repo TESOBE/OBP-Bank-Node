@@ -30,3 +30,7 @@ node.pid
 # Per-machine settings for dev/ (Consumer secrets, admin login), and their backups
 dev/local.env
 dev/local.env.bak.*
+# The same for another OBP-API instance (dev/local-b.env), and its admin token
+dev/local-*.env
+dev/local-*.env.bak.*
+dev/env-*.sh

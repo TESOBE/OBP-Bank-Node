@@ -35,6 +35,10 @@ header {
   background: var(--panel);
 }
 
+/* Open Bank Project symbol, top left of every page */
+.brand-logo { display: flex; align-self: center; }
+.brand-logo svg { display: block; }
+
 h1 { font-size: 1.2rem; margin: 0; }
 h2 { font-size: 1.05rem; margin: 0 0 .25rem; }
 h3 { font-size: .9rem; margin: 1rem 0 .35rem; color: var(--dim); }
@@ -192,8 +196,29 @@ td.details { font-size: .78rem; color: var(--dim); min-width: 16rem; overflow-wr
 .node-chip.up { border-color: #cfe8d6; background: #eef7f0; color: var(--ok); }
 .node-chip.down { border-color: #f1d0cd; background: #fdf0ef; color: var(--err); }
 .node-chip.warn { border-color: #f0e0c0; background: #fff4e0; color: var(--warn); }
-.instance-group { display: inline-flex; gap: .35rem; align-items: center; padding: .1rem .35rem; border: 1px dashed var(--line); border-radius: 999px; }
-.instance-name { font-size: .72rem; color: var(--dim); padding: 0 .25rem; }
+.host-group { display: inline-flex; gap: .35rem; align-items: center; padding: .1rem .35rem; border: 1px dashed var(--line); border-radius: 999px; }
+.host-name { font-size: .72rem; color: var(--dim); padding: 0 .25rem; }
+
+/* one tab per OBP host, under the header */
+.host-tabs {
+  display: flex;
+  gap: .25rem;
+  padding: 0 2rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.host-tab {
+  font: inherit;
+  font-size: .85rem;
+  padding: .45rem .9rem;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--dim);
+  cursor: pointer;
+}
+.host-tab:hover { color: var(--ink); }
+.host-tab.active { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
 
 footer {
   max-width: 1280px;
@@ -205,3 +230,27 @@ footer {
 
 /* Full business ids (transaction request / settlement): complete, just small. */
 .id-full { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .68rem; }
+
+/* Network page: OBP hosts as boxes, banks as circles */
+#network-view { overflow-x: auto; }
+.net-svg { display: block; max-width: none; }
+.net-host { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; }
+.net-host-name { font-size: 14px; font-weight: 600; fill: var(--ink); }
+.net-note { font-size: 12px; fill: var(--err); }
+.net-bank { fill: #eef1f5; stroke: var(--dim); stroke-width: 1.5; }
+.net-bank.own { fill: var(--accent); stroke: var(--accent); }
+.net-bank.hub { fill: #fff4d6; stroke: var(--warn); stroke-width: 2; }
+.net-node-name { font-size: 11px; fill: #fff; font-weight: 600; }
+.net-bank-id { font-size: 12px; fill: var(--ink); }
+.net-bic { font-size: 11px; fill: var(--dim); }
+.net-payment { stroke: var(--ok); stroke-width: 2; }
+.net-arrow { fill: var(--ok); }
+.net-hub-link { stroke: var(--warn); stroke-width: 2; stroke-dasharray: 6 5; }
+.net-edge-label { font-size: 11px; fill: var(--dim); }
+.net-legend { margin-top: .5rem; }
+.net-key { display: inline-block; width: .8rem; height: .8rem; border-radius: 50%; vertical-align: -1px; background: #eef1f5; border: 1.5px solid var(--dim); }
+.net-key.own { background: var(--accent); border-color: var(--accent); }
+.net-key.hub { background: #fff4d6; border-color: var(--warn); }
+.net-bank.own.hub { fill: var(--accent); stroke: var(--warn); stroke-width: 4; }
+.rationale-list li { margin: .5rem 0; max-width: 60rem; }
+.rationale-json { background: var(--panel); border: 1px solid var(--line); padding: .75rem 1rem; max-width: 60rem; overflow-x: auto; }

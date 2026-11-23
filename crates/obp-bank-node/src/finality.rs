@@ -43,7 +43,6 @@ pub struct FinalityWatcher {
     pub notary: Arc<dyn BlockchainBackend>,
     /// The promises a settlement covered, for the record.
     pub outbox: OutboxStore,
-    pub bank_id: String,
     /// Depth at which a settlement is treated as final.
     pub finality_depth: u32,
     pub poll_interval: Duration,
@@ -155,7 +154,8 @@ impl FinalityWatcher {
         };
         let settlement_id = row.settlement_id.clone().unwrap_or_else(|| row.idempotency_key.clone());
         let record = SettlementRecord {
-            bank_id: self.bank_id.clone(),
+            // The paying bank: this node's bank on the OBP host the settlement is on.
+            bank_id: row.bank_id.clone(),
             snapshot_id: row.snapshot_id.clone().unwrap_or_else(|| settlement_id.clone()),
             net_amount: row.net_amount_minor.clone(),
             currency: row.currency.clone(),
@@ -265,7 +265,6 @@ mod tests {
             }),
             notary,
             outbox: OutboxStore::connect_in_memory().await.unwrap(),
-            bank_id: "rt.bank.a".into(),
             finality_depth,
             poll_interval: Duration::from_secs(3600), // unused: tests call tick()
         };
@@ -306,7 +305,8 @@ mod tests {
     async fn expected_record_tx_id(w: &FinalityWatcher, row: &SettlementRow) -> String {
         let settlement_id = row.settlement_id.clone().unwrap();
         let record = SettlementRecord {
-            bank_id: w.bank_id.clone(),
+            // The paying bank, from the settlement row.
+            bank_id: row.bank_id.clone(),
             snapshot_id: settlement_id.clone(),
             net_amount: row.net_amount_minor.clone(),
             currency: row.currency.clone(),
@@ -332,6 +332,8 @@ mod tests {
             w.outbox
                 .insert(crate::outbox::NewEntry {
                     transaction_request_id: id,
+                    // The OBP host the row belongs to.
+                    obp_host: "test-host-a:8080",
                     bank_id: "rt.bank.a",
                     account_id: "settlement-a",
                     request_payload: "{}",
@@ -344,7 +346,8 @@ mod tests {
             if let Some(tx) = tx {
                 w.outbox.mark_promise_written(id, tx, "mock").await.unwrap();
             }
-            w.outbox.mark_settled(&[obp_id], "settle-1").await.unwrap();
+            // Settled on the same OBP host.
+            w.outbox.mark_settled("test-host-a:8080", &[obp_id], "settle-1").await.unwrap();
         }
 
         w.tick().await.unwrap();
@@ -388,6 +391,10 @@ mod tests {
         store
             .claim(NewClaim {
                 idempotency_key: key,
+                // The OBP host the settlement is on.
+                obp_host: "test-host-a:8080",
+                // The paying bank there.
+                bank_id: "rt.bank.a",
                 settlement_id: Some("settle-1"),
                 snapshot_id: None,
                 currency: "KES",

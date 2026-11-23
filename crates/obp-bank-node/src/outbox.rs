@@ -66,6 +66,8 @@ pub enum OutboxError {
 pub struct OutboxRecord {
     pub transaction_request_id: String,
     pub status: String,
+    /// The OBP host the request is made on: the host (and port) of that OBP-API's base URL. Empty on rows written before the node could be on several OBP hosts; those rows belong to no host.
+    pub obp_host: String,
     pub bank_id: String,
     pub account_id: String,
     /// The original A1.1 request body, serialized as JSON. Replayed verbatim
@@ -119,6 +121,8 @@ pub struct OutboxRecord {
 /// (`status = INITIATED`, `attempt_count = 0`, timestamps) is set by the store.
 pub struct NewEntry<'a> {
     pub transaction_request_id: &'a str,
+    /// The OBP host the request is made on.
+    pub obp_host: &'a str,
     pub bank_id: &'a str,
     pub account_id: &'a str,
     pub request_payload: &'a str,
@@ -247,6 +251,7 @@ impl OutboxStore {
             CREATE TABLE IF NOT EXISTS outbox (
                 transaction_request_id TEXT PRIMARY KEY,
                 status                 TEXT NOT NULL,
+                obp_host               TEXT NOT NULL DEFAULT '',
                 bank_id                TEXT NOT NULL,
                 account_id             TEXT NOT NULL,
                 request_payload        TEXT NOT NULL,
@@ -284,6 +289,7 @@ impl OutboxStore {
             "idempotency_key TEXT",
             "obp_status TEXT",
             "obp_status_at TEXT",
+            "obp_host TEXT NOT NULL DEFAULT ''",
         ] {
             if let Err(e) = sqlx::query(&format!("ALTER TABLE outbox ADD COLUMN {col}"))
                 .execute(pool)
@@ -318,12 +324,14 @@ impl OutboxStore {
         let now = rfc3339(Utc::now());
         sqlx::query(
             "INSERT INTO outbox \
-                (transaction_request_id, status, bank_id, account_id, request_payload, \
+                (transaction_request_id, status, obp_host, bank_id, account_id, request_payload, \
                  commitment_salt, attempt_count, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
         )
         .bind(entry.transaction_request_id)
         .bind(status::INITIATED)
+        // The OBP host the row belongs to.
+        .bind(entry.obp_host)
         .bind(entry.bank_id)
         .bind(entry.account_id)
         .bind(entry.request_payload)
@@ -346,12 +354,14 @@ impl OutboxStore {
         let now = rfc3339(Utc::now());
         let result = sqlx::query(
             "INSERT INTO outbox \
-                (transaction_request_id, status, bank_id, account_id, request_payload, \
+                (transaction_request_id, status, obp_host, bank_id, account_id, request_payload, \
                  commitment_salt, attempt_count, created_at, updated_at, idempotency_key) \
-             VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
         )
         .bind(entry.transaction_request_id)
         .bind(status::INITIATED)
+        // The OBP host the row belongs to.
+        .bind(entry.obp_host)
         .bind(entry.bank_id)
         .bind(entry.account_id)
         .bind(entry.request_payload)
@@ -389,11 +399,16 @@ impl OutboxStore {
         Ok(rec)
     }
 
-    /// Most-recent-first listing, capped at `limit`.
-    pub async fn list(&self, limit: i64) -> Result<Vec<OutboxRecord>, OutboxError> {
+    /// The rows of one bank on one OBP host, most recent first, capped at `limit`.
+    pub async fn list(&self, obp_host: &str, bank_id: &str, limit: i64) -> Result<Vec<OutboxRecord>, OutboxError> {
+        // Only this bank's rows on this OBP host.
         let recs = sqlx::query_as::<_, OutboxRecord>(
-            "SELECT * FROM outbox ORDER BY created_at DESC LIMIT ?",
+            "SELECT * FROM outbox WHERE obp_host = ? AND bank_id = ? ORDER BY created_at DESC LIMIT ?",
         )
+        // The OBP host to list.
+        .bind(obp_host)
+        // The bank to list.
+        .bind(bank_id)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
@@ -509,6 +524,7 @@ impl OutboxStore {
     /// the other bank's promises simply match nothing here.
     pub async fn mark_settled(
         &self,
+        obp_host: &str,
         covered_obp_tr_ids: &[String],
         settlement_id: &str,
     ) -> Result<u64, OutboxError> {
@@ -517,11 +533,13 @@ impl OutboxStore {
         }
         let now = rfc3339(Utc::now());
         let placeholders = vec!["?"; covered_obp_tr_ids.len()].join(", ");
+        // A settlement on one OBP host only covers rows made on that OBP host.
         let sql = format!(
             "UPDATE outbox SET settlement_id = ?, settled_at = ?, updated_at = ? \
-             WHERE settlement_id IS NULL AND obp_transaction_request_id IN ({placeholders})"
+             WHERE settlement_id IS NULL AND obp_host = ? AND obp_transaction_request_id IN ({placeholders})"
         );
-        let mut query = sqlx::query(&sql).bind(settlement_id).bind(&now).bind(&now);
+        // Bind the settlement, the times, and the OBP host the settlement is on.
+        let mut query = sqlx::query(&sql).bind(settlement_id).bind(&now).bind(&now).bind(obp_host);
         for id in covered_obp_tr_ids {
             query = query.bind(id);
         }
@@ -624,11 +642,65 @@ mod tests {
     fn entry<'a>(id: &'a str, payload: &'a str) -> NewEntry<'a> {
         NewEntry {
             transaction_request_id: id,
+            // The OBP host the row belongs to.
+            obp_host: "test-host-a:8080",
             bank_id: "ke.01.kcs",
             account_id: "acct-1",
             request_payload: payload,
             commitment_salt: "00112233445566778899aabbccddeeff",
         }
+    }
+
+    // A list shows only the rows of one bank on one OBP host.
+    #[tokio::test]
+    async fn list_is_scoped_to_one_bank_on_one_obp_host() {
+        // An empty outbox.
+        let store = OutboxStore::connect_in_memory().await.unwrap();
+        // A row for bank ke.01.kcs on OBP host A.
+        store.insert(entry("tr-on-a", "{}")).await.unwrap();
+        // A row for the same node's bank on OBP host B, where it has another bank_id.
+        store
+            .insert(NewEntry {
+                // Its own id.
+                transaction_request_id: "tr-on-b",
+                // OBP host B.
+                obp_host: "test-host-b:8081",
+                // The bank's id on OBP host B.
+                bank_id: "hub.b",
+                // Its corridor account there.
+                account_id: "acct-b",
+                // Any payload.
+                request_payload: "{}",
+                // Any salt.
+                commitment_salt: "00112233445566778899aabbccddeeff",
+            })
+            .await
+            .unwrap();
+        // OBP host A's list.
+        let on_a = store.list("test-host-a:8080", "ke.01.kcs", 10).await.unwrap();
+        // Only the row made there.
+        assert_eq!(on_a.iter().map(|rec| rec.transaction_request_id.as_str()).collect::<Vec<_>>(), vec!["tr-on-a"]);
+        // OBP host B's list.
+        let on_b = store.list("test-host-b:8081", "hub.b", 10).await.unwrap();
+        // Only the row made there.
+        assert_eq!(on_b.iter().map(|rec| rec.transaction_request_id.as_str()).collect::<Vec<_>>(), vec!["tr-on-b"]);
+        // The right OBP host with another bank's id lists nothing.
+        assert!(store.list("test-host-a:8080", "hub.b", 10).await.unwrap().is_empty());
+    }
+
+    // A settlement on one OBP host stamps only that OBP host's rows.
+    #[tokio::test]
+    async fn mark_settled_only_stamps_rows_on_its_own_obp_host() {
+        // An empty outbox.
+        let store = OutboxStore::connect_in_memory().await.unwrap();
+        // A row on OBP host A.
+        store.insert(entry("tr-on-a", "{}")).await.unwrap();
+        // OBP-API A gave it this id.
+        store.mark_submitted("tr-on-a", Some("obp-shared")).await.unwrap();
+        // A settlement on OBP host B that happens to name the same OBP id.
+        let stamped = store.mark_settled("test-host-b:8081", &["obp-shared".to_string()], "settle-b").await.unwrap();
+        // Nothing on OBP host A is touched.
+        assert_eq!(stamped, 0);
     }
 
     #[tokio::test]
@@ -791,7 +863,7 @@ mod tests {
             "obp-3".to_string(),
             "obp-theirs".to_string(),
         ];
-        let stamped = store.mark_settled(&covered, "settle-1").await.unwrap();
+        let stamped = store.mark_settled("test-host-a:8080", &covered, "settle-1").await.unwrap();
         assert_eq!(stamped, 2);
 
         let a = store.get("tr-a").await.unwrap().unwrap();
@@ -807,7 +879,7 @@ mod tests {
 
         // Re-stamping (redelivered result / poll) is idempotent: no new rows,
         // original settled_at preserved.
-        let again = store.mark_settled(&covered, "settle-1").await.unwrap();
+        let again = store.mark_settled("test-host-a:8080", &covered, "settle-1").await.unwrap();
         assert_eq!(again, 0);
         assert_eq!(
             store.get("tr-a").await.unwrap().unwrap().settled_at,
@@ -815,7 +887,7 @@ mod tests {
         );
 
         // Empty list is a no-op (and must not produce `IN ()` SQL).
-        assert_eq!(store.mark_settled(&[], "settle-2").await.unwrap(), 0);
+        assert_eq!(store.mark_settled("test-host-a:8080", &[], "settle-2").await.unwrap(), 0);
     }
 
     #[tokio::test]
@@ -864,7 +936,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             store
-                .mark_settled(&["obp-old".into()], "s-1")
+                .mark_settled("test-host-a:8080", &["obp-old".into()], "s-1")
                 .await
                 .unwrap(),
             1
@@ -891,6 +963,8 @@ mod tests {
         let store = OutboxStore::connect_in_memory().await.unwrap();
         let entry = |id: &'static str| NewEntry {
             transaction_request_id: id,
+            // The OBP host the row belongs to.
+            obp_host: "test-host-a:8080",
             bank_id: "b",
             account_id: "a",
             request_payload: "{}",
@@ -916,6 +990,8 @@ mod tests {
             store
                 .insert(NewEntry {
                     transaction_request_id: id,
+                    // The OBP host the row belongs to.
+                    obp_host: "test-host-a:8080",
                     bank_id: "b",
                     account_id: "a",
                     request_payload: "{}",
@@ -932,7 +1008,7 @@ mod tests {
             store.mark_promise_written(id, "tx", "mock").await.unwrap();
             store.mark_reported(id).await.unwrap();
         }
-        store.mark_settled(&["obp-old-settled".into()], "settle-1").await.unwrap();
+        store.mark_settled("test-host-a:8080", &["obp-old-settled".into()], "settle-1").await.unwrap();
         for id in ["old-exc", "old-settled", "old-unsettled", "old-initiated"] {
             store.backdate(id, "2020-01-01T00:00:00Z").await.unwrap();
         }
@@ -953,6 +1029,8 @@ mod tests {
             store
                 .insert(NewEntry {
                     transaction_request_id: id,
+                    // The OBP host the row belongs to.
+                    obp_host: "test-host-a:8080",
                     bank_id: "b",
                     account_id: "a",
                     request_payload: "{}",
