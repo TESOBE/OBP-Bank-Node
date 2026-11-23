@@ -4,7 +4,7 @@
 
 //! South-side REST API (Interface A).
 //!
-//! Mounts four endpoints under `/obp-bank-node/v5.1.0/` plus root `/alive`,
+//! Mounts the south-side endpoints under `/obp-bank-node/v5.1.0/` plus root `/alive`,
 //! `/health` and `/status` (in OBP-API's format, see [`status_page`]).
 //! URLs are intentionally short: one Bank Node serves exactly one bank, so
 //! `bank_id`, `account_id`, and `view_id` are not on the URL — the Bank Node
@@ -62,6 +62,9 @@ pub struct BankNodeState {
     /// Checked by the root `/status` page: OBP-API's base URL, and the chain's
     /// health URL (Ogmios's `/health` for Cardano; `None` for the mock).
     pub obp_api_url: String,
+    /// The name of the OBP-API instance this node is connected to
+    /// (`obp_api.name`, or the host of its base URL).
+    pub obp_api_name: String,
     pub chain_health_url: Option<String>,
     /// Identifies this run of the node on `/status`; new on every start.
     pub instance_id: String,
@@ -108,6 +111,8 @@ pub fn build_router(state: BankNodeState) -> Router {
             "/obp-bank-node/v5.1.0/settlements/:key/corridor",
             get(get_corridor_settlement),
         )
+        // The banks on the OBP-API instance, relayed from getBanks.
+        .route("/obp-bank-node/v5.1.0/banks", get(list_banks))
         .route("/obp-bank-node/v5.1.0/incoming-settlements", get(list_incoming_settlements))
         .route("/obp-bank-node/v5.1.0/evidence", get(list_evidence))
         .route(

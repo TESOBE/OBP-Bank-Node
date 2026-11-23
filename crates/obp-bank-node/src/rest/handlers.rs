@@ -699,6 +699,20 @@ pub async fn get_corridor_settlement(
     Json(result.raw).into_response()
 }
 
+/// The banks on this OBP-API instance, as OBP-API's getBanks lists them
+/// (`GET /obp/v5.1.0/banks`), with each bank's `bank_routings`. This is how
+/// the bank, or the Bank Node UI, learns which other banks it can pay and
+/// which routing pairs address them. The body is OBP-API's, unchanged.
+pub async fn list_banks(State(state): State<BankNodeState>) -> Response {
+    // Ask OBP-API for the list; a failure maps onto the usual Interface B errors.
+    match state.obp.get_banks().await {
+        // Relay OBP-API's body as it is.
+        Ok(body) => Json(body).into_response(),
+        // A rejection keeps OBP-API's status and code; no answer is this node's 502.
+        Err(e) => obp_error(e),
+    }
+}
+
 /// Settlements this bank receives as creditor, and whether each payment has
 /// been seen arriving (see `incoming.rs`).
 pub async fn list_incoming_settlements(State(state): State<BankNodeState>) -> Response {
@@ -759,19 +773,42 @@ pub async fn get_evidence(
 /// stays minimal and whose shape must basically never change. The root
 /// `/alive`, `/health` and `/status` follow OBP-API's format (`status_page`).
 pub async fn root_status(State(state): State<BankNodeState>) -> Response {
+    // Corridor accounts in sorted order, used twice below.
+    let corridor_accounts: std::collections::BTreeMap<String, String> = state
+        // Start from the configured currency -> account map.
+        .corridor_accounts
+        // Walk each entry.
+        .iter()
+        // Copy the currency and the account id.
+        .map(|(c, a)| (c.clone(), a.clone()))
+        // Collect into a sorted map.
+        .collect();
+    // Interface C state, reported per instance.
+    let (interface_c, _detail) = state.interface_c.snapshot();
     Json(StatusBody {
         service: "OBP-Bank-Node",
         version: env!("CARGO_PKG_VERSION"),
         bank_id: state.bank_id.clone(),
         account_id: state.account_id.clone(),
         // BTreeMap: deterministic (sorted) key order in the JSON.
-        corridor_accounts: state
-            .corridor_accounts
-            .iter()
-            .map(|(c, a)| (c.clone(), a.clone()))
-            .collect(),
+        corridor_accounts: corridor_accounts.clone(),
         blockchain: state.blockchain_label,
         finality_depth: state.finality_depth,
+        // The one instance this node is connected to today.
+        instances: vec![InstanceView {
+            // The instance's name.
+            name: state.obp_api_name.clone(),
+            // Its OBP-API base URL.
+            obp_api_url: state.obp_api_url.clone(),
+            // This bank's id there.
+            bank_id: state.bank_id.clone(),
+            // Its shorthand account there.
+            account_id: state.account_id.clone(),
+            // Its corridor accounts there.
+            corridor_accounts,
+            // Its Interface C state.
+            interface_c,
+        }],
         timestamp: Utc::now(),
     })
     .into_response()

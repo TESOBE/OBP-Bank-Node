@@ -66,8 +66,8 @@ function moreLink(total, shown, href, what) {
 
 // ---- header: node health -------------------------------------------------
 
-// Per-node identity from /health (bank_id, account_id) — drives the
-// beneficiary-default swap when the sending node changes.
+// Per-node identity from /health (bank_id, account_id) — the fallback for
+// renderSendNodeAccount and otherBanks when /status has not answered yet.
 const NODE_INFO = {};
 
 async function renderHealth() {
@@ -85,7 +85,19 @@ async function renderHealth() {
     }
     return `<span class="node-chip ${up ? "up" : "down"}">${esc(n.name)} · ${up ? "up" : "down"}${chain}</span>`;
   }));
-  $("#node-health").innerHTML = parts.join("");
+  // Group the node chips by the OBP-API instance each node is connected to.
+  // A hub node is on several instances, so it appears in each group.
+  const groups = new Map();
+  NODES.forEach((n, i) => {
+    const names = instanceNames(n.name);
+    for (const name of names.length ? names : ["?"]) {
+      if (!groups.has(name)) groups.set(name, []);
+      groups.get(name).push(parts[i]);
+    }
+  });
+  $("#node-health").innerHTML = [...groups].map(([name, chips]) =>
+    `<span class="instance-group"><span class="instance-name" title="OBP-API instance">${esc(name)}</span>${chips.join("")}</span>`,
+  ).join("");
   renderSendNodeAccount();
 }
 
@@ -99,6 +111,24 @@ async function fetchStatus(name) {
     if (r.ok && r.body) NODE_STATUS[name] = r.body;
   }
   return NODE_STATUS[name];
+}
+
+// The OBP-API instances a node is connected to, from its /status. One today;
+// a hub node lists several.
+function nodeInstances(name) {
+  return NODE_STATUS[name]?.instances || [];
+}
+
+function instanceNames(name) {
+  return nodeInstances(name).map((instance) => instance.name);
+}
+
+// A node's heading in the tables: its name and the instance(s) it is on.
+function nodeTitle(name) {
+  const names = instanceNames(name);
+  return names.length
+    ? `${esc(name)} <span class="dim">· on ${esc(names.join(", "))}</span>`
+    : esc(name);
 }
 
 // Read-only line under the Sending node select: the corridor account the
@@ -116,29 +146,101 @@ async function renderSendNodeAccount() {
   const map = status?.corridor_accounts || {};
   if (Object.keys(map).length && currency) {
     el.textContent = map[currency]
-      ? `corridor account: ${status.bank_id} / ${map[currency]}`
+      ? `corridor account: ${status.bank_id} / ${map[currency]}${
+        instanceNames(node).length ? ` · on ${instanceNames(node).join(", ")}` : ""}`
       : `no corridor account for ${currency} — the node will refuse this send`;
     return;
   }
   const info = status || NODE_INFO[node];
   el.textContent = info ? `corridor account: ${info.bank_id} / ${info.account_id}` : "";
+  const names = instanceNames(node);
+  if (names.length && el.textContent) el.textContent += ` · on ${names.join(", ")}`;
 }
 
-// A corridor is inter-bank: when the sender changes, point the beneficiary
-// fields at the first OTHER node's bank/account so the defaults never target
-// the sending bank itself.
-function swapBeneficiaryDefaults(senderName) {
-  const sender = NODE_INFO[senderName];
-  const other = NODES.map((n) => n.name)
-    .filter((name) => name !== senderName && NODE_INFO[name])
-    .map((name) => NODE_INFO[name])
-    .find((info) => !sender || info.bank_id !== sender.bank_id);
-  if (!other) return;
+// ---- the other bank: picked from getBanks ---------------------------------
+
+// Node name -> the banks on the OBP-API instance, as the node relays getBanks
+// (GET /obp-bank-node/v5.1.0/banks); null when the node could not list them.
+const BANKS = {};
+
+async function fetchBanks(node) {
+  if (!(node in BANKS)) {
+    const r = await getJson(nodeUrl(node, "banks"));
+    BANKS[node] = r.ok && Array.isArray(r.body?.banks) ? r.body.banks : null;
+  }
+  return BANKS[node];
+}
+
+// The banks a node can pay: every bank on the instance except its own.
+// null when the list could not be fetched.
+async function otherBanks(node) {
+  const ownBankId = (await fetchStatus(node))?.bank_id || NODE_INFO[node]?.bank_id;
+  const banks = await fetchBanks(node);
+  return banks ? banks.filter((bank) => bank.id !== ownBankId) : null;
+}
+
+function bankOption(bank) {
+  const routings = (bank.bank_routings || [])
+    .map((routing) => `${routing.scheme} ${routing.address}`).join(", ");
+  const name = bank.full_name && bank.full_name !== bank.id ? `${bank.full_name} (${bank.id})` : bank.id;
+  return `<option value="${esc(bank.id)}">${esc(routings ? `${name} · ${routings}` : name)}</option>`;
+}
+
+// Fill a bank picker with the node's other banks. Keeps `wantedBankId` selected
+// when it is in the list, else selects the first. Returns the selected bank id,
+// or "" when there is nothing to pick.
+async function fillBankSelect(select, node, wantedBankId) {
+  if (!select || !node) return "";
+  const banks = await otherBanks(node);
+  if (!banks || banks.length === 0) {
+    const why = banks ? "no other banks on this OBP-API instance" : "the node could not list the banks";
+    select.innerHTML = `<option value="">${why}</option>`;
+    select.disabled = true;
+    return "";
+  }
+  select.disabled = false;
+  select.innerHTML = banks.map(bankOption).join("");
+  const note = select.parentElement?.querySelector(".fnote");
+  const names = instanceNames(node);
+  if (note && names.length) note.textContent = `banks on ${names.join(", ")} (getBanks)`;
+  if (banks.some((bank) => bank.id === wantedBankId)) select.value = wantedBankId;
+  return select.value;
+}
+
+// The account the beneficiary fields default to: the corridor account of a
+// configured node that serves the picked bank (the localhost demo runs both).
+// A real deployment fronts one node, so the account stays as typed.
+async function accountAtBank(bankId) {
+  for (const n of NODES) {
+    const status = await fetchStatus(n.name);
+    if (status?.bank_id === bankId && status.account_id) return status.account_id;
+  }
+  return null;
+}
+
+// Point the Send form's beneficiary bank routing at the picked bank.
+async function applySendBank(bankId) {
+  if (!bankId) return;
   const send = $("#send-form").elements;
-  send.namedItem("other_bank").value = other.bank_id;
-  send.namedItem("other_account").value = other.account_id;
-  send.namedItem("beneficiary_name").value = `Beneficiary at ${other.bank_id}`;
-  $("#settle-form").elements.namedItem("other_bank_id").value = other.bank_id;
+  send.namedItem("other_bank_scheme").value = "OBP";
+  send.namedItem("other_bank").value = bankId;
+  send.namedItem("beneficiary_name").value = `Beneficiary at ${bankId}`;
+  const accountId = await accountAtBank(bankId);
+  if (accountId) send.namedItem("other_account").value = accountId;
+}
+
+async function fillSendBanks() {
+  const select = $("#send-other-bank");
+  if (!select) return;
+  const current = $("#send-form").elements.namedItem("other_bank").value.trim();
+  const picked = await fillBankSelect(select, $("#send-node").value, current);
+  if (picked && picked !== current) await applySendBank(picked);
+}
+
+async function fillSettleBanks() {
+  const select = $("#settle-other-bank");
+  if (!select) return;
+  await fillBankSelect(select, $("#settle-node").value, select.value || $("#send-other-bank")?.value);
 }
 
 // ---- step 2: promises (outbox tables) ------------------------------------
@@ -177,7 +279,7 @@ function renderTrTables() {
   const html = NODES.map((n) => {
     const rows = TRS[n.name] || [];
     if (rows.length === 0) {
-      return `<h3>${esc(n.name)}</h3><p class="empty">no outbound transaction requests</p>`;
+      return `<h3>${nodeTitle(n.name)}</h3><p class="empty">no outbound transaction requests</p>`;
     }
     const shown = rows.slice(0, rowLimit(el));
     const body = shown.map((tr) => `
@@ -191,7 +293,7 @@ function renderTrTables() {
         <td>${esc(tr.settled_at ? tr.settled_at.slice(0, 19) : "")}</td>
         <td class="details">${esc(trDetails(tr))}</td>
       </tr>`).join("");
-    return `<h3>${esc(n.name)}</h3>
+    return `<h3>${nodeTitle(n.name)}</h3>
       <table>
         <thead><tr><th>transaction request id</th><th>status</th><th>value</th><th>to bank</th>
           <th>promise tx</th><th>settlement</th><th>settled at</th><th>details</th></tr></thead>
@@ -231,7 +333,7 @@ function renderPosition() {
   const html = NODES.map((n) => {
     const corridors = outboundExposure(TRS[n.name] || []);
     if (corridors.length === 0) {
-      return `<h3>${esc(n.name)}</h3><p class="empty">no unsettled outbound corridor legs</p>`;
+      return `<h3>${nodeTitle(n.name)}</h3><p class="empty">no unsettled outbound corridor legs</p>`;
     }
     const rows = corridors.map((c) => `<tr>
       <td>${esc(c.other)}</td>
@@ -239,7 +341,7 @@ function renderPosition() {
       <td class="num net">${c.total.toFixed(2)}</td>
       <td class="num">${c.count}</td>
     </tr>`).join("");
-    return `<h3>${esc(n.name)}</h3>
+    return `<h3>${nodeTitle(n.name)}</h3>
       <table>
         <thead><tr><th>other bank</th><th>currency</th>
           <th>unsettled outbound</th><th>promises</th></tr></thead>
@@ -304,7 +406,7 @@ function incomingTable(n, rows) {
         <td>${txLink(s.tx_id)}</td>
         <td class="details">${esc(s.detail || "")}</td>
       </tr>`).join("");
-  return `<h4>${esc(n.name)} — incoming (as creditor)</h4>
+  return `<h4>${nodeTitle(n.name)} — incoming (as creditor)</h4>
       <table>
         <thead><tr><th>settlement id</th><th>status</th><th>from bank</th><th>net</th>
           <th>rail amount</th><th>tx</th><th>details</th></tr></thead>
@@ -383,7 +485,7 @@ async function renderSettlements() {
     const rows = data.out;
     const incoming = incomingTable(n, data.in.slice(0, rowLimit(el)));
     if (rows.length === 0) {
-      return `<h3>${esc(n.name)}</h3><p class="empty">no outgoing settlements</p>${incoming}`;
+      return `<h3>${nodeTitle(n.name)}</h3><p class="empty">no outgoing settlements</p>${incoming}`;
     }
     const shown = rows.slice(0, rowLimit(el));
     const body = shown.map((s) => `
@@ -401,7 +503,7 @@ async function renderSettlements() {
               data-key="${esc(s.settlement_id || s.idempotency_key)}"
               title="OBP-API's authoritative settlement view — covered promises from both banks; also reconciles this node's linkage">corridor view</button></td>
       </tr>`).join("");
-    return `<h3>${esc(n.name)}</h3>
+    return `<h3>${nodeTitle(n.name)}</h3>
       <table>
         <thead><tr><th>settlement id</th><th>status</th><th>net</th><th>rail amount</th>
           <th>rate</th><th>depth</th><th>tx</th><th>error</th><th></th></tr></thead>
@@ -429,7 +531,7 @@ async function renderEvidence() {
     const r = await getJson(nodeUrl(n.name, "evidence"));
     const rows = r.ok && Array.isArray(r.body) ? r.body : [];
     if (rows.length === 0) {
-      return `<h3>${esc(n.name)}</h3><p class="empty">no received credits</p>`;
+      return `<h3>${nodeTitle(n.name)}</h3><p class="empty">no received credits</p>`;
     }
     const shown = rows.slice(0, rowLimit(el));
     const body = shown.map((ev) => `
@@ -456,7 +558,7 @@ async function renderEvidence() {
           ? `<span class="chip chip-verified">settled</span>`
           : `<span class="chip chip-initiated">unsettled</span>`}</td>
       </tr>`).join("");
-    return `<h3>${esc(n.name)}</h3>
+    return `<h3>${nodeTitle(n.name)}</h3>
       <table>
         <thead><tr><th>transaction request id</th><th>commitment check</th><th>amount</th>
           <th>originator</th><th>CBS delivery</th><th>commitment</th><th>received</th><th>settlement</th></tr></thead>
@@ -605,6 +707,8 @@ async function applyUiDefaults() {
 // One app.js serves every page: each renderer no-ops when its container is
 // absent, so refresh() only fetches what the current page shows.
 async function refresh() {
+  // Node identity and instances, used by the headings below (cached per node).
+  await Promise.all(NODES.map((n) => fetchStatus(n.name)));
   if ($("#tr-tables") || $("#position-view")) {
     await fetchTrs();
     renderTrTables();
@@ -637,13 +741,16 @@ async function boot() {
   initFieldHistory($("#settle-form"));
   $("#send-form")?.addEventListener("submit", onSend);
   $("#settle-form")?.addEventListener("submit", onSettle);
-  $("#send-node")?.addEventListener("change", (e) => {
-    swapBeneficiaryDefaults(e.target.value);
+  $("#send-node")?.addEventListener("change", () => {
+    fillSendBanks();
     renderSendNodeAccount();
   });
+  $("#send-other-bank")?.addEventListener("change", (e) => applySendBank(e.target.value));
   $("#send-form")?.elements.namedItem("currency")
     ?.addEventListener("input", renderSendNodeAccount);
-  $("#settle-node")?.addEventListener("change", (e) => swapBeneficiaryDefaults(e.target.value));
+  $("#settle-node")?.addEventListener("change", fillSettleBanks);
+  await fillSendBanks();
+  await fillSettleBanks();
   document.addEventListener("click", (e) => {
     const btn = e.target.closest(".corridor-btn");
     if (btn) showCorridor(btn.dataset.node, btn.dataset.key);

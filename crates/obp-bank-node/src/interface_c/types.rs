@@ -40,6 +40,9 @@ pub mod error_code {
     pub const PLATFORM: &str = "OBP-BANK-NODE-PLATFORM-001";
     /// The on-chain settlement transfer failed.
     pub const SETTLEMENT_FAILED: &str = "OBP-BANK-NODE-SETTLEMENT-FAILED";
+    /// The net is too small to pay on the rail (below Cardano's min-UTxO).
+    /// Final: the same instruction will always fail the same way.
+    pub const SETTLEMENT_BELOW_MINIMUM: &str = "OBP-BANK-NODE-SETTLEMENT-BELOW-MINIMUM";
     /// A settlement instruction arrived but no settlement backend is configured.
     pub const SETTLEMENT_NOT_CONFIGURED: &str = "OBP-BANK-NODE-SETTLEMENT-NOT-CONFIGURED";
 }

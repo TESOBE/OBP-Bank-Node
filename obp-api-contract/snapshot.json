@@ -6,7 +6,7 @@
    "git_commit": "474d4bcc554f1d8e9516e12d85be121d92410aa5"
   }
  },
- "taken_at": "2026-11-18T10:17:16Z",
+ "taken_at": "2026-11-23T09:12:03Z",
  "endpoints": [
   {
    "verb": "GET",
@@ -102,6 +102,25 @@
     "id",
     "logo",
     "website"
+   ]
+  },
+  {
+   "verb": "GET",
+   "path": "/obp/v5.1.0/banks",
+   "docs_from": "https://k8s.openbankproject.com",
+   "operation_id": "OBPv5.1.0-getBanks",
+   "documented_path": "/obp/v5.1.0/banks",
+   "fields": [
+    "banks",
+    "banks[]",
+    "banks[].bank_routing",
+    "banks[].bank_routing.address",
+    "banks[].bank_routing.scheme",
+    "banks[].full_name",
+    "banks[].id",
+    "banks[].logo",
+    "banks[].short_name",
+    "banks[].website"
    ]
   },
   {

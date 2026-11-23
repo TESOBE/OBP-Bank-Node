@@ -90,10 +90,16 @@ grant "$SA_ID" ""        CanCreatePlatformApp
 grant "$SA_ID" ""        CanCreateCustomView
 
 echo "== creating banks"
-for B in "$BANK_A" "$BANK_B"; do
-  api POST /obp/v5.1.0/banks \
-    "{\"id\":\"$B\",\"bank_code\":\"$B\",\"full_name\":\"Round-trip $B\",\"logo\":\"\",\"website\":\"\",\"bank_routings\":[]}" \
+# Each demo bank has a made-up BIC, so a payment can name the beneficiary bank by BIC instead of by
+# OBP bank id. ZZ is not assigned to any country, so these can never be a real bank's BIC.
+for pair in "$BANK_A:DEMAZZ22" "$BANK_B:DEMBZZ22"; do
+  B="${pair%%:*}"; BIC="${pair#*:}"
+  BANK_JSON="{\"id\":\"$B\",\"bank_code\":\"$B\",\"full_name\":\"Round-trip $B\",\"logo\":\"\",\"website\":\"\",\"bank_routings\":[{\"scheme\":\"BIC\",\"address\":\"$BIC\"}]}"
+  api POST /obp/v5.1.0/banks "$BANK_JSON" \
     | grep -qE '"id"|OBP-34000|already exists' && echo "  bank $B ok" || echo "  bank $B — check"
+  # A bank created before the BICs were added gets its BIC here. Update Bank is defined in v5.0.0.
+  api PUT /obp/v5.1.0/banks "$BANK_JSON" \
+    | grep -q "\"$BIC\"" && echo "  bank $B BIC $BIC ok" || echo "  bank $B BIC — check"
   grant "$SA_ID" "$B" CanCreateAccount
   grant "$SA_ID" "$B" CanConfigureAmqpBankBroker
   # Bank-scoped since 2026-08-07: the settle POST is addressed to a bank's URL

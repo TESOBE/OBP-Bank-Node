@@ -51,6 +51,7 @@ async fn router_with_obp(obp_base_url: &str) -> (axum::Router, BankNodeState) {
         finality_depth: TEST_FINALITY_DEPTH,
         interface_c: crate::interface_c::consumer::ConsumerStatus::new(),
         obp_api_url: obp_base_url.into(),
+        obp_api_name: "test-instance-a".into(),
         chain_health_url: None,
         instance_id: "test-instance".into(),
         started_at: std::time::Instant::now(),
@@ -404,6 +405,14 @@ async fn versioned_status_reports_identity_and_corridor_accounts() {
     assert_eq!(v["corridor_accounts"]["KES"], "settlement-kes");
     assert_eq!(v["corridor_accounts"]["NGN"], "settlement-ngn");
     assert_eq!(v["finality_depth"], TEST_FINALITY_DEPTH);
+    // The node lists the one instance it is connected to.
+    assert_eq!(v["instances"].as_array().unwrap().len(), 1);
+    // With its configured name.
+    assert_eq!(v["instances"][0]["name"], "test-instance-a");
+    // And this bank's identity and corridor accounts there.
+    assert_eq!(v["instances"][0]["bank_id"], "test.bank.id");
+    // The per-currency accounts are repeated on the instance.
+    assert_eq!(v["instances"][0]["corridor_accounts"]["KES"], "settlement-kes");
 }
 
 /// A router whose bank sends per-currency: KES and NGN map to their corridor
@@ -1087,4 +1096,54 @@ async fn initiate_payment_rejects_an_overlong_idempotency_key() {
     let key = "k".repeat(256);
     let resp = post_payment(app, Some(&key), idempotent_payment_body("100.00")).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+// ---------- banks (getBanks relay) ----------
+
+#[tokio::test]
+async fn banks_relays_obp_get_banks_unchanged() {
+    // Bring in axum's GET routing for the OBP-API stand-in.
+    use axum::routing::get as axum_get;
+    // OBP-API stand-in answering getBanks with two banks and their routings.
+    let stub = axum::Router::new().route(
+        // getBanks is called at v5.1.0.
+        "/obp/v5.1.0/banks",
+        // Answer with a fixed body, shaped like OBP-API's.
+        axum_get(|| async {
+            // The two banks the node should relay.
+            axum::Json(serde_json::json!({
+                "banks": [
+                    { "id": "test.bank.id", "full_name": "Test Bank",
+                      "bank_routings": [{ "scheme": "OBP", "address": "test.bank.id" }] },
+                    { "id": "other.bank", "full_name": "Other Bank",
+                      "bank_routings": [{ "scheme": "BIC", "address": "OTHRKENX" }] }
+                ]
+            }))
+        }),
+    );
+    // Start the stand-in and get its base URL.
+    let base = spawn_obp_stub(stub).await;
+    // A node pointed at the stand-in.
+    let (app, _state) = router_with_obp(&base).await;
+
+    // Call the node's south-side banks endpoint.
+    let (status, v) = get_json(app, "/obp-bank-node/v5.1.0/banks").await;
+    // The call succeeds.
+    assert_eq!(status, StatusCode::OK);
+    // Both banks come back, in OBP-API's order.
+    assert_eq!(v["banks"].as_array().unwrap().len(), 2);
+    // The other bank's routing pair is relayed unchanged.
+    assert_eq!(v["banks"][1]["bank_routings"][0]["address"], "OTHRKENX");
+}
+
+#[tokio::test]
+async fn banks_upstream_down_is_502() {
+    // A node whose OBP-API base points at a refused port.
+    let (app, _state) = router_with_state().await;
+    // Call the node's south-side banks endpoint.
+    let (status, v) = get_json(app, "/obp-bank-node/v5.1.0/banks").await;
+    // No answer from OBP-API is the node's 502.
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    // With the usual Interface B error code.
+    assert_eq!(v["error_code"], "OBP-BANK-NODE-INTERFACE-B-001");
 }

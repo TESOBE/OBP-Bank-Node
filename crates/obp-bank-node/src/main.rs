@@ -353,6 +353,10 @@ impl Default for EvidenceConfig {
 /// OBP-API.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct ObpApiConfig {
+    /// The name of this OBP-API instance, as shown in the Bank Node apps.
+    /// Empty means the host of `base_url`.
+    #[serde(default)]
+    name: String,
     base_url: String,
     /// OAuth2 token endpoint for the client-credentials grant.
     #[serde(default)]
@@ -373,6 +377,24 @@ struct ObpApiConfig {
     routing_refresh_secs: u64,
 }
 
+/// The name the node reports for its OBP-API instance: `obp_api.name` when
+/// set, otherwise the host of `obp_api.base_url`, otherwise the URL itself.
+fn instance_name(obp_api: &ObpApiConfig) -> String {
+    // A configured name wins.
+    if !obp_api.name.trim().is_empty() {
+        // Use it as written, without surrounding spaces.
+        return obp_api.name.trim().to_string();
+    }
+    // Otherwise take the host from the base URL.
+    reqwest::Url::parse(&obp_api.base_url)
+        // Keep only the host part, if the URL has one.
+        .ok()
+        // Copy the host out of the parsed URL.
+        .and_then(|url| url.host_str().map(str::to_string))
+        // Fall back to the base URL when it cannot be parsed.
+        .unwrap_or_else(|| obp_api.base_url.clone())
+}
+
 fn default_routing_refresh_secs() -> u64 {
     300
 }
@@ -380,6 +402,7 @@ fn default_routing_refresh_secs() -> u64 {
 impl Default for ObpApiConfig {
     fn default() -> Self {
         ObpApiConfig {
+            name: String::new(),
             base_url: "http://localhost:8080".into(),
             token_url: String::new(),
             client_id: String::new(),
@@ -696,6 +719,8 @@ async fn main() -> anyhow::Result<()> {
         finality_depth: config.settlement.finality_depth,
         interface_c: interface_c_status,
         obp_api_url: config.obp_api.base_url.clone(),
+        // The instance's configured name, or the host of its base URL.
+        obp_api_name: instance_name(&config.obp_api),
         chain_health_url: match config.blockchain.kind {
             BlockchainKind::Mock => None,
             BlockchainKind::Cardano => Some(ogmios_health_url(&config.blockchain.cardano.ogmios_url)),
