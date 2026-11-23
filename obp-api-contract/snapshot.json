@@ -6,7 +6,7 @@
    "git_commit": "474d4bcc554f1d8e9516e12d85be121d92410aa5"
   }
  },
- "taken_at": "2026-11-23T09:12:03Z",
+ "taken_at": "2026-11-23T09:13:45Z",
  "endpoints": [
   {
    "verb": "GET",
@@ -969,6 +969,28 @@
     "label",
     "product_code",
     "user_id"
+   ]
+  },
+  {
+   "verb": "PUT",
+   "path": "/obp/v5.1.0/banks",
+   "docs_from": "https://k8s.openbankproject.com",
+   "operation_id": "OBPv5.0.0-updateBank",
+   "documented_path": "/obp/v5.1.0/banks",
+   "fields": [
+    "attributes",
+    "attributes[]",
+    "attributes[].name",
+    "attributes[].value",
+    "bank_code",
+    "bank_routings",
+    "bank_routings[]",
+    "bank_routings[].address",
+    "bank_routings[].scheme",
+    "full_name",
+    "id",
+    "logo",
+    "website"
    ]
   },
   {
