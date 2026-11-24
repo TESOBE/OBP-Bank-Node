@@ -4,8 +4,8 @@
 
 //! The contract between the Bank-Node and OBP-API.
 //!
-//! `obp-api-contract/contract.json` lists every OBP-API call the Bank-Node
-//! and its UI make, with the response fields the code reads.
+//! `obp-api-contract/contract.json` lists every OBP-API call the Bank-Node,
+//! its UI and its dev scripts (`dev/*.sh`) make, with the response fields the code reads.
 //! `obp-api-contract/snapshot.json` is what an OBP-API documents for those
 //! calls, written by `obp-api-contract/snapshot.py` from its resource docs.
 //! These tests need no server: they check that the list matches the code, and
@@ -54,8 +54,92 @@ fn undocumented_reads(call: &Value, fields: &BTreeSet<String>) -> Vec<String> {
         .collect()
 }
 
+/// The lines of Rust source outside `#[cfg(test)]` items, with their line numbers (from 1). A test item
+/// runs from its attribute to the brace that closes it (or the `;` that ends it), so code written after
+/// a test module is still returned. Braces inside strings, character literals and comments do not count.
+fn production_lines(text: &str) -> Vec<(usize, &str)> {
+    let mut out = Vec::new();
+    // Inside a test item: (brace depth, whether its opening brace was seen).
+    let mut test_item: Option<(i64, bool)> = None;
+    let mut in_block_comment = false;
+    let mut in_string = false;
+    // Inside a raw string closed by a quote and this many `#`.
+    let mut raw_string: Option<usize> = None;
+    for (i, line) in text.lines().enumerate() {
+        let at_top_level = !in_block_comment && !in_string && raw_string.is_none();
+        if test_item.is_none() && at_top_level && line.trim() == "#[cfg(test)]" {
+            test_item = Some((0, false));
+            continue;
+        }
+        if test_item.is_none() {
+            out.push((i + 1, line));
+        }
+        let chars: Vec<char> = line.chars().collect();
+        let mut j = 0;
+        while j < chars.len() {
+            let c = chars[j];
+            if in_block_comment {
+                if c == '*' && chars.get(j + 1) == Some(&'/') {
+                    in_block_comment = false;
+                    j += 1;
+                }
+            } else if let Some(hashes) = raw_string {
+                if c == '"' && chars[j + 1..].iter().take(hashes).filter(|h| **h == '#').count() == hashes {
+                    raw_string = None;
+                    j += hashes;
+                }
+            } else if in_string {
+                if c == '\\' {
+                    j += 1;
+                } else if c == '"' {
+                    in_string = false;
+                }
+            } else if c == '/' && chars.get(j + 1) == Some(&'/') {
+                break;
+            } else if c == '/' && chars.get(j + 1) == Some(&'*') {
+                in_block_comment = true;
+                j += 1;
+            } else if c == '"' {
+                in_string = true;
+            } else if c == 'r' && (j == 0 || !(chars[j - 1].is_alphanumeric() || chars[j - 1] == '_')) {
+                let hashes = chars[j + 1..].iter().take_while(|h| **h == '#').count();
+                if chars.get(j + 1 + hashes) == Some(&'"') {
+                    raw_string = Some(hashes);
+                    j += 1 + hashes;
+                }
+            } else if c == '\'' {
+                // A character literal ('{', '\n', '\'') is skipped whole; a lifetime has no closing quote.
+                if chars.get(j + 1) == Some(&'\\') {
+                    if let Some(end) = chars[j + 3..].iter().position(|x| *x == '\'') {
+                        j += 3 + end;
+                    }
+                } else if chars.get(j + 2) == Some(&'\'') {
+                    j += 2;
+                }
+            } else if let Some((mut depth, mut opened)) = test_item {
+                match c {
+                    '{' => {
+                        depth += 1;
+                        opened = true;
+                    }
+                    '}' => depth -= 1,
+                    ';' if !opened && depth == 0 => {
+                        test_item = None;
+                    }
+                    _ => {}
+                }
+                if test_item.is_some() {
+                    test_item = if opened && depth == 0 { None } else { Some((depth, opened)) };
+                }
+            }
+            j += 1;
+        }
+    }
+    out
+}
+
 /// Lines of Rust source that build an OBP-API path, skipping comments and
-/// test code: (file relative to the workspace, line number, line).
+/// `#[cfg(test)]` items: (file relative to the workspace, line number, line).
 fn obp_path_lines() -> Vec<(String, usize, String)> {
     let root = workspace_root();
     let mut files = Vec::new();
@@ -69,23 +153,96 @@ fn obp_path_lines() -> Vec<(String, usize, String)> {
         if name == "tests.rs" || name.ends_with("_tests.rs") {
             continue;
         }
-        let text = fs::read_to_string(&file).unwrap();
-        let lines: Vec<&str> = text.lines().collect();
-        for (i, line) in lines.iter().enumerate() {
-            // A `#[cfg(test)] mod tests { .. }` block runs to the end of the file in this workspace.
-            if line.trim() == "#[cfg(test)]" && lines.get(i + 1).is_some_and(|next| next.trim().ends_with('{')) {
-                break;
-            }
-            let code = line.trim_start();
-            if code.starts_with("//") {
-                continue;
-            }
-            if code.contains('"') && (code.contains("/obp/v") || code.contains("/obp/{")) {
-                out.push((rel.clone(), i + 1, line.to_string()));
-            }
+        out.extend(obp_path_lines_of(&rel, &fs::read_to_string(&file).unwrap()));
+    }
+    out
+}
+
+const LOG_MACROS: &[&str] = &["error!(", "warn!(", "info!(", "debug!(", "trace!("];
+
+/// The lines of one source file's production code that build an OBP-API path.
+fn obp_path_lines_of(rel: &str, text: &str) -> Vec<(String, usize, String)> {
+    let mut out = Vec::new();
+    for (n, line) in production_lines(text) {
+        let code = line.trim_start();
+        // A comment, or a log line that names an endpoint to the operator, makes no call.
+        if code.starts_with("//") || LOG_MACROS.iter().any(|m| code.starts_with(m)) {
+            continue;
+        }
+        if code.contains('"') && (code.contains("/obp/v") || code.contains("/obp/{")) {
+            out.push((rel.to_string(), n, line.to_string()));
         }
     }
     out
+}
+
+/// The path lines that no call in `calls` accounts for: a line must contain a needle of a call listed for its file.
+fn unlisted(found: Vec<(String, usize, String)>, calls: &[Value]) -> Vec<String> {
+    found
+        .into_iter()
+        .filter(|(file, _, line)| {
+            !calls.iter().any(|c| {
+                c["source"].as_str() == Some(file.as_str())
+                    && strings(&c["needles"]).iter().any(|n| line.contains(n.trim()))
+            })
+        })
+        .map(|(file, n, line)| format!("{file}:{n} {}", line.trim()))
+        .collect()
+}
+
+/// The OBP-API calls written in a dev script: (file, line number, verb, path as written). The verb is the
+/// one after `-X` or `api` before the path on the line, GET when there is none; `$NAME` stands for a value
+/// the script fills in. Comment lines are skipped.
+fn dev_script_calls(rel: &str, text: &str) -> Vec<(String, usize, String, String)> {
+    const VERBS: &[&str] = &["GET", "POST", "PUT", "PATCH", "DELETE"];
+    let mut out = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        let mut offset = 0;
+        while let Some(at) = line[offset..].find("/obp/v") {
+            let start = offset + at;
+            let path: String = line[start..]
+                .chars()
+                .take_while(|c| !matches!(c, '"' | '\'' | ' ' | '\t' | '?' | '\\' | ')' | '|'))
+                .collect();
+            let mut verb = "GET";
+            let mut words = line[..start].split_whitespace().map(|w| w.trim_matches('"')).peekable();
+            while let Some(word) = words.next() {
+                if word == "-X" || word == "api" {
+                    if let Some(next) = words.peek().filter(|n| VERBS.contains(n)) {
+                        verb = next;
+                    }
+                }
+            }
+            out.push((rel.to_string(), i + 1, verb.to_string(), path.clone()));
+            offset = start + path.len().max(1);
+        }
+    }
+    out
+}
+
+/// Whether a call of the contract is the one a dev script makes: the same verb and version, and every
+/// segment equal, a value the script fills in (`$1`), or an OBP placeholder in capitals in the contract.
+fn same_endpoint(call: &Value, verb: &str, script_path: &str) -> bool {
+    let (a, b): (Vec<&str>, Vec<&str>) = (
+        call["path"].as_str().unwrap().split('/').collect(),
+        script_path.split('/').collect(),
+    );
+    let placeholder = |s: &str| s.chars().next().is_some_and(|c| c.is_ascii_uppercase()) && s.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+    call["verb"].as_str() == Some(verb)
+        && a.len() == b.len()
+        && a.iter().zip(&b).all(|(x, y)| x == y || y.starts_with('$') || placeholder(x))
+}
+
+/// The dev script calls that no call of the contract is.
+fn unlisted_dev_calls(found: Vec<(String, usize, String, String)>, calls: &[Value]) -> Vec<String> {
+    found
+        .into_iter()
+        .filter(|(_, _, verb, path)| !calls.iter().any(|c| same_endpoint(c, verb, path)))
+        .map(|(file, n, verb, path)| format!("{file}:{n} {verb} {path}"))
+        .collect()
 }
 
 fn collect_rs(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -120,18 +277,55 @@ fn every_call_in_the_contract_is_in_its_source_file() {
 fn every_obp_api_call_in_the_source_is_in_the_contract() {
     // Tests coverage: a line that builds an OBP-API path must contain a needle of a call listed for that file,
     // so a new call cannot reach OBP-API without its fields being recorded.
-    let calls = calls();
-    let unlisted: Vec<String> = obp_path_lines()
-        .into_iter()
-        .filter(|(file, _, line)| {
-            !calls.iter().any(|c| {
-                c["source"].as_str() == Some(file.as_str())
-                    && strings(&c["needles"]).iter().any(|n| line.contains(n.trim()))
-            })
-        })
-        .map(|(file, n, line)| format!("{file}:{n} {}", line.trim()))
-        .collect();
-    assert_eq!(unlisted, Vec::<String>::new());
+    assert_eq!(unlisted(obp_path_lines(), &calls()), Vec::<String>::new());
+}
+
+#[test]
+fn every_obp_api_call_in_the_dev_scripts_is_in_the_contract() {
+    // Tests coverage of dev/*.sh: each OBP-API path a dev script calls, with its verb, is a call of the contract
+    // (the dev-only calls are listed with their script as source), so a script cannot reach an endpoint the
+    // snapshot does not document.
+    let root = workspace_root();
+    let mut found = Vec::new();
+    for entry in fs::read_dir(root.join("dev")).unwrap().flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "sh") {
+            let rel = format!("dev/{}", path.file_name().unwrap().to_string_lossy());
+            found.extend(dev_script_calls(&rel, &fs::read_to_string(&path).unwrap()));
+        }
+    }
+    assert!(found.len() > 15, "found only {} calls in the dev scripts", found.len());
+    assert_eq!(unlisted_dev_calls(found, &calls()), Vec::<String>::new());
+}
+
+#[test]
+fn a_dev_script_call_the_contract_lacks_is_reported() {
+    // Tests the dev script check on sample lines: a call on another version, with another verb, or to another
+    // path is reported; `$1` fills a placeholder, and a comment is no call.
+    let script = r#"
+# api GET /obp/v5.1.0/in-a-comment
+  api PUT "/obp/v5.1.0/banks/$1/accounts/$2" "{}"
+  api PUT "/obp/v7.0.0/banks/$1/accounts/$2" "{}"
+  api POST "/obp/v7.0.0/banks/$1/accounts/$2" "{}"
+  curl -s "$OBP/obp/v5.1.0/banks/$B" -H "$AUTH"
+  curl -s -X POST "$OBP/obp/v5.1.0/management/consumers" -H @"$TMP/auth"
+  curl -sf -o /dev/null "$OBP/obp/v9.0.0/root"
+"#;
+    let calls = vec![
+        serde_json::json!({ "verb": "PUT", "path": "/obp/v7.0.0/banks/BANK_ID/accounts/ACCOUNT_ID" }),
+        serde_json::json!({ "verb": "GET", "path": "/obp/v5.1.0/banks/BANK_ID" }),
+    ];
+    let found = dev_script_calls("dev/x.sh", script);
+    assert_eq!(found.len(), 6, "{found:?}");
+    assert_eq!(
+        unlisted_dev_calls(found, &calls),
+        vec![
+            "dev/x.sh:3 PUT /obp/v5.1.0/banks/$1/accounts/$2",
+            "dev/x.sh:5 POST /obp/v7.0.0/banks/$1/accounts/$2",
+            "dev/x.sh:7 POST /obp/v5.1.0/management/consumers",
+            "dev/x.sh:8 GET /obp/v9.0.0/root",
+        ]
+    );
 }
 
 #[test]
@@ -206,4 +400,58 @@ fn a_renamed_or_removed_field_is_reported() {
     let only_id: BTreeSet<String> = ["id".to_string()].into_iter().collect();
     assert!(undocumented_reads(&tr, &only_id).is_empty());
     assert_eq!(undocumented_reads(&tr, &BTreeSet::new()), vec!["transaction_request_id|id"]);
+}
+
+const SOURCE_WITH_CALL_AFTER_TEST_MODULE: &str = r##"
+fn listed(b: &str) -> String { format!("/obp/v5.1.0/banks/{b}") }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const BRACE: &str = "{ not a block";
+    const RAW: &str = r#"} nor this "# ;
+    fn close() -> char { '}' }
+    // an unbalanced { in a comment
+    #[test]
+    fn t() {
+        let _ = format!("/obp/v9.9.9/in-a-test/{}", 1);
+        if true { }
+    }
+}
+
+fn unlisted(x: &str) -> String { format!("/obp/v7.0.0/after-the-test-module/{x}") }
+
+#[cfg(test)]
+fn only_for_tests() { let _ = "/obp/v9.9.9/also-test"; }
+
+fn last(x: &str) -> String { format!("/obp/v7.0.0/the-very-last/{x}") }
+fn log() {
+    warn!(error = %e, "an administrator calls POST /obp/v7.0.0/management/platform-apps");
+}
+"##;
+
+#[test]
+fn production_code_after_a_test_module_is_scanned() {
+    // Tests the scan itself: the OBP-API path lines of a file are those outside `#[cfg(test)]` items, wherever
+    // they are in the file. Braces in strings, raw strings, character literals and comments do not end or
+    // extend a test module, and a `#[cfg(test)]` function ends at its closing brace, and a log line that names an endpoint is no call.
+    let lines: Vec<String> = obp_path_lines_of("x.rs", SOURCE_WITH_CALL_AFTER_TEST_MODULE)
+        .into_iter()
+        .map(|(_, _, line)| line)
+        .collect();
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert!(lines[0].contains("/obp/v5.1.0/banks/{b}"));
+    assert!(lines[1].contains("after-the-test-module"));
+    assert!(lines[2].contains("the-very-last"));
+}
+
+#[test]
+fn a_call_after_a_test_module_is_reported_as_unlisted() {
+    // Tests the coverage check on the sample above: only the first call is listed, so the two calls after the
+    // test module are reported.
+    let listed = vec![serde_json::json!({ "source": "x.rs", "needles": ["\"/obp/v5.1.0/banks/{b}\""] })];
+    let report = unlisted(obp_path_lines_of("x.rs", SOURCE_WITH_CALL_AFTER_TEST_MODULE), &listed);
+    assert_eq!(report.len(), 2, "{report:?}");
+    assert!(report[0].starts_with("x.rs:") && report[0].contains("after-the-test-module"));
+    assert!(report[1].contains("the-very-last"));
 }

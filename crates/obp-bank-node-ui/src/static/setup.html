@@ -55,7 +55,7 @@
     <section id="test-account-section" hidden>
       <h2>Create test account</h2>
       <p class="hint">Seed extra demo accounts (product <code>OPEN_CORRIDOR</code>, zero
-        balance, generated account id). The owner must be an existing OBP user; empty = you.</p>
+        balance, generated account id). The account is owned by you.</p>
       <form id="test-account-form">
         <div class="grid">
           <label>Bank id
@@ -66,9 +66,6 @@
           </label>
           <label>Currency
             <input name="currency" value="KES" required>
-          </label>
-          <label>Owner username (optional)
-            <input name="owner_username" placeholder="defaults to you">
           </label>
           <label class="pair">Account routing (optional, scheme · address)
             <span class="pair-inputs">

@@ -6,7 +6,7 @@
 //! the app config's declarative `setup` block.
 //!
 //! Every desired item (routing scheme, bank, account, FX rate, broker
-//! registration, role grant, and the node's Consumer: Platform App, Scopes,
+//! registration, and the node's Consumer: Platform App, Scopes,
 //! view access) renders as a check — `GET`-only, no side
 //! effects — plus an explicit apply action that mirrors what
 //! `dev/setup_obp.sh` sends. Applies are idempotent: "already exists"
@@ -15,9 +15,8 @@
 //!
 //! The page acts as the logged-in administrator (see `oidc.rs`) with that
 //! user's entitlements — there is no service credential. It never creates
-//! users and never touches email validation: accounts and grants that name
-//! an `owner_username`/`username` require the user to already exist, and a
-//! missing user is reported as an error, not provisioned.
+//! users and never touches email validation; accounts it creates are owned by
+//! the logged-in administrator.
 
 use std::sync::Arc;
 
@@ -302,10 +301,9 @@ struct MeEntitlement {
 
 async fn fetch_me(state: &SetupState, token: &str) -> Result<Me, String> {
     // v6.0.0 (not v5.1.0): its entitlements list includes the VIRTUAL
-    // entitlements of `super_admin_user_ids` users (CanCreateEntitlementAt
-    // One/AnyBank, CanGetAnyUser, marked created_by_process
-    // "super_admin_user_ids") — without them a super admin's granting
-    // rights show as missing here while grants succeed anyway.
+    // entitlements of `super_admin_user_ids` users (marked created_by_process
+    // "super_admin_user_ids") — without them a super admin's rights show as
+    // missing here while applies succeed anyway.
     let (status, body) = state
         .obp(Method::GET, "/obp/v6.0.0/users/current", Some(token), None)
         .await?;
@@ -404,12 +402,6 @@ fn required_admin_roles(setup: &SetupConfig) -> Vec<(String, String)> {
                 "CanConfigureAmqpBankBroker".to_string(),
             ));
         }
-        if !bank.role_grants.is_empty() {
-            roles.push((
-                bank.id.clone(),
-                "CanCreateEntitlementAtOneBank".to_string(),
-            ));
-        }
         if let Some(node) = &bank.node {
             // Finding the node's Consumer by name, and its Platform App mark.
             roles.push((String::new(), "CanGetConsumers".to_string()));
@@ -503,14 +495,10 @@ async fn status(State(state): State<SetupState>, headers: HeaderMap) -> Response
         }
     };
     for (bank_id, role) in required_admin_roles(setup) {
-        // System-level CanCreateEntitlementAtAnyBank satisfies the per-bank
-        // granting requirement — OBP checks the same implication.
-        let satisfied_by = me.entitlements.iter().find(|e| {
-            (e.bank_id == bank_id && e.role == role)
-                || (role == "CanCreateEntitlementAtOneBank"
-                    && e.bank_id.is_empty()
-                    && e.role == "CanCreateEntitlementAtAnyBank")
-        });
+        let satisfied_by = me
+            .entitlements
+            .iter()
+            .find(|e| e.bank_id == bank_id && e.role == role);
         items.push(item(
             format!("myrole:{bank_id}:{role}"),
             "me",
@@ -588,7 +576,7 @@ async fn status(State(state): State<SetupState>, headers: HeaderMap) -> Response
     }
 
     // The own bank, its accounts / FX rates / broker registration, and the
-    // role grants at it.
+    // node's Consumer.
     if let Some(bank) = &setup.bank {
         let b = &bank.id;
         // One read of the bank answers both the bank check and the participant check.
@@ -811,41 +799,6 @@ async fn status(State(state): State<SetupState>, headers: HeaderMap) -> Response
             ));
         }
 
-        // Role grants at the own bank for pre-existing users (never
-        // created here).
-        for grant in &bank.role_grants {
-            let (status_str, detail) = match lookup_user(&state, &token, &grant.username).await {
-                Ok(UserLookup::Found(user)) => {
-                    let held = user["entitlements"]["list"]
-                        .as_array()
-                        .map(|list| {
-                            list.iter().any(|e| {
-                                e["bank_id"].as_str().unwrap_or("") == *b
-                                    && e["role_name"].as_str().unwrap_or("") == grant.role
-                            })
-                        })
-                        .unwrap_or(false);
-                    if held {
-                        ("ok", String::new())
-                    } else {
-                        ("missing", String::new())
-                    }
-                }
-                Ok(other) => ("error", other.refusal(&grant.username)),
-                Err(e) => ("error", e),
-            };
-            items.push(item(
-                format!("grant:{}@{}:{}", grant.username, b, grant.role),
-                "grants",
-                format!("{} for {} ({})", grant.role, grant.username, b),
-                status_str,
-                detail,
-                // Granting an entitlement to another user needs granting
-                // rights at the bank (or superadmin).
-                (b, "CanCreateEntitlementAtOneBank"),
-            ));
-        }
-
         if let Some(node) = &bank.node {
             items.extend(node_items(&state, &token, b, node).await);
         }
@@ -911,83 +864,6 @@ struct ApplyRequest {
     id: String,
 }
 
-/// Resolve an existing username to a user_id — a missing user is an error by
-/// design (this page never registers users).
-async fn resolve_user_id(state: &SetupState, token: &str, username: &str) -> Result<String, String> {
-    match lookup_user(state, token, username).await? {
-        UserLookup::Found(user) => user["user_id"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| format!("no user_id in the response for {username}")),
-        other => Err(other.refusal(username)),
-    }
-}
-
-/// What OBP-API knows about a username.
-enum UserLookup {
-    /// The one user with that username.
-    Found(Value),
-    NotFound,
-    /// The same username exists at several identity providers.
-    Several(usize),
-    /// OBP-API refused the lookup (for example the admin lacks CanGetAnyUser).
-    Refused(StatusCode, Value),
-}
-
-impl UserLookup {
-    /// Why no single user came back, for the page.
-    fn refusal(&self, username: &str) -> String {
-        match self {
-            UserLookup::Found(_) => String::new(),
-            UserLookup::NotFound => format!(
-                "user {username} does not exist — service users are provisioned outside this app"
-            ),
-            UserLookup::Several(n) => format!(
-                "{n} users are named {username}, at different identity providers — this page cannot tell which one is meant"
-            ),
-            UserLookup::Refused(status, body) => format!(
-                "cannot look up user {username} — {status}: {}",
-                body["message"].as_str().unwrap_or("")
-            ),
-        }
-    }
-}
-
-/// The path of `GET /obp/v7.0.0/users` filtered to one username.
-fn users_by_username_path(username: &str) -> String {
-    let query = reqwest::Url::parse_with_params("http://obp/", [("username", username)])
-        .ok()
-        .and_then(|url| url.query().map(str::to_owned))
-        .unwrap_or_default();
-    format!("/obp/v7.0.0/users?{query}")
-}
-
-/// Look a user up by username. OBP-API matches the username exactly, but the
-/// same username can exist at several identity providers, and deleted users
-/// are listed too; only one live user counts as found.
-async fn lookup_user(state: &SetupState, token: &str, username: &str) -> Result<UserLookup, String> {
-    let (status, body) = state
-        .obp(Method::GET, &users_by_username_path(username), Some(token), None)
-        .await?;
-    if !status.is_success() {
-        return Ok(UserLookup::Refused(status, body));
-    }
-    let users: Vec<&Value> = body["users"]
-        .as_array()
-        .map(|list| {
-            list.iter()
-                .filter(|u| u["username"].as_str() == Some(username))
-                .filter(|u| u["is_deleted"].as_bool() != Some(true))
-                .collect()
-        })
-        .unwrap_or_default();
-    Ok(match users.as_slice() {
-        [] => UserLookup::NotFound,
-        [user] => UserLookup::Found((*user).clone()),
-        several => UserLookup::Several(several.len()),
-    })
-}
-
 /// With an `account_id` the account is created under that id (PUT — the
 /// configured corridor accounts have meaningful ids); without one OBP-API
 /// generates the id (POST) and returns it in the response. Both are the
@@ -1000,13 +876,8 @@ async fn create_account(
     account_id: Option<&str>,
     label: &str,
     currency: &str,
-    owner_username: Option<&str>,
     routings: &[SetupRouting],
 ) -> Result<(StatusCode, Value), String> {
-    let owner = match owner_username {
-        Some(username) => resolve_user_id(state, token, username).await?,
-        None => me.user_id.clone(),
-    };
     let (method, path) = match account_id {
         Some(a) => (
             Method::PUT,
@@ -1024,7 +895,7 @@ async fn create_account(
             &path,
             Some(token),
             Some(&json!({
-                "user_id": owner,
+                "user_id": me.user_id,
                 "label": label,
                 "product_code": "OPEN_CORRIDOR",
                 "balance": { "currency": currency, "amount": "0" },
@@ -1489,7 +1360,6 @@ async fn apply(
                             Some(account_id),
                             &account.label,
                             &account.currency,
-                            account.owner_username.as_deref(),
                             &account.routings,
                         )
                         .await
@@ -1555,30 +1425,6 @@ async fn apply(
             }
             None => Err(format!("no broker for bank {bank_id} in the setup config")),
         },
-        Some(("grant", rest)) => {
-            match rest
-                .split_once('@')
-                .and_then(|(user, rest)| rest.split_once(':').map(|(b, r)| (user, b, r)))
-            {
-                Some((username, bank_id, role)) => {
-                    match setup.bank.as_ref().filter(|b| b.id == bank_id).and_then(|b| {
-                        b.role_grants
-                            .iter()
-                            .find(|g| g.username == username && g.role == role)
-                    }) {
-                        Some(grant) => match resolve_user_id(&state, &token, &grant.username).await
-                        {
-                            Ok(user_id) => {
-                                grant_role(&state, &token, &user_id, bank_id, &grant.role).await
-                            }
-                            Err(e) => Err(e),
-                        },
-                        None => Err(format!("no role grant {rest} in the setup config")),
-                    }
-                }
-                None => Err(format!("malformed grant id {rest}")),
-            }
-        }
         Some(("consumer", _)) => Err(
             "this page does not create Consumers: the Consumer's secret belongs in the node's config. \
              Create it with dev/create_consumers.sh (or in the API Manager) and give the node its key and secret."
@@ -1676,8 +1522,6 @@ struct TestAccountRequest {
     #[serde(default)]
     label: String,
     currency: String,
-    #[serde(default)]
-    owner_username: Option<String>,
     /// Optional single routing pair (e.g. IBAN + address); OBP-family schemes
     /// are implicit and refused by OBP-API.
     #[serde(default)]
@@ -1725,7 +1569,6 @@ async fn test_account(
         None,
         &req.label,
         &req.currency,
-        req.owner_username.as_deref(),
         &routings,
     )
     .await

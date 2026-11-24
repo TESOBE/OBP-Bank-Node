@@ -45,12 +45,11 @@ const SECTIONS = [
   ["me", "Your entitlements"],
   ["schemes", "Routing schemes"],
   ["banks", "Banks, accounts, FX, brokers"],
-  ["grants", "Role grants (existing users)"],
   ["node", "The Bank Node as a Platform App"],
 ];
 
 // Items an Apply makes sense for; "error" items name a cause the apply
-// cannot fix (unreachable API, user that does not exist, …).
+// cannot fix (unreachable API, missing Consumer, …).
 const APPLYABLE = new Set(["missing", "differs", "unverified"]);
 
 let ITEMS = [];
@@ -230,7 +229,6 @@ async function onTestAccount(e) {
     bank_id: f.get("bank_id"),
     label: f.get("label"),
     currency: f.get("currency"),
-    owner_username: f.get("owner_username") || null,
     routing_scheme: f.get("routing_scheme") || null,
     routing_address: f.get("routing_address") || null,
   });
