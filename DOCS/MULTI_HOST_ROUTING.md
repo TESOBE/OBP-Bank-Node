@@ -1,6 +1,6 @@
 # Paying across OBP hosts — design sketch
 
-Status: a design for discussion, revised on 2026-11-23 (onward routes, and Bank C's acceptance on the chain as the proof that makes leg 1 final). Section 4 is built: a Bank Node can be on several OBP hosts (the `hosts:` config, a client, consumer and watchers per OBP host, rows tagged with their OBP host, and the `/obp-bank-node/v5.1.0/hosts/HOST/banks/BANK_ID/...` URLs). A first version of forwarding is built too, without the conditional promise and with the sending bank naming the hub: see section 9. Onward routes (section 5), routing by OBP-API (section 6) and the conditional promise (section 8) are not built yet. It extends the "Multi-host posture" section of `ARCHITECTURE.md`, which commits the identifiers and records that make this possible but deliberately builds no federation machinery.
+Status: a design for discussion, revised on 2026-11-23 (onward routes, and Bank C's acceptance on the chain as the proof that makes leg 1 final). Section 4 is built: a Bank Node can be on several OBP hosts (the `hosts:` config, a client, consumer and watchers per OBP host, rows tagged with their OBP host, and the `/obp-bank-node/v5.1.0/hosts/HOST/banks/BANK_ID/...` URLs). A first version of forwarding is built too, without the conditional promise and with the sending bank naming the hub: see section 9. Onward routes are built (section 5): OBP-API stores and shows them, and a node on two or more OBP hosts confirms its routes on each. Routing by OBP-API (section 6) and the conditional promise (section 8) are not built yet. It extends the "Multi-host posture" section of `ARCHITECTURE.md`, which commits the identifiers and records that make this possible but deliberately builds no federation machinery.
 
 The reasoning behind the design, in plain terms, is on the Bank Node UI's `/rationale` page.
 
@@ -69,7 +69,7 @@ Each OBP host gets its own workers, so a stuck queue on one OBP host cannot stal
 
 A hub's bank record carries `onward_routes`, next to `bank_routings`. `bank_routings` says how the bank is addressed; `onward_routes` says which banks can be reached through it. Each route looks like a small version of a bank, with its own list of `bank_routings`, because a bank on another OBP host can be addressed in more than one way too.
 
-Get Banks (`GET /obp/v6.0.0/banks`) and Get Bank (`GET /obp/v6.0.0/banks/BANK_ID`) show it with the rest of the bank, and `GET /obp/v6.0.0/banks/BANK_ID/onward-routes` returns `{"onward_routes": [...]}` on its own. v5.1.0 is stable, so its JSON does not change. On OBP host A (`localhost:8080`), with Bank B as the hub to Bank C on OBP host B:
+Get Banks (`GET /obp/v6.0.0/banks`) and Get Bank (`GET /obp/v6.0.0/banks/BANK_ID`) show it with the rest of the bank. v7.0.0's Get Banks is served by v6.0.0, and v7.0.0's My Banks shows it too. v5.1.0 is stable, so its JSON does not change. The routes also have their own endpoints, in v7.0.0 with the other Open Corridor endpoints: `GET /obp/v7.0.0/banks/BANK_ID/open-corridor/onward-routes`, which anyone may call, and `PUT` on the same URL, which replaces the bank's whole list. On OBP host A (`localhost:8080`), with Bank B as the hub to Bank C on OBP host B:
 
 ```json
 {
@@ -92,7 +92,11 @@ Get Banks (`GET /obp/v6.0.0/banks`) and Get Bank (`GET /obp/v6.0.0/banks/BANK_ID
         { "scheme": "BIC", "address": "DEMCZZ22" }
       ],
       "obp_host": "localhost:8081",
+      "country": "NG",
       "currencies": ["KES", "NGN", "USD", "EUR"],
+      "rates": [
+        { "from": "KES", "to": "NGN", "rate": "11.20", "valid_until": "2026-11-23T10:05:00Z" }
+      ],
       "last_confirmed": "2026-11-23T10:00:00Z",
       "valid_until": "2026-11-23T11:00:00Z"
     }
@@ -100,9 +104,13 @@ Get Banks (`GET /obp/v6.0.0/banks`) and Get Bank (`GET /obp/v6.0.0/banks/BANK_ID
 }
 ```
 
+`country` is the ISO 3166 country of the bank the route reaches, so a sending bank can exclude countries (section 6). The hub's own country is a bank attribute set by the operator, because bank records have no country field.
+
+`rates` are the hub's current exchange rates for payments it converts, each with its own short validity, because rates move faster than reach. The host sets both validity periods: `open_corridor.onward_route_validity_seconds` (default 3600) and `open_corridor.onward_route_rate_validity_seconds` (default 300). Each PUT confirms the routes and the rates in it, so the hub's node sends its list at least as often as its rates need. A payment in a currency it does not convert needs no rate.
+
 Every bank has the field. It is filled in only for banks that currently forward payments; for every other bank it is an empty list. On OBP host B, Bank B carries the reverse route, to Bank A on `localhost:8080`.
 
-**Who writes them.** Only the hub's own node, through an endpoint guarded by its own role or Scope, and only for its own bank. The node builds the list from its other OBP hosts: the Open Corridor participants there (getBanks), and the currencies it has a corridor account for. The hub's policy decides which of them it lists. Neither the operator nor another bank writes a hub's routes.
+**Who writes them.** Only the hub's own node, with the Scope `CanUpdateOnwardRoutes` at its own bank, which the operator grants in API Manager to the members that may act as hubs. The node builds the list from its other OBP hosts: the Open Corridor participants there (getBanks), and the currencies it has a corridor account for. The hub's policy decides which of them it lists. Neither the operator nor another bank writes a hub's routes.
 
 **Validity.** The node only reports "confirmed now". OBP-API stamps `last_confirmed` and works out `valid_until` from a period the host sets, with a default (section 13). A hub cannot give itself a longer validity than the host allows. Expired routes drop out of every response, so readers never check validity themselves. A route is in effect a cache of the hub's answer to "can you reach this bank?". A hub that goes quiet stops confirming, and its routes expire: expiry turns silence into withdrawal.
 
@@ -116,7 +124,7 @@ The sending bank's payment names the beneficiary bank honestly: `to` carries the
 
 1. looks for a member with that pair in `bank_routings`. If there is one, it is a direct payment, as today;
 2. otherwise looks for members with an unexpired onward route carrying that pair, for the payment's currency;
-3. keeps only the hubs the sending bank's standing policy allows: hubs it will not use, and countries or OBP hosts it excludes, for example for sanctions;
+3. keeps only the hubs the sending bank has approved (an allow-list, so a new hub can't be used until the bank approves it), and drops any route through countries or OBP hosts the bank excludes, for example for sanctions;
 4. ranks what is left by the hub's score (section 7), and sends leg 1 to the best one;
 5. records the beneficiary bank and the next bank separately on the transaction request.
 
@@ -212,7 +220,7 @@ In the local demo, Bank B (rt.bank.b4) is on both OBP hosts and is the hub: A pa
 Bank Node:
 
 - configuration as a list of OBP hosts, with per-OBP host workers (built);
-- confirming its onward routes on each OBP host it is on, from its other OBP hosts and its hub policy;
+- confirming its onward routes on each OBP host it is on (built: `onward_routes.rs`). Every `onward_routes.confirm_every_secs` (default 600) it lists the Open Corridor participants on its other OBP hosts, other than its own bank there, and states them on each OBP host. A route lists the currencies the node has a corridor account for on both OBP hosts, and no rates yet, because the node does not convert currencies yet. A bank's country is its `COUNTRY` attribute, or else the `country` the node's config gives that OBP host; a bank with neither is left out. A hub policy to leave banks out is not built yet;
 - on a conditional leg 1: screening, then leg 2 with a shorter deadline, a reference to leg 1 and Bank C's acceptance key, or rejecting leg 1 with the reason;
 - on the beneficiary side: posting the acceptance of a leg on the chain, signed by its acceptance key;
 - on the sending side: treating leg 1 as pending until it is final, and letting it lapse at its deadline;
@@ -220,8 +228,8 @@ Bank Node:
 
 OBP-API:
 
-- onward routes: storage keyed by bank_id, the endpoint the hub's node writes through, `onward_routes` in v6.0.0 Get Banks and Get Bank, `GET /banks/BANK_ID/onward-routes`, the validity setting, and filtering out expired routes;
-- routing an Open Corridor payment whose beneficiary bank is not a member: the onward-route lookup, the sending bank's policy, the conflict check, and recording the beneficiary bank and the next bank separately;
+- onward routes and their rates (built): storage keyed by bank_id, `PUT` and `GET /obp/v7.0.0/banks/BANK_ID/open-corridor/onward-routes` (the write needs the Scope `CanUpdateOnwardRoutes` at the bank), `onward_routes` in v6.0.0 Get Banks and Get Bank, the two validity settings, and filtering out expired routes and rates;
+- routing an Open Corridor payment whose beneficiary bank is not a member: the onward-route lookup, the sending bank's policy, the conflict check, working out both amounts from the hub's rate, and recording the beneficiary bank and the next bank separately;
 - the conditional promise: the condition and deadline on leg 1, checking for leg 2's acceptance on the chain, holding leg 1 out of netting until final, and cancelling it on refusal or at its deadline;
 - hub scores and the operator controls above;
 - nothing for telling local corridor banks apart: that is already done. Each Open Corridor bank carries the bank attribute `OPEN_CORRIDOR_PARTICIPANT` = `true`, which v6.0.0 getBanks returns (v5.1.0's does not), and the setup page sets it.
@@ -237,14 +245,17 @@ Working assumptions, to be revisited once hubs carry real traffic:
 
 Not decided yet:
 
-1. When the sending bank's customer sees the payment as complete: when leg 1 becomes final, or earlier, when the hub accepts leg 1.
-2. When a hub that converts currency fixes the rate: when it accepts leg 1, so the sending bank knows the exact amount that will arrive before anything is final.
-3. Where the sending bank's standing policy (hubs it will not use, excluded countries and OBP hosts) is stored.
-4. How hub fees are shown and charged: on the route, per payment, or by the charge policy.
-5. Whether OBP-API watches the chain for acceptances itself, or a node points it to the transaction and OBP-API checks it.
-6. How many blocks count as safely settled, and so how far apart the two deadlines must be.
+1. How hub fees are shown and charged: on the route, per payment, or by the charge policy.
+2. Whether OBP-API watches the chain for acceptances itself, or a node points it to the transaction and OBP-API checks it.
+3. How many blocks count as safely settled, and so how far apart the two deadlines must be.
 
-Settled: the acceptance of leg 2 is posted on the chain by Bank C, and that is the only proof that makes leg 1 final (section 8). A late acceptance does not count: the block it is in decides.
+Settled:
+
+- The acceptance of leg 2 is posted on the chain by Bank C, and that is the only proof that makes leg 1 final (section 8). A late acceptance does not count: the block it is in decides.
+- A hub that converts currency fixes its rate before leg 1 is sent. OBP host A works out both amounts from the rate on the hub's onward route: what the sending bank pays the hub, and what the beneficiary receives. Leg 1 carries both. The hub makes leg 2 for exactly that amount, or refuses leg 1 (for example, because the rate has expired), which costs a retry, not money. So the sending bank's customer knows the exact amount that will arrive before anything is sent, as remittance rules in many countries require, and nothing about the amount has to come back from the hub. The hub's FX risk lasts only from publishing the rate to making leg 2.
+- The sending bank's routing policy has its own endpoint at the sending bank, `GET`/`PUT /banks/BANK_ID/open-corridor/routing-policy`: the hubs it approves (by routing pair), and the countries and OBP hosts it excludes. A person at the bank sets it, through API Manager, with a role at the bank. With no policy, or an empty list of approved hubs, the bank cannot pay through hubs.
+- When the currency that arrives differs from the one sent, the sending bank says so with an optional `beneficiary_currency` on the v7.0.0 Open Corridor transaction request body.
+- The sending bank's customer sees the payment as complete only when the sending side has seen Bank C's acceptance on the chain, safely settled. Until then it shows as pending: usually a few minutes, while the beneficiary has already been credited.
 
 ## 14. The Bank Node UI
 

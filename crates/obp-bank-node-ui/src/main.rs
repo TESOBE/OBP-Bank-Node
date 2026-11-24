@@ -29,6 +29,8 @@ use tracing::info;
 mod oidc;
 mod proxy;
 mod setup;
+// The app's own /alive, /health and /status.
+mod status_page;
 
 #[cfg(test)]
 mod setup_tests;

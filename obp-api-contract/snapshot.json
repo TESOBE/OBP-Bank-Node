@@ -6,7 +6,7 @@
    "git_commit": "474d4bcc554f1d8e9516e12d85be121d92410aa5"
   }
  },
- "taken_at": "2026-11-23T11:59:30Z",
+ "taken_at": "2026-11-23T15:02:44Z",
  "endpoints": [
   {
    "verb": "GET",
@@ -976,6 +976,12 @@
     "routing_schemes[].scheme",
     "routing_schemes[].status"
    ]
+  },
+  {
+   "verb": "PUT",
+   "path": "/obp/v7.0.0/banks/BANK_ID/open-corridor/onward-routes",
+   "docs_from": "https://k8s.openbankproject.com",
+   "missing": true
   }
  ]
 }

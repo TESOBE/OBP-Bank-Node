@@ -34,3 +34,6 @@ dev/local.env.bak.*
 dev/local-*.env
 dev/local-*.env.bak.*
 dev/env-*.sh
+
+# Backups of .env, which hold secrets
+.env.bak*

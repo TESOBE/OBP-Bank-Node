@@ -204,10 +204,13 @@ node_view_access() { # node_view_access BANK ACCOUNT VIEW_ID CONSUMER_ID
     || echo "  Consumer access to $1/$2/$3 — check"
 }
 
-platform_app() { # platform_app CONSUMER_ID BANK LABEL
+platform_app() { # platform_app CONSUMER_ID BANK LABEL [hub]
   api POST /obp/v7.0.0/management/platform-apps "{\"consumer_id\":\"$1\",\"label\":\"$3\"}" \
     | grep -qE '"consumer_id"|OBP-35045' && echo "  Platform App $3 ok" || echo "  Platform App $3 — check"
-  for role in CanAttachOpenCorridorPromise CanSettleOpenCorridor; do
+  local roles="CanAttachOpenCorridorPromise CanSettleOpenCorridor"
+  # A node on two or more OBP hosts is a hub: it also states its onward routes.
+  [ "${4:-}" = hub ] && roles="$roles CanUpdateOnwardRoutes"
+  for role in $roles; do
     api POST "/obp/v7.0.0/consumers/$1/scopes" "{\"bank_id\":\"$2\",\"role_name\":\"$role\"}" \
       | grep -qE 'scope_id|OBP-30216|already' && echo "  Scope $role @ $2 ok" || echo "  Scope $role @ $2 — check"
   done
@@ -227,7 +230,9 @@ for row in "${NODES[@]}"; do
   acct "$B" "OBP-OUTGOING-SETTLEMENT-ACCOUNT" KES "OC outgoing settlement"
   acct "$B" "OBP-INCOMING-SETTLEMENT-ACCOUNT" KES "OC incoming settlement"
   echo "== bank $B: node ${S^^} as a Platform App, with its Scopes"
-  platform_app "$CONSUMER" "$B" "OBP Bank Node ${S^^} ($B)"
+  # A node whose config lists two or more OBP hosts is a hub.
+  HUB=""; [ "$(grep -cE '^ *(- )?obp_api:' "$SETUP_DIR/node-$S.yaml")" -gt 1 ] && HUB=hub
+  platform_app "$CONSUMER" "$B" "OBP Bank Node ${S^^} ($B)" $HUB
 done
 
 echo "== creating EUR<->KES FX rates (challenge threshold conversion needs them)"

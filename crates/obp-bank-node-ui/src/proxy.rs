@@ -71,6 +71,12 @@ impl AppState {
 }
 
 pub fn build_router(state: AppState, setup: Option<crate::setup::SetupState>) -> Router {
+    // The configured nodes in config order, for the root `/status` checks.
+    let nodes_in_order: Vec<NodeConfig> = state.node_order.iter().map(|node_name| state.nodes[node_name].clone()).collect();
+    // OBP-API's base URL, when the setup page is configured.
+    let obp_api_url = setup.as_ref().map(|setup_state| setup_state.obp_api_base_url().to_string());
+    // The app's own `/alive`, `/health` and `/status`. They are not proxied: `/health` says this app is up, not the node.
+    let status_routes = crate::status_page::router(crate::status_page::StatusState::new(&nodes_in_order, obp_api_url));
     Router::new()
         .route("/", get(index))
         .route("/promises", get(|| async { Html(PROMISES_HTML) }))
@@ -87,6 +93,8 @@ pub fn build_router(state: AppState, setup: Option<crate::setup::SetupState>) ->
         .route("/api/nodes/:node/*path", get(proxy_get).post(proxy_post))
         .with_state(state)
         .merge(crate::setup::router(setup))
+        // Root `/alive`, `/health` and `/status`, without a login.
+        .merge(status_routes)
 }
 
 async fn index() -> Html<&'static str> {
