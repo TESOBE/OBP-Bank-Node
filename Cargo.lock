@@ -1786,6 +1786,7 @@ dependencies = [
  "base64",
  "chrono",
  "figment",
+ "futures-util",
  "hex",
  "http-body-util",
  "rand 0.8.6",
@@ -1797,6 +1798,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
