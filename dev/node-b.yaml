@@ -16,7 +16,9 @@ server:
 
 # The OBP hosts the node is on, each with the node's bank there. A hub bank lists several.
 hosts:
-  - obp_api:
+  # The country of the banks on each OBP host, used in the onward routes this hub states to banks that have no COUNTRY attribute (demo values).
+  - country: "KE"
+    obp_api:
       # The OBP host (here localhost:8080) is taken from base_url. Both demo nodes A and B are on it.
       base_url: "http://localhost:8080"
       # The node is a Platform App: it calls OBP-API as itself, with OAuth2 client credentials from
@@ -55,7 +57,8 @@ hosts:
       view_id: "_open-corridor-node"
 
   # OBP host B, where Bank B meets Bank C. Bank B keeps its bank_id here: bank ids are per OBP host.
-  - obp_api:
+  - country: "NG"
+    obp_api:
       # The OBP host (here localhost:8081) is taken from base_url.
       base_url: "http://localhost:8081"
       # Node B's Consumer on OBP host B, logging in at host B's own OBP-OIDC. dev/start_node_b.sh sets

@@ -307,3 +307,128 @@ async fn proxy_maps_unreachable_node_to_502() {
     let v = body_json(resp).await;
     assert_eq!(v["error_code"], "OBP-BANK-NODE-UI-UPSTREAM-001");
 }
+
+// A stub node that answers only its root `/health`, as the real node does.
+fn stub_node_with_root_health() -> Router {
+    // Only the root liveness endpoint.
+    Router::new().route("/health", get(|| async { Json(serde_json::json!({ "status": "ok" })) }))
+}
+
+// Read a response body as text.
+async fn body_text(resp: axum::response::Response) -> String {
+    // The whole body.
+    let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    // As UTF-8 text.
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+// A GET request that asks for JSON.
+fn get_json_req(uri: &str) -> Request<Body> {
+    // Accept JSON, as a monitor would.
+    Request::builder().uri(uri).header(header::ACCEPT, "application/json").body(Body::empty()).unwrap()
+}
+
+// `/alive` answers `true` as uncached JSON, even when the node is down.
+#[tokio::test]
+async fn alive_answers_true_without_touching_the_node() {
+    // Port 1 refuses connections, so a call to the node would fail.
+    let app = app_with(vec![node("node-a", "http://127.0.0.1:1")]);
+    // Ask, without any login.
+    let resp = app.oneshot(get_req("/alive")).await.unwrap();
+    // It answers.
+    assert_eq!(resp.status(), StatusCode::OK);
+    // As JSON.
+    assert!(resp.headers()[header::CONTENT_TYPE].to_str().unwrap().starts_with("application/json"));
+    // Not to be cached.
+    assert_eq!(resp.headers()[header::CACHE_CONTROL], "no-store");
+    // The body is `true`.
+    assert_eq!(body_text(resp).await, "true");
+}
+
+// `/health` is this app's own liveness, not the node's: ok even when the node is down.
+#[tokio::test]
+async fn health_answers_ok_without_touching_the_node() {
+    // Port 1 refuses connections, so a forwarded request would give 502.
+    let app = app_with(vec![node("node-a", "http://127.0.0.1:1")]);
+    // Ask, without any login.
+    let resp = app.oneshot(get_req("/health")).await.unwrap();
+    // It answers.
+    assert_eq!(resp.status(), StatusCode::OK);
+    // As JSON.
+    assert!(resp.headers()[header::CONTENT_TYPE].to_str().unwrap().starts_with("application/json"));
+    // Not to be cached.
+    assert_eq!(resp.headers()[header::CACHE_CONTROL], "no-store");
+    // The body is OBP-API's.
+    assert_eq!(body_text(resp).await, r#"{"status":"ok"}"#);
+}
+
+// `/status` as JSON is 200 and ok when every node answers, with the build details and OBP-API reported as disabled.
+#[tokio::test]
+async fn status_is_ok_when_the_nodes_answer() {
+    // A node that answers its root `/health`.
+    let base = spawn_stub(stub_node_with_root_health()).await;
+    // A UI fronting it, with no setup page.
+    let app = app_with(vec![node("node-a", &base)]);
+    // Ask for JSON, without any login.
+    let resp = app.oneshot(get_json_req("/status")).await.unwrap();
+    // Ready.
+    assert_eq!(resp.status(), StatusCode::OK);
+    // Not to be cached.
+    assert_eq!(resp.headers()[header::CACHE_CONTROL], "no-store");
+    // Read the report.
+    let report = body_json(resp).await;
+    // Overall ok.
+    assert_eq!(report["status"], "ok");
+    // This app.
+    assert_eq!(report["service"], "OBP-Bank-Node-UI");
+    // The build details are present.
+    assert!(report["git_commit"].is_string() && report["instance_id"].is_string() && report["uptime_seconds"].is_u64());
+    // The node check passed.
+    assert_eq!(report["checks"]["nodes"]["status"], "ok");
+    // It names the node.
+    assert!(report["checks"]["nodes"]["detail"].as_str().unwrap().starts_with("node-a: "));
+    // No obp_api block, so no OBP-API check.
+    assert_eq!(report["obp_api"]["status"], "disabled");
+}
+
+// `/status` is 503 and degraded when a node does not answer.
+#[tokio::test]
+async fn status_is_503_when_a_node_is_unreachable() {
+    // One node that answers and one on port 1, which refuses connections.
+    let base = spawn_stub(stub_node_with_root_health()).await;
+    // A UI fronting both.
+    let app = app_with(vec![node("node-a", &base), node("node-b", "http://127.0.0.1:1")]);
+    // Ask for JSON.
+    let resp = app.oneshot(get_json_req("/status")).await.unwrap();
+    // Not ready.
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    // Read the report.
+    let report = body_json(resp).await;
+    // Overall degraded.
+    assert_eq!(report["status"], "degraded");
+    // The node check failed.
+    assert_eq!(report["checks"]["nodes"]["status"], "fail");
+    // The detail names the node that did not answer.
+    assert!(report["checks"]["nodes"]["detail"].as_str().unwrap().contains("node-b: "));
+}
+
+// `/status` answers HTML when the request does not ask for JSON, as a browser's does not.
+#[tokio::test]
+async fn status_answers_html_by_default() {
+    // A node that answers.
+    let base = spawn_stub(stub_node_with_root_health()).await;
+    // A UI fronting it.
+    let app = app_with(vec![node("node-a", &base)]);
+    // A browser-like Accept header that does not list application/json.
+    let request = Request::builder().uri("/status").header(header::ACCEPT, "text/html,application/xhtml+xml,*/*;q=0.8").body(Body::empty()).unwrap();
+    // Ask.
+    let resp = app.oneshot(request).await.unwrap();
+    // Ready.
+    assert_eq!(resp.status(), StatusCode::OK);
+    // As HTML.
+    assert!(resp.headers()[header::CONTENT_TYPE].to_str().unwrap().starts_with("text/html"));
+    // Not to be cached.
+    assert_eq!(resp.headers()[header::CACHE_CONTROL], "no-store");
+    // The page says which app it is and how it went.
+    assert!(body_text(resp).await.contains("OBP Bank Node UI Status"));
+}

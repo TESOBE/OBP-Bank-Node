@@ -60,6 +60,12 @@ impl SetupState {
         })))
     }
 
+    // OBP-API's base URL, for the soft check on the root `/status` page.
+    pub fn obp_api_base_url(&self) -> &str {
+        // As configured in the obp_api block.
+        &self.0.cfg.base_url
+    }
+
     fn obp_url(&self, path: &str) -> String {
         format!("{}{}", self.0.cfg.base_url.trim_end_matches('/'), path)
     }

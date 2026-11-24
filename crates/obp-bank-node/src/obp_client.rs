@@ -463,6 +463,38 @@ impl ObpClient {
         Err(classify_interactive_failure(status, &text))
     }
 
+    /// Replace this bank's onward routes on this OBP host
+    /// (`PUT /obp/v7.0.0/banks/BANK_ID/open-corridor/onward-routes`): the banks on
+    /// the node's other OBP hosts that a payment can reach through it. Sending the
+    /// list confirms every route in it; OBP-API drops routes that are not confirmed
+    /// again in time. Needs the Scope `CanUpdateOnwardRoutes` at the bank.
+    pub async fn put_onward_routes(
+        &self,
+        bank_id: &str,
+        routes: &[serde_json::Value],
+    ) -> Result<(), ObpClientError> {
+        // The bank's onward routes, at the OBP-API version the node calls.
+        let url = format!(
+            "{}/obp/{}/banks/{}/open-corridor/onward-routes",
+            self.base_url, OBP_API_VERSION, bank_id
+        );
+        // Log the call at debug level, like the other OBP-API calls.
+        debug!(%url, routes = routes.len(), "confirming the bank's onward routes at OBP-API");
+        // The whole list, which replaces the bank's earlier one.
+        let body = serde_json::json!({ "onward_routes": routes });
+        // Build the PUT request; credentials are added by send_authorized.
+        let req = self.http.put(&url).json(&body);
+        // Send it, retrying once with a fresh token if a cached one is refused.
+        let (status, text) = self.send_authorized(req).await?;
+        // Success needs nothing more: the node does not use the answer.
+        if status.is_success() {
+            // The routes are confirmed.
+            return Ok(());
+        }
+        // A refusal keeps OBP-API's status and code; anything else is a transport error.
+        Err(classify_failure(status, &text))
+    }
+
     /// Fetch the ACTIVE rows of OBP-API's routing-scheme registry
     /// (`GET /obp/v7.0.0/routing-schemes`), following pagination. Feeds the
     /// node's `RoutingRegistry` cache for A1.1 beneficiary-routing validation.

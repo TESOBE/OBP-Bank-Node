@@ -1200,3 +1200,26 @@ async fn apply_grants_the_administrator_a_role_the_setup_needs_and_no_other() {
     assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
     assert_eq!(captured.lock().unwrap().entitlement_posts.len(), 1);
 }
+
+// With the setup page configured, the root `/status` reports OBP-API as a soft check: it is ok here, yet the node on port 1 still makes the app not ready.
+#[tokio::test]
+async fn root_status_reports_obp_api_as_a_soft_check() {
+    // Where the stub OBP-API records what it was sent.
+    let captured = Arc::new(Mutex::new(Captured::default()));
+    // A stub OBP-API that answers its root.
+    let obp_base = spawn_obp_stub(captured).await;
+    // A UI with the setup page and a node on port 1, which refuses connections.
+    let app = app_with_setup(&obp_base);
+    // Ask for JSON, without any login.
+    let request = Request::builder().uri("/status").header(header::ACCEPT, "application/json").body(Body::empty()).unwrap();
+    // Ask.
+    let resp = app.oneshot(request).await.unwrap();
+    // The node is down, so the app is not ready.
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    // Read the report.
+    let report = body_json(resp).await;
+    // OBP-API answered.
+    assert_eq!(report["obp_api"]["status"], "ok");
+    // The node did not.
+    assert_eq!(report["checks"]["nodes"]["status"], "fail");
+}

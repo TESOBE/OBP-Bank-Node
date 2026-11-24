@@ -330,6 +330,16 @@
   },
   {
    "verb": "GET",
+   "path": "/obp/v5.1.0/root",
+   "source": "crates/obp-bank-node-ui/src/status_page.rs",
+   "needles": [
+    "\"{}/obp/v5.1.0/root\""
+   ],
+   "reads": [],
+   "note": "The UI's root /status page, when the setup page is configured. Only the status code is checked."
+  },
+  {
+   "verb": "GET",
    "path": "/obp/v5.1.0/banks/BANK_ID/transaction-request-types",
    "source": "crates/obp-bank-node/src/rest/status_page.rs",
    "needles": [
@@ -473,6 +483,18 @@
     "consumer_secret"
    ],
    "note": "Dev script: creates the node and UI Consumers."
+  },
+  {
+   "verb": "PUT",
+   "path": "/obp/v7.0.0/banks/BANK_ID/open-corridor/onward-routes",
+   "source": "crates/obp-bank-node/src/obp_client.rs",
+   "needles": [
+    "const OBP_API_VERSION: &str = \"v7.0.0\";",
+    "\"{}/obp/{}/banks/{}/open-corridor/onward-routes\""
+   ],
+   "reads": [],
+   "undocumented_endpoint": "Added to OBP-API on 2026-11-23 (Update Onward Routes); not yet on k8s.openbankproject.com. Drop this note once the snapshot finds it.",
+   "note": "Only a hub (a node on two or more OBP hosts) calls it. Only the status code is checked."
   }
  ]
 }

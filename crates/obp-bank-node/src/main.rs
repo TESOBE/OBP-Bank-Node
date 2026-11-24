@@ -16,6 +16,8 @@ mod fx;
 mod incoming;
 mod interface_c;
 mod obp_client;
+// A hub's onward routes, confirmed on each OBP host it is on.
+mod onward_routes;
 mod outbox;
 mod rest;
 mod routing;
@@ -61,6 +63,44 @@ struct Config {
     /// Shared secret sent as the bearer token on the A2 CBS webhook.
     #[serde(default)]
     local_secret: Option<String>,
+    /// A hub's onward routes: how often the node confirms them on each OBP host. Only used when the node is on two or more OBP hosts.
+    #[serde(default)]
+    onward_routes: OnwardRoutesConfig,
+}
+
+/// How a node on several OBP hosts confirms its onward routes (DOCS/MULTI_HOST_ROUTING.md, section 5).
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct OnwardRoutesConfig {
+    /// Whether the node states onward routes at all. On by default for a node on two or more OBP hosts.
+    #[serde(default = "default_true")]
+    enabled: bool,
+    /// How often the routes are confirmed, in seconds. Must be well within the validity OBP-API sets (one hour by default), or the routes lapse between rounds.
+    #[serde(default = "default_onward_route_confirm_secs")]
+    confirm_every_secs: u64,
+}
+
+impl Default for OnwardRoutesConfig {
+    fn default() -> Self {
+        // On, every ten minutes.
+        OnwardRoutesConfig {
+            // Stated by default.
+            enabled: true,
+            // Ten minutes: six times within OBP-API's default hour.
+            confirm_every_secs: default_onward_route_confirm_secs(),
+        }
+    }
+}
+
+/// The default for a setting that is on unless turned off.
+fn default_true() -> bool {
+    // On.
+    true
+}
+
+/// How often onward routes are confirmed by default, in seconds.
+fn default_onward_route_confirm_secs() -> u64 {
+    // Ten minutes.
+    600
 }
 
 impl Default for Config {
@@ -82,6 +122,8 @@ impl Default for Config {
             evidence: EvidenceConfig::default(),
             settlement: SettlementConfig::default(),
             local_secret: None,
+            // On, with the default interval; unused on one OBP host.
+            onward_routes: OnwardRoutesConfig::default(),
         }
     }
 }
@@ -96,6 +138,9 @@ struct HostConfig {
     rabbitmq: RabbitMqConfig,
     /// The node's bank on this OBP host.
     bank: BankConfig,
+    /// The ISO 3166 alpha-2 country of the banks on this OBP host, for example `NG`. A hub on another OBP host uses it for the onward routes it states to banks here that have no COUNTRY attribute.
+    #[serde(default)]
+    country: Option<String>,
 }
 
 /// Settlement (value-leg) configuration.
@@ -650,6 +695,8 @@ async fn main() -> anyhow::Result<()> {
             tokio::spawn(declare_platform_app(
                 Arc::clone(&obp),
                 host_config.bank.bank_id.clone(),
+                // A node on two or more OBP hosts is a hub, and states its onward routes.
+                config.hosts.len() > 1 && config.onward_routes.enabled,
             ));
         }
 
@@ -777,6 +824,29 @@ async fn main() -> anyhow::Result<()> {
 
     // Every OBP host is set up: give the routers the full list. Set only here, so this cannot fail.
     let _ = forward_targets.set(forward_target_list);
+
+    // A node on two or more OBP hosts states, on each, the banks on the others that a payment can reach through it.
+    if config.hosts.len() > 1 && config.onward_routes.enabled {
+        // Confirmed on a timer, in the background.
+        tokio::spawn(
+            onward_routes::OnwardRouteConfirmer {
+                // The same OBP hosts the routers carry payments on to.
+                targets: Arc::clone(&forward_targets),
+                // Each OBP host's country, where the config gives one.
+                countries: config
+                    // Every OBP host.
+                    .hosts
+                    .iter()
+                    // Those with a country, by OBP host.
+                    .filter_map(|host_config| host_config.country.clone().map(|country| (obp_host(&host_config.obp_api), country)))
+                    // As a map.
+                    .collect(),
+                // How often.
+                every: std::time::Duration::from_secs(config.onward_routes.confirm_every_secs),
+            }
+            .run(),
+        );
+    }
 
     // The dispatcher owns the backend and drains the outbox asynchronously, sending each row to its own OBP host.
     let dispatcher = Dispatcher::new(
@@ -1105,9 +1175,9 @@ fn build_amqp_uri(cfg: &RabbitMqConfig) -> String {
 /// be reached. A refusal (e.g. the Consumer is not yet marked as a Platform
 /// App) is logged once with what to do; the node runs on regardless, and its
 /// calls fail with OBP-API's missing-Scope error until the Scopes are granted.
-async fn declare_platform_app(obp: Arc<ObpClient>, bank_id: String) {
+async fn declare_platform_app(obp: Arc<ObpClient>, bank_id: String, states_onward_routes: bool) {
     use crate::obp_client::RequiredScope;
-    let scopes = [
+    let mut scopes = vec![
         RequiredScope {
             role_name: "CanAttachOpenCorridorPromise",
             bank_id: &bank_id,
@@ -1121,6 +1191,20 @@ async fn declare_platform_app(obp: Arc<ObpClient>, bank_id: String) {
             optional: false,
         },
     ];
+    // A hub also states its onward routes: the banks on its other OBP hosts that a payment can reach through it.
+    if states_onward_routes {
+        // Needed only by a node on two or more OBP hosts.
+        scopes.push(RequiredScope {
+            // The Scope OBP-API checks on the write.
+            role_name: "CanUpdateOnwardRoutes",
+            // At the node's bank here.
+            bank_id: &bank_id,
+            // Why, for the administrator.
+            needed_for: "Stating the bank's onward routes: the banks on the node's other OBP hosts that a payment can reach through it. Without it, OBP-API cannot route payments through this bank.",
+            // The node runs without it, but carries no routed payments.
+            optional: true,
+        });
+    }
     let mut delay = std::time::Duration::from_secs(5);
     for attempt in 1..=12 {
         match obp
